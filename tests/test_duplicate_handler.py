@@ -1,0 +1,318 @@
+"""Tests for duplicate file handler."""
+
+from unittest.mock import MagicMock
+
+from pydrime.duplicate_handler import DuplicateHandler
+from pydrime.exceptions import DrimeAPIError
+from pydrime.output import OutputFormatter
+
+
+class TestDuplicateHandlerInit:
+    """Tests for DuplicateHandler initialization."""
+
+    def test_initialization_with_ask_mode(self):
+        """Test initialization with ask mode."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        assert handler.client == mock_client
+        assert handler.out == out
+        assert handler.workspace_id == 0
+        assert handler.on_duplicate == "ask"
+        assert (
+            handler.chosen_action is None
+        )  # Should be None, will be set when user chooses
+        assert handler.apply_to_all is False
+        assert len(handler.files_to_skip) == 0
+        assert len(handler.rename_map) == 0
+        assert len(handler.entries_to_delete) == 0
+
+    def test_initialization_with_skip_mode(self):
+        """Test initialization with skip mode."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+
+        handler = DuplicateHandler(mock_client, out, 0, "skip")
+
+        assert handler.chosen_action == "skip"
+        assert handler.apply_to_all is True
+
+    def test_initialization_with_replace_mode(self):
+        """Test initialization with replace mode."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+
+        handler = DuplicateHandler(mock_client, out, 5, "replace")
+
+        assert handler.chosen_action == "replace"
+        assert handler.apply_to_all is True
+        assert handler.workspace_id == 5
+
+
+class TestValidateAndHandleDuplicates:
+    """Tests for validate_and_handle_duplicates method."""
+
+    def test_no_duplicates_does_nothing(self, tmp_path):
+        """Test when there are no duplicates."""
+        mock_client = MagicMock()
+        mock_client.validate_uploads.return_value = {"duplicates": []}
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        assert len(handler.files_to_skip) == 0
+        assert len(handler.rename_map) == 0
+        assert len(handler.entries_to_delete) == 0
+
+    def test_filters_folder_duplicates(self, tmp_path):
+        """Test filters out folder duplicates."""
+        mock_client = MagicMock()
+        mock_client.validate_uploads.return_value = {
+            "duplicates": ["folder1", "file1.txt"]
+        }
+        # Mock folder detection
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 1,
+                    "name": "folder1",
+                    "type": "folder",
+                    "hash": "hash1",
+                    "mime": None,
+                    "file_size": 0,
+                    "parent_id": 0,
+                    "created_at": "2023-01-01",
+                    "updated_at": "2023-01-01",
+                    "owner": {"email": "test@example.com"},
+                }
+            ]
+        }
+
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "skip")
+
+        test_file = tmp_path / "file1.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "folder1/file1.txt")]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        # folder1 should be filtered out, only file1.txt should be processed
+        assert "folder1/file1.txt" in handler.files_to_skip
+
+    def test_handles_api_error_gracefully(self, tmp_path):
+        """Test handles API error during validation gracefully."""
+        mock_client = MagicMock()
+        mock_client.validate_uploads.side_effect = DrimeAPIError("API Error")
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        # Should not raise an exception
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+
+class TestHandleSkip:
+    """Tests for skip action."""
+
+    def test_skip_marks_files_for_skipping(self, tmp_path):
+        """Test skip action marks files for skipping."""
+        mock_client = MagicMock()
+        mock_client.validate_uploads.return_value = {"duplicates": ["test.txt"]}
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "skip")
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        assert "test.txt" in handler.files_to_skip
+
+
+class TestHandleRename:
+    """Tests for rename action."""
+
+    def test_rename_gets_available_name(self, tmp_path):
+        """Test rename action gets available name from API."""
+        mock_client = MagicMock()
+        mock_client.validate_uploads.return_value = {"duplicates": ["test.txt"]}
+        mock_client.get_available_name.return_value = "test (1).txt"
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "rename")
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        assert handler.rename_map["test.txt"] == "test (1).txt"
+        mock_client.get_available_name.assert_called_once_with(
+            "test.txt", workspace_id=0
+        )
+
+    def test_rename_falls_back_to_skip_on_error(self, tmp_path):
+        """Test rename falls back to skip on API error."""
+        mock_client = MagicMock()
+        mock_client.validate_uploads.return_value = {"duplicates": ["test.txt"]}
+        mock_client.get_available_name.side_effect = DrimeAPIError("API Error")
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "rename")
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        # Should fall back to skip
+        assert "test.txt" in handler.files_to_skip
+        assert "test.txt" not in handler.rename_map
+
+
+class TestHandleReplace:
+    """Tests for replace action."""
+
+    def test_replace_marks_entries_for_deletion(self, tmp_path):
+        """Test replace action marks entries for deletion."""
+        mock_client = MagicMock()
+        mock_client.validate_uploads.return_value = {"duplicates": ["test.txt"]}
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 123,
+                    "name": "test.txt",
+                    "type": "image",
+                    "hash": "hash123",
+                    "mime": "text/plain",
+                    "file_size": 100,
+                    "parent_id": 0,
+                    "created_at": "2023-01-01",
+                    "updated_at": "2023-01-01",
+                    "owner": {"email": "test@example.com"},
+                }
+            ]
+        }
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "replace")
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        assert 123 in handler.entries_to_delete
+
+
+class TestDeleteMarkedEntries:
+    """Tests for delete_marked_entries method."""
+
+    def test_delete_marked_entries_success(self):
+        """Test successful deletion of marked entries."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "replace")
+        handler.entries_to_delete = [1, 2, 3]
+
+        result = handler.delete_marked_entries()
+
+        assert result is True
+        mock_client.delete_file_entries.assert_called_once_with(
+            [1, 2, 3], delete_forever=False
+        )
+
+    def test_delete_no_entries_returns_true(self):
+        """Test with no entries to delete returns True."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "replace")
+        handler.entries_to_delete = []
+
+        result = handler.delete_marked_entries()
+
+        assert result is True
+        mock_client.delete_file_entries.assert_not_called()
+
+    def test_delete_api_error_returns_false(self):
+        """Test API error during deletion returns False."""
+        mock_client = MagicMock()
+        mock_client.delete_file_entries.side_effect = DrimeAPIError("API Error")
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "replace")
+        handler.entries_to_delete = [1, 2]
+
+        result = handler.delete_marked_entries()
+
+        assert result is False
+
+
+class TestApplyRenames:
+    """Tests for apply_renames method."""
+
+    def test_apply_renames_to_filename(self):
+        """Test apply renames to filename."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "rename")
+        handler.rename_map = {"test.txt": "test (1).txt"}
+
+        result = handler.apply_renames("test.txt")
+
+        assert result == "test (1).txt"
+
+    def test_apply_renames_to_file_in_folder(self):
+        """Test apply renames to file in folder."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "rename")
+        handler.rename_map = {"test.txt": "test (1).txt"}
+
+        result = handler.apply_renames("folder/test.txt")
+
+        assert result == "folder/test (1).txt"
+
+    def test_apply_renames_to_folder(self):
+        """Test apply renames to folder name in path."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "rename")
+        handler.rename_map = {"folder": "folder (1)"}
+
+        result = handler.apply_renames("folder/test.txt")
+
+        assert result == "folder (1)/test.txt"
+
+    def test_apply_no_renames(self):
+        """Test when no renames are needed."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "rename")
+        handler.rename_map = {}
+
+        result = handler.apply_renames("test.txt")
+
+        assert result == "test.txt"
+
+    def test_apply_multiple_renames_in_path(self):
+        """Test apply multiple renames in path."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "rename")
+        handler.rename_map = {"folder": "folder (1)", "test.txt": "test (1).txt"}
+
+        result = handler.apply_renames("folder/subfolder/test.txt")
+
+        assert result == "folder (1)/subfolder/test (1).txt"
