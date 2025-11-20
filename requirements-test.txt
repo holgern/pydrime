@@ -1,0 +1,9 @@
+pip
+setuptools
+wheel
+flake8
+nose
+pytest
+pytest-cov
+coverage
+tox

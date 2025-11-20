@@ -1,0 +1,13 @@
+[run]
+
+omit =
+  # omit all manifest files
+  */__init__.py
+  */__manifest__.py
+  # omit all test files
+  */tests/*
+  */coverage/*
+
+[report]
+
+ignore_errors = True
