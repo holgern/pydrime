@@ -275,6 +275,42 @@ class TestUploadCommand:
         assert "Workspace: Personal (0)" in result.output
         assert "Parent folder: / (Root, ID: 0)" in result.output
 
+    @patch("pydrime.cli.scan_directory")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_upload_uses_current_folder_as_parent(
+        self, mock_config, mock_client_class, mock_scan, runner, tmp_path
+    ):
+        """Test that upload passes current folder as parent_id to upload_file."""
+        # Create a temporary test file
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("test content")
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 1465
+        mock_config.get_current_folder.return_value = 480983233
+
+        # Mock scan_directory to return file list
+        mock_scan.return_value = [(test_file, "test.txt")]
+
+        mock_client = Mock()
+        mock_client.validate_uploads.return_value = {"duplicates": []}
+        mock_client.upload_file.return_value = {"fileEntry": {"id": 1}}
+        mock_client.get_workspaces.return_value = {
+            "workspaces": [{"id": 1465, "name": "test"}]
+        }
+        mock_client.get_folder_info.return_value = {"name": "subdir1"}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["upload", str(test_file), "--no-progress"])
+
+        assert result.exit_code == 0
+        # Verify that upload_file was called with parent_id=480983233
+        mock_client.upload_file.assert_called_once()
+        call_args = mock_client.upload_file.call_args
+        assert call_args.kwargs["parent_id"] == 480983233
+        assert call_args.kwargs["workspace_id"] == 1465
+
 
 class TestLsCommand:
     """Tests for the ls (list files) command."""

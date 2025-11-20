@@ -640,6 +640,7 @@ def upload(  # noqa: C901
 
             return client.upload_file(
                 file_path,
+                parent_id=current_folder_id,
                 relative_path=upload_path,
                 workspace_id=workspace,
                 progress_callback=progress_callback if progress_display else None,
