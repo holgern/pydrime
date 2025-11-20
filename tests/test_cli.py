@@ -293,6 +293,51 @@ class TestUploadCommand:
         assert call_args.kwargs["parent_id"] == 480983233
         assert call_args.kwargs["workspace_id"] == 1465
 
+    @patch("pydrime.cli.scan_directory")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_upload_directory_with_remote_path_includes_folder_name(
+        self, mock_config, mock_client_class, mock_scan, runner, tmp_path
+    ):
+        """Test that upload directory with remote path includes local folder name."""
+        # Create a temporary test directory with files
+        test_dir = tmp_path / "test"
+        test_dir.mkdir()
+        test_file = test_dir / "file.txt"
+        test_file.write_text("test content")
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 0
+        mock_config.get_current_folder.return_value = None
+
+        # Mock scan_directory to return file list with relative path including
+        # folder name. This is what scan_directory would return when
+        # base_path = test_dir.parent
+        mock_scan.return_value = [(test_file, "test/file.txt")]
+
+        mock_client = Mock()
+        mock_client.validate_uploads.return_value = {"duplicates": []}
+        mock_client.upload_file.return_value = {"fileEntry": {"id": 1}}
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(
+            main, ["upload", str(test_dir), "-r", "dest", "--no-progress"]
+        )
+
+        assert result.exit_code == 0
+        # Verify that upload_file was called with remote path including both
+        # dest and test
+        mock_client.upload_file.assert_called_once()
+        call_args = mock_client.upload_file.call_args
+        # The relative_path should be "dest/test/file.txt"
+        assert call_args.kwargs["relative_path"] == "dest/test/file.txt"
+        # Verify scan_directory was called with base_path = test_dir.parent
+        mock_scan.assert_called_once()
+        scan_call_args = mock_scan.call_args
+        assert scan_call_args[0][0] == test_dir  # path argument
+        assert scan_call_args[0][1] == test_dir.parent  # base_path argument
+
 
 class TestLsCommand:
     """Tests for the ls (list files) command."""
