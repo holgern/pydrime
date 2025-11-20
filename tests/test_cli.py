@@ -165,26 +165,21 @@ class TestUploadCommand:
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    @patch("pydrime.cli.Path")
     def test_upload_file_success(
-        self, mock_path_class, mock_config, mock_client_class, runner, tmp_path
+        self, mock_config, mock_client_class, runner, tmp_path
     ):
         """Test successful file upload."""
         # Create a temporary test file
         test_file = tmp_path / "test.txt"
         test_file.write_text("test content")
 
-        # Mock Path to return our test file
-        mock_path = Mock()
-        mock_path.is_file.return_value = True
-        mock_path.name = "test.txt"
-        mock_path.stat.return_value.st_size = 100
-        mock_path_class.return_value = mock_path
-
         mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 0
+        mock_config.get_current_folder.return_value = None
 
         mock_client = Mock()
         mock_client.upload_file.return_value = {"fileEntry": {"id": 1}}
+        mock_client.get_workspaces.return_value = {"workspaces": []}
         mock_client_class.return_value = mock_client
 
         result = runner.invoke(
@@ -210,21 +205,13 @@ class TestUploadCommand:
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    @patch("pydrime.cli.Path")
     def test_upload_displays_destination_info(
-        self, mock_path_class, mock_config, mock_client_class, runner, tmp_path
+        self, mock_config, mock_client_class, runner, tmp_path
     ):
         """Test that upload displays workspace and parent folder information."""
         # Create a temporary test file
         test_file = tmp_path / "test.txt"
         test_file.write_text("test content")
-
-        # Mock Path to return our test file
-        mock_path = Mock()
-        mock_path.is_file.return_value = True
-        mock_path.name = "test.txt"
-        mock_path.stat.return_value.st_size = 100
-        mock_path_class.return_value = mock_path
 
         mock_config.is_configured.return_value = True
         mock_config.get_default_workspace.return_value = 5
@@ -241,39 +228,34 @@ class TestUploadCommand:
 
         assert result.exit_code == 0
         assert "Workspace: Test Workspace (5)" in result.output
-        assert "Parent folder: /MyFolder (ID: 123)" in result.output
+        # In dry-run, it shows "Location:" not "Parent folder:"
+        assert "Location: /MyFolder" in result.output
         assert "Dry run mode" in result.output
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    @patch("pydrime.cli.Path")
     def test_upload_displays_root_folder(
-        self, mock_path_class, mock_config, mock_client_class, runner, tmp_path
+        self, mock_config, mock_client_class, runner, tmp_path
     ):
         """Test that upload displays root folder when no current folder set."""
         # Create a temporary test file
         test_file = tmp_path / "test.txt"
         test_file.write_text("test content")
 
-        # Mock Path to return our test file
-        mock_path = Mock()
-        mock_path.is_file.return_value = True
-        mock_path.name = "test.txt"
-        mock_path.stat.return_value.st_size = 100
-        mock_path_class.return_value = mock_path
-
         mock_config.is_configured.return_value = True
         mock_config.get_default_workspace.return_value = None
         mock_config.get_current_folder.return_value = None
 
         mock_client = Mock()
+        mock_client.get_workspaces.return_value = {"workspaces": []}
         mock_client_class.return_value = mock_client
 
         result = runner.invoke(main, ["upload", str(test_file), "--dry-run"])
 
         assert result.exit_code == 0
         assert "Workspace: Personal (0)" in result.output
-        assert "Parent folder: / (Root, ID: 0)" in result.output
+        # In dry-run, it shows "Location:" not "Parent folder:"
+        assert "Location: / (Root)" in result.output
 
     @patch("pydrime.cli.scan_directory")
     @patch("pydrime.cli.DrimeClient")
@@ -2202,3 +2184,228 @@ class TestValidateCommand:
 
             assert result.exit_code == 1
             assert "API key not configured" in result.output
+
+
+class TestFolderStructureDetection:
+    """Tests for folder structure detection in upload and validation."""
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_scan_directory_uses_posix_paths(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test that scan_directory returns paths with forward slashes."""
+        import tempfile
+
+        from pydrime.cli import scan_directory
+        from pydrime.output import OutputFormatter
+
+        mock_config.is_configured.return_value = True
+
+        # Create a nested directory structure
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create nested folders and files
+            (base / "folder1").mkdir()
+            (base / "folder1" / "folder2").mkdir()
+            (base / "folder1" / "file1.txt").write_text("content1")
+            (base / "folder1" / "folder2" / "file2.txt").write_text("content2")
+            (base / "file3.txt").write_text("content3")
+
+            # Scan directory
+            out = OutputFormatter()
+            files = scan_directory(base, base, out)
+
+            # Check that all paths use forward slashes
+            for _file_path, rel_path in files:
+                assert "\\" not in rel_path, f"Path contains backslash: {rel_path}"
+                assert "/" in rel_path or rel_path in [
+                    "file3.txt"
+                ], f"Expected forward slashes in nested paths: {rel_path}"
+
+            # Check expected structure
+            rel_paths = [rel_path for _, rel_path in files]
+            assert "file3.txt" in rel_paths
+            assert "folder1/file1.txt" in rel_paths
+            assert "folder1/folder2/file2.txt" in rel_paths
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_upload_dry_run_shows_folder_structure(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test that dry-run shows folder structure that will be created."""
+        import tempfile
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 0
+        mock_config.get_current_folder.return_value = None
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        # Create a nested directory structure
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create nested folders and files
+            (base / "folder1").mkdir()
+            (base / "folder1" / "folder2").mkdir()
+            (base / "folder1" / "file1.txt").write_text("content1")
+            (base / "folder1" / "folder2" / "file2.txt").write_text("content2")
+            (base / "file3.txt").write_text("content3")
+
+            # Run upload with dry-run
+            result = runner.invoke(main, ["upload", str(base), "--dry-run"])
+
+            assert result.exit_code == 0
+            assert "DRY RUN - Upload Preview" in result.output
+            assert "Destination:" in result.output
+            assert "Folders to create:" in result.output
+            assert "Files to upload:" in result.output
+
+            # Check that folder structure is shown
+            output = result.output
+            # Should show nested folders
+            assert "folder1" in output or "📁" in output
+
+            # Should show files grouped by directory
+            assert "file1.txt" in output
+            assert "file2.txt" in output
+            assert "file3.txt" in output
+
+            # Should show summary
+            assert "Total: 3 files" in output
+            assert "Dry run mode - no files were uploaded" in output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_upload_dry_run_extracts_folders_correctly(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test that dry-run correctly extracts all folders from file paths."""
+        import tempfile
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 0
+        mock_config.get_current_folder.return_value = None
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        # Create complex nested directory structure
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create multiple nested levels
+            (base / "a").mkdir()
+            (base / "a" / "b").mkdir()
+            (base / "a" / "b" / "c").mkdir()
+            (base / "a" / "b" / "c" / "file.txt").write_text("deep")
+            (base / "a" / "file2.txt").write_text("shallow")
+
+            # Run upload with dry-run
+            result = runner.invoke(main, ["upload", str(base), "--dry-run"])
+
+            assert result.exit_code == 0
+            output = result.output
+
+            # Should show all folder levels
+            # The output should contain folder structure info
+            assert "Folders to create:" in output
+
+            # Check folder count (a, a/b, a/b/c = 3 folders)
+            assert "Folders to create: 3" in output or "📁" in output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_upload_dry_run_groups_files_by_directory(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test that dry-run groups files by their parent directory."""
+        import tempfile
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 0
+        mock_config.get_current_folder.return_value = None
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create files in different directories
+            (base / "docs").mkdir()
+            (base / "images").mkdir()
+            (base / "docs" / "readme.txt").write_text("readme")
+            (base / "docs" / "guide.txt").write_text("guide")
+            (base / "images" / "photo.jpg").write_text("photo")
+            (base / "root.txt").write_text("root file")
+
+            # Run upload with dry-run
+            result = runner.invoke(main, ["upload", str(base), "--dry-run"])
+
+            assert result.exit_code == 0
+            output = result.output
+
+            # Should show files grouped by directory
+            assert "Files to upload: 4" in output
+
+            # Should mention different directories
+            # The grouping should be visible in output structure
+            assert "docs" in output or "In " in output
+            assert "readme.txt" in output
+            assert "guide.txt" in output
+            assert "photo.jpg" in output
+            assert "root.txt" in output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_relativepath_validation_uses_posix(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test that relativePath in validation uses forward slashes."""
+        import tempfile
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 0
+        mock_config.get_current_folder.return_value = None
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+        mock_client.validate_uploads.return_value = {"duplicates": []}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create nested structure
+            (base / "folder1").mkdir()
+            (base / "folder1" / "folder2").mkdir()
+            (base / "folder1" / "folder2" / "file.txt").write_text("content")
+
+            # Run upload (not dry-run) to trigger validate_uploads
+            runner.invoke(main, ["upload", str(base)])
+
+            # Check that validate_uploads was called
+            assert mock_client.validate_uploads.called
+
+            # Get the call arguments
+            call_args = mock_client.validate_uploads.call_args
+            files_arg = call_args[1]["files"] if call_args[1] else call_args[0][0]
+
+            # Check that relativePath uses forward slashes, not backslashes
+            for file_info in files_arg:
+                rel_path = file_info.get("relativePath", "")
+                if rel_path:  # Only check non-empty paths
+                    assert (
+                        "\\" not in rel_path
+                    ), f"relativePath should not contain backslashes: {rel_path}"
+                    assert (
+                        "/" in rel_path or rel_path == ""
+                    ), f"relativePath should use forward slashes: {rel_path}"

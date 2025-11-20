@@ -35,13 +35,15 @@ def scan_directory(
 
     Returns:
         List of tuples containing file paths and their relative paths
+        (paths use forward slashes for cross-platform compatibility)
     """
     files = []
 
     try:
         for item in path.iterdir():
             if item.is_file():
-                relative_path = str(item.relative_to(base_path))
+                # Use as_posix() to ensure forward slashes on all platforms
+                relative_path = item.relative_to(base_path).as_posix()
                 files.append((item, relative_path))
             elif item.is_dir():
                 files.extend(scan_directory(item, base_path, out))
@@ -292,7 +294,92 @@ def upload(  # noqa: C901
     # Calculate total size
     total_size = sum(f[0].stat().st_size for f in files_to_upload)
 
-    # Display summary
+    if dry_run:
+        # Enhanced dry-run output showing structure
+        if not out.quiet:
+            out.print("\n" + "=" * 70)
+            out.print("DRY RUN - Upload Preview")
+            out.print("=" * 70 + "\n")
+
+            # Show destination
+            out.print("Destination:")
+            if workspace == 0:
+                out.print("  Workspace: Personal (0)")
+            else:
+                workspace_name = None
+                try:
+                    result = client.get_workspaces()
+                    if isinstance(result, dict) and "workspaces" in result:
+                        for ws in result["workspaces"]:
+                            if ws.get("id") == workspace:
+                                workspace_name = ws.get("name")
+                                break
+                except (DrimeAPIError, Exception):
+                    pass
+                if workspace_name:
+                    out.print(f"  Workspace: {workspace_name} ({workspace})")
+                else:
+                    out.print(f"  Workspace: {workspace}")
+
+            if current_folder_id is None:
+                out.print("  Location: / (Root)")
+            else:
+                if current_folder_name:
+                    out.print(f"  Location: /{current_folder_name}")
+                else:
+                    out.print(f"  Location: Folder ID {current_folder_id}")
+            out.print("")
+
+            # Extract and show folders that will be created
+            folders_to_create = set()
+            for _, rel_path in files_to_upload:
+                path_parts = Path(rel_path).parts
+                # Build all parent folder paths
+                for i in range(len(path_parts) - 1):  # Exclude the filename
+                    folder_path = str(Path(*path_parts[: i + 1]))
+                    folders_to_create.add(folder_path)
+
+            if folders_to_create:
+                sorted_folders = sorted(folders_to_create)
+                out.print(f"Folders to create: {len(sorted_folders)}")
+                for folder in sorted_folders:
+                    out.print(f"  📁 {folder}/")
+                out.print("")
+
+            # Show files to upload with structure
+            out.print(f"Files to upload: {len(files_to_upload)}")
+
+            # Group files by directory for better visualization
+            files_by_dir = {}
+            for file_path, rel_path in files_to_upload:
+                dir_path = str(Path(rel_path).parent)
+                if dir_path == ".":
+                    dir_path = "(root)"
+                if dir_path not in files_by_dir:
+                    files_by_dir[dir_path] = []
+                file_size = file_path.stat().st_size
+                files_by_dir[dir_path].append((Path(rel_path).name, file_size))
+
+            # Display files grouped by directory
+            for dir_path in sorted(files_by_dir.keys()):
+                if dir_path == "(root)":
+                    out.print("\n  In root:")
+                else:
+                    out.print(f"\n  In {dir_path}/:")
+                for filename, size in sorted(files_by_dir[dir_path]):
+                    out.print(f"    📄 {filename} ({out.format_size(size)})")
+
+            # Summary
+            out.print("\n" + "=" * 70)
+            out.print(
+                f"Total: {len(files_to_upload)} files, {out.format_size(total_size)}"
+            )
+            out.print("=" * 70 + "\n")
+
+        out.warning("Dry run mode - no files were uploaded.")
+        return
+
+    # Display summary for actual upload
     if not out.quiet:
         table_data = []
         for file_path, rel_path in files_to_upload[:10]:  # Show first 10
@@ -319,9 +406,32 @@ def upload(  # noqa: C901
             f"\nTotal: {len(files_to_upload)} files, {out.format_size(total_size)}\n"
         )
 
-    if dry_run:
-        out.warning("Dry run mode - no files were uploaded.")
-        return
+    # Display summary for actual upload
+    if not out.quiet:
+        table_data = []
+        for file_path, rel_path in files_to_upload[:10]:  # Show first 10
+            file_size = file_path.stat().st_size
+            table_data.append(
+                {
+                    "local_path": str(file_path),
+                    "remote_path": rel_path,
+                    "size": out.format_size(file_size),
+                }
+            )
+
+        if len(files_to_upload) > 10:
+            table_data.append(
+                {"local_path": "...", "remote_path": "...", "size": "..."}
+            )
+
+        out.output_table(
+            table_data,
+            ["local_path", "remote_path", "size"],
+            {"local_path": "Local Path", "remote_path": "Remote Path", "size": "Size"},
+        )
+        out.info(
+            f"\nTotal: {len(files_to_upload)} files, {out.format_size(total_size)}\n"
+        )
 
     # Validate uploads and handle duplicates
     try:
@@ -330,7 +440,7 @@ def upload(  # noqa: C901
             {
                 "name": Path(rel_path).name,
                 "size": file_path.stat().st_size,
-                "relativePath": str(Path(rel_path).parent)
+                "relativePath": Path(rel_path).parent.as_posix()
                 if Path(rel_path).parent != Path(".")
                 else "",
             }
@@ -2209,6 +2319,7 @@ def usage(ctx: Any) -> None:
 
 @main.command()
 @click.argument("path", type=click.Path(exists=True))
+@click.option("--remote-path", "-r", help="Remote destination path")
 @click.option(
     "--workspace",
     "-w",
@@ -2217,7 +2328,9 @@ def usage(ctx: Any) -> None:
     help="Workspace ID (uses default workspace if not specified)",
 )
 @click.pass_context
-def validate(ctx: Any, path: str, workspace: Optional[int]) -> None:  # noqa: C901
+def validate(
+    ctx: Any, path: str, remote_path: Optional[str], workspace: Optional[int]
+) -> None:  # noqa: C901
     """Validate that local files/folders are uploaded with correct size.
 
     PATH: Local file or directory to validate
@@ -2229,6 +2342,7 @@ def validate(ctx: Any, path: str, workspace: Optional[int]) -> None:  # noqa: C9
         pydrime validate drime_test              # Validate folder
         pydrime validate drime_test/test1.txt    # Validate single file
         pydrime validate . -w 5                  # Validate current dir in workspace 5
+        pydrime validate /path/to/local -r remote_folder  # Validate with remote path
     """
     api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
@@ -2246,13 +2360,41 @@ def validate(ctx: Any, path: str, workspace: Optional[int]) -> None:  # noqa: C9
     try:
         client = DrimeClient(api_key=api_key)
 
+        # Show info about workspace and remote path if not in quiet mode
+        if not out.quiet:
+            # Show workspace information
+            if workspace == 0:
+                out.info("Workspace: Personal (0)")
+            else:
+                # Try to get workspace name
+                workspace_name = None
+                try:
+                    result = client.get_workspaces()
+                    if isinstance(result, dict) and "workspaces" in result:
+                        for ws in result["workspaces"]:
+                            if ws.get("id") == workspace:
+                                workspace_name = ws.get("name")
+                                break
+                except (DrimeAPIError, Exception):
+                    pass
+
+                if workspace_name:
+                    out.info(f"Workspace: {workspace_name} ({workspace})")
+                else:
+                    out.info(f"Workspace: {workspace}")
+
+            if remote_path:
+                out.info(f"Remote path structure: {remote_path}")
+
+            out.info("")  # Empty line for readability
+
         # Collect files to validate
         if local_path.is_file():
-            files_to_validate = [(local_path, local_path.name)]
+            files_to_validate = [(local_path, remote_path or local_path.name)]
         else:
             out.info(f"Scanning directory: {local_path}")
             # Use parent as base_path so the folder name is included in relative paths
-            base_path = local_path.parent
+            base_path = local_path.parent if remote_path is None else local_path
             files_to_validate = scan_directory(local_path, base_path, out)
 
         if not files_to_validate:
