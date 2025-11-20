@@ -540,10 +540,19 @@ class TestRmCommand:
             [1], delete_forever=True
         )
 
+    @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    def test_rm_cancel(self, mock_config, runner):
+    def test_rm_cancel(self, mock_config, mock_client_class, runner):
         """Test canceling file deletion."""
         mock_config.is_configured.return_value = True
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = None
+
+        mock_client = Mock()
+        mock_client.resolve_entry_identifier.side_effect = (
+            lambda identifier, **kwargs: int(identifier)
+        )
+        mock_client_class.return_value = mock_client
 
         result = runner.invoke(main, ["rm", "1"], input="n\n")
 
