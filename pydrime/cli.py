@@ -1707,6 +1707,14 @@ def download(
             entry_obj: Optional[FileEntry] = None,
         ) -> None:
             """Download folder and its contents recursively."""
+            # Check if a file exists with the folder name
+            if folder_path.exists() and folder_path.is_file():
+                out.error(
+                    f"Cannot download folder '{entry.name}': "
+                    f"a file with this name already exists at {folder_path}"
+                )
+                return
+
             folder_path.mkdir(parents=True, exist_ok=True)
             if not out.quiet:
                 out.info(f"Downloading folder: {entry.name}")
@@ -1750,9 +1758,18 @@ def download(
             else:
                 output_path = Path(entry_name)
 
-            # Check for duplicate
+            # Check for duplicate (only files, not directories)
             if output_path.exists():
-                if on_duplicate == "skip":
+                # If a directory exists with this name, we need to rename the file
+                # (can't write a file where a directory exists)
+                if output_path.is_dir():
+                    output_path = get_unique_filename(output_path)
+                    out.info(
+                        f"Directory exists with same name, renaming file to: "
+                        f"{output_path.name}"
+                    )
+                # If a file exists, apply the duplicate strategy
+                elif on_duplicate == "skip":
                     out.info(f"Skipped (already exists): {output_path}")
                     downloaded_files.append(
                         {
