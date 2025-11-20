@@ -338,6 +338,45 @@ class TestUploadCommand:
         assert scan_call_args[0][0] == test_dir  # path argument
         assert scan_call_args[0][1] == test_dir.parent  # base_path argument
 
+    @patch("pydrime.cli.scan_directory")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_upload_shows_same_format_as_dry_run(
+        self, mock_config, mock_client_class, mock_scan, runner, tmp_path
+    ):
+        """Test that actual upload shows same structured format as dry-run."""
+        # Create a temporary test directory with files
+        test_dir = tmp_path / "test"
+        test_dir.mkdir()
+        test_file = test_dir / "file.txt"
+        test_file.write_text("test content")
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 0
+        mock_config.get_current_folder.return_value = None
+
+        mock_scan.return_value = [(test_file, "test/file.txt")]
+
+        mock_client = Mock()
+        mock_client.validate_uploads.return_value = {"duplicates": []}
+        mock_client.upload_file.return_value = {"fileEntry": {"id": 1}}
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["upload", str(test_dir), "--no-progress"])
+
+        assert result.exit_code == 0
+        # Verify structured output format (same as dry-run)
+        assert "Upload Preview" in result.output
+        assert "Destination:" in result.output
+        assert "Base location:" in result.output
+        assert "Files will be uploaded to:" in result.output
+        assert "Folders to create:" in result.output
+        assert "Files to upload:" in result.output
+        # Should show folder and file with emojis
+        assert "📁 test/" in result.output
+        assert "📄 file.txt" in result.output
+
 
 class TestLsCommand:
     """Tests for the ls (list files) command."""

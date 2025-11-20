@@ -418,59 +418,114 @@ def upload(  # noqa: C901
         out.warning("Dry run mode - no files were uploaded.")
         return
 
-    # Display summary for actual upload
+    # Display summary for actual upload (same format as dry-run)
     if not out.quiet:
-        table_data = []
-        for file_path, rel_path in files_to_upload[:10]:  # Show first 10
+        out.print("\n" + "=" * 70)
+        out.print("Upload Preview")
+        out.print("=" * 70 + "\n")
+
+        # Show destination
+        out.print("Destination:")
+        if workspace == 0:
+            out.print("  Workspace: Personal (0)")
+        else:
+            workspace_name = None
+            try:
+                result = client.get_workspaces()
+                if isinstance(result, dict) and "workspaces" in result:
+                    for ws in result["workspaces"]:
+                        if ws.get("id") == workspace:
+                            workspace_name = ws.get("name")
+                            break
+            except (DrimeAPIError, Exception):
+                pass
+            if workspace_name:
+                out.print(f"  Workspace: {workspace_name} ({workspace})")
+            else:
+                out.print(f"  Workspace: {workspace}")
+
+        # Build the full destination path
+        if current_folder_id is None:
+            base_location = "/"
+        else:
+            if current_folder_name:
+                base_location = f"/{current_folder_name}"
+            else:
+                base_location = f"/Folder_{current_folder_id}"
+
+        out.print(f"  Base location: {base_location}")
+
+        # Show where files will actually land
+        if files_to_upload:
+            # Get the first file to show the structure
+            first_rel_path = files_to_upload[0][1]
+            from pathlib import PurePosixPath
+
+            # Extract the top-level folder from the relative path
+            first_parts = PurePosixPath(first_rel_path).parts
+            if len(first_parts) > 1:
+                top_folder = first_parts[0]
+                if base_location == "/":
+                    out.print(f"  Files will be uploaded to: /{top_folder}/...")
+                else:
+                    out.print(
+                        f"  Files will be uploaded to: {base_location}/{top_folder}/..."
+                    )
+            else:
+                out.print(f"  Files will be uploaded to: {base_location}")
+
+        out.print("")
+
+        # Extract and show folders that will be created
+        folders_to_create = set()
+        for _, rel_path in files_to_upload:
+            # Use PurePosixPath since rel_path is in POSIX format
+            from pathlib import PurePosixPath
+
+            path_parts = PurePosixPath(rel_path).parts
+            # Build all parent folder paths
+            for i in range(len(path_parts) - 1):  # Exclude the filename
+                folder_path = str(PurePosixPath(*path_parts[: i + 1]))
+                folders_to_create.add(folder_path)
+
+        if folders_to_create:
+            sorted_folders = sorted(folders_to_create)
+            out.print(f"Folders to create: {len(sorted_folders)}")
+            for folder in sorted_folders:
+                out.print(f"  📁 {folder}/")
+            out.print("")
+
+        # Show files to upload with structure
+        out.print(f"Files to upload: {len(files_to_upload)}")
+
+        # Group files by directory for better visualization
+        files_by_dir = {}
+        for file_path, rel_path in files_to_upload:
+            # Use PurePosixPath since rel_path is in POSIX format
+            from pathlib import PurePosixPath
+
+            posix_path = PurePosixPath(rel_path)
+            dir_path = str(posix_path.parent)
+            if dir_path == ".":
+                dir_path = "(root)"
+            if dir_path not in files_by_dir:
+                files_by_dir[dir_path] = []
             file_size = file_path.stat().st_size
-            table_data.append(
-                {
-                    "local_path": str(file_path),
-                    "remote_path": rel_path,
-                    "size": out.format_size(file_size),
-                }
-            )
+            files_by_dir[dir_path].append((posix_path.name, file_size))
 
-        if len(files_to_upload) > 10:
-            table_data.append(
-                {"local_path": "...", "remote_path": "...", "size": "..."}
-            )
+        # Display files grouped by directory
+        for dir_path in sorted(files_by_dir.keys()):
+            if dir_path == "(root)":
+                out.print("\n  In root:")
+            else:
+                out.print(f"\n  In {dir_path}/:")
+            for filename, size in sorted(files_by_dir[dir_path]):
+                out.print(f"    📄 {filename} ({out.format_size(size)})")
 
-        out.output_table(
-            table_data,
-            ["local_path", "remote_path", "size"],
-            {"local_path": "Local Path", "remote_path": "Remote Path", "size": "Size"},
-        )
-        out.info(
-            f"\nTotal: {len(files_to_upload)} files, {out.format_size(total_size)}\n"
-        )
-
-    # Display summary for actual upload
-    if not out.quiet:
-        table_data = []
-        for file_path, rel_path in files_to_upload[:10]:  # Show first 10
-            file_size = file_path.stat().st_size
-            table_data.append(
-                {
-                    "local_path": str(file_path),
-                    "remote_path": rel_path,
-                    "size": out.format_size(file_size),
-                }
-            )
-
-        if len(files_to_upload) > 10:
-            table_data.append(
-                {"local_path": "...", "remote_path": "...", "size": "..."}
-            )
-
-        out.output_table(
-            table_data,
-            ["local_path", "remote_path", "size"],
-            {"local_path": "Local Path", "remote_path": "Remote Path", "size": "Size"},
-        )
-        out.info(
-            f"\nTotal: {len(files_to_upload)} files, {out.format_size(total_size)}\n"
-        )
+        # Summary
+        out.print("\n" + "=" * 70)
+        out.print(f"Total: {len(files_to_upload)} files, {out.format_size(total_size)}")
+        out.print("=" * 70 + "\n")
 
     # Validate uploads and handle duplicates
     try:
