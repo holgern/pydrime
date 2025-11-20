@@ -287,6 +287,13 @@ def upload(  # noqa: C901
         base_path = local_path.parent if remote_path is None else local_path
         files_to_upload = scan_directory(local_path, base_path, out)
 
+        # If remote_path is specified, prepend it to all relative paths
+        if remote_path:
+            files_to_upload = [
+                (file_path, f"{remote_path}/{rel_path}")
+                for file_path, rel_path in files_to_upload
+            ]
+
     if not files_to_upload:
         out.warning("No files found to upload.")
         return
@@ -321,22 +328,49 @@ def upload(  # noqa: C901
                 else:
                     out.print(f"  Workspace: {workspace}")
 
+            # Build the full destination path
             if current_folder_id is None:
-                out.print("  Location: / (Root)")
+                base_location = "/"
             else:
                 if current_folder_name:
-                    out.print(f"  Location: /{current_folder_name}")
+                    base_location = f"/{current_folder_name}"
                 else:
-                    out.print(f"  Location: Folder ID {current_folder_id}")
+                    base_location = f"/Folder_{current_folder_id}"
+
+            out.print(f"  Base location: {base_location}")
+
+            # Show where files will actually land
+            if files_to_upload:
+                # Get the first file to show the structure
+                first_rel_path = files_to_upload[0][1]
+                from pathlib import PurePosixPath
+
+                # Extract the top-level folder from the relative path
+                first_parts = PurePosixPath(first_rel_path).parts
+                if len(first_parts) > 1:
+                    top_folder = first_parts[0]
+                    if base_location == "/":
+                        out.print(f"  Files will be uploaded to: /{top_folder}/...")
+                    else:
+                        out.print(
+                            f"  Files will be uploaded to: "
+                            f"{base_location}/{top_folder}/..."
+                        )
+                else:
+                    out.print(f"  Files will be uploaded to: {base_location}")
+
             out.print("")
 
             # Extract and show folders that will be created
             folders_to_create = set()
             for _, rel_path in files_to_upload:
-                path_parts = Path(rel_path).parts
+                # Use PurePosixPath since rel_path is in POSIX format
+                from pathlib import PurePosixPath
+
+                path_parts = PurePosixPath(rel_path).parts
                 # Build all parent folder paths
                 for i in range(len(path_parts) - 1):  # Exclude the filename
-                    folder_path = str(Path(*path_parts[: i + 1]))
+                    folder_path = str(PurePosixPath(*path_parts[: i + 1]))
                     folders_to_create.add(folder_path)
 
             if folders_to_create:
@@ -352,13 +386,17 @@ def upload(  # noqa: C901
             # Group files by directory for better visualization
             files_by_dir = {}
             for file_path, rel_path in files_to_upload:
-                dir_path = str(Path(rel_path).parent)
+                # Use PurePosixPath since rel_path is in POSIX format
+                from pathlib import PurePosixPath
+
+                posix_path = PurePosixPath(rel_path)
+                dir_path = str(posix_path.parent)
                 if dir_path == ".":
                     dir_path = "(root)"
                 if dir_path not in files_by_dir:
                     files_by_dir[dir_path] = []
                 file_size = file_path.stat().st_size
-                files_by_dir[dir_path].append((Path(rel_path).name, file_size))
+                files_by_dir[dir_path].append((posix_path.name, file_size))
 
             # Display files grouped by directory
             for dir_path in sorted(files_by_dir.keys()):
@@ -436,12 +474,14 @@ def upload(  # noqa: C901
     # Validate uploads and handle duplicates
     try:
         # Validate uploads for duplicates
+        from pathlib import PurePosixPath
+
         validation_files = [
             {
-                "name": Path(rel_path).name,
+                "name": PurePosixPath(rel_path).name,
                 "size": file_path.stat().st_size,
-                "relativePath": Path(rel_path).parent.as_posix()
-                if Path(rel_path).parent != Path(".")
+                "relativePath": str(PurePosixPath(rel_path).parent)
+                if PurePosixPath(rel_path).parent != PurePosixPath(".")
                 else "",
             }
             for file_path, rel_path in files_to_upload
