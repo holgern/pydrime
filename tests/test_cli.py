@@ -208,6 +208,73 @@ class TestUploadCommand:
         assert result.exit_code == 1
         assert "API key not configured" in result.output
 
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.Path")
+    def test_upload_displays_destination_info(
+        self, mock_path_class, mock_config, mock_client_class, runner, tmp_path
+    ):
+        """Test that upload displays workspace and parent folder information."""
+        # Create a temporary test file
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("test content")
+
+        # Mock Path to return our test file
+        mock_path = Mock()
+        mock_path.is_file.return_value = True
+        mock_path.name = "test.txt"
+        mock_path.stat.return_value.st_size = 100
+        mock_path_class.return_value = mock_path
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 5
+        mock_config.get_current_folder.return_value = 123
+
+        mock_client = Mock()
+        mock_client.get_workspaces.return_value = {
+            "workspaces": [{"id": 5, "name": "Test Workspace"}]
+        }
+        mock_client.get_folder_info.return_value = {"name": "MyFolder"}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["upload", str(test_file), "--dry-run"])
+
+        assert result.exit_code == 0
+        assert "Workspace: Test Workspace (5)" in result.output
+        assert "Parent folder: /MyFolder (ID: 123)" in result.output
+        assert "Dry run mode" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.Path")
+    def test_upload_displays_root_folder(
+        self, mock_path_class, mock_config, mock_client_class, runner, tmp_path
+    ):
+        """Test that upload displays root folder when no current folder set."""
+        # Create a temporary test file
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("test content")
+
+        # Mock Path to return our test file
+        mock_path = Mock()
+        mock_path.is_file.return_value = True
+        mock_path.name = "test.txt"
+        mock_path.stat.return_value.st_size = 100
+        mock_path_class.return_value = mock_path
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = None
+        mock_config.get_current_folder.return_value = None
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["upload", str(test_file), "--dry-run"])
+
+        assert result.exit_code == 0
+        assert "Workspace: Personal (0)" in result.output
+        assert "Parent folder: / (Root, ID: 0)" in result.output
+
 
 class TestLsCommand:
     """Tests for the ls (list files) command."""
@@ -1515,15 +1582,27 @@ class TestWorkspaceCommand:
         assert result.exit_code == 0
         assert "Personal (0)" in result.output
 
+    @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    def test_workspace_show_custom_default(self, mock_config, runner):
+    def test_workspace_show_custom_default(
+        self, mock_config, mock_client_class, runner
+    ):
         """Test showing custom default workspace."""
         mock_config.is_configured.return_value = True
         mock_config.get_default_workspace.return_value = 5
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {
+            "workspaces": [
+                {"id": 5, "name": "Team Workspace"},
+                {"id": 10, "name": "Another Workspace"},
+            ]
+        }
 
         result = runner.invoke(main, ["workspace"])
 
         assert result.exit_code == 0
+        assert "Team Workspace" in result.output
         assert "5" in result.output
 
     @patch("pydrime.cli.DrimeClient")
@@ -1559,6 +1638,7 @@ class TestWorkspaceCommand:
         result = runner.invoke(main, ["workspace", "5"])
 
         assert result.exit_code == 0
+        assert "Team Workspace" in result.output
         assert "5" in result.output
         mock_config.save_default_workspace.assert_called_once_with(5)
 
@@ -1579,6 +1659,73 @@ class TestWorkspaceCommand:
 
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_workspace_set_by_name(self, mock_config, mock_client_class, runner):
+        """Test setting workspace by name."""
+        mock_config.is_configured.return_value = True
+        mock_config.save_default_workspace = Mock()
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {
+            "workspaces": [
+                {"id": 5, "name": "Team Workspace"},
+                {"id": 10, "name": "Another Workspace"},
+            ]
+        }
+
+        result = runner.invoke(main, ["workspace", "Team Workspace"])
+
+        assert result.exit_code == 0
+        assert "Resolved workspace 'Team Workspace' to ID: 5" in result.output
+        assert "Team Workspace" in result.output
+        assert "5" in result.output
+        mock_config.save_default_workspace.assert_called_once_with(5)
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_workspace_set_by_name_case_insensitive(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test setting workspace by name with different case."""
+        mock_config.is_configured.return_value = True
+        mock_config.save_default_workspace = Mock()
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {
+            "workspaces": [
+                {"id": 5, "name": "Team Workspace"},
+                {"id": 10, "name": "Another Workspace"},
+            ]
+        }
+
+        result = runner.invoke(main, ["workspace", "team workspace"])
+
+        assert result.exit_code == 0
+        assert "Resolved workspace 'team workspace' to ID: 5" in result.output
+        mock_config.save_default_workspace.assert_called_once_with(5)
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_workspace_set_by_invalid_name(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test setting workspace with non-existent name."""
+        mock_config.is_configured.return_value = True
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {
+            "workspaces": [
+                {"id": 5, "name": "Team Workspace"},
+            ]
+        }
+
+        result = runner.invoke(main, ["workspace", "NonExistent"])
+
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+        assert "NonExistent" in result.output
 
 
 class TestRenameCommand:
