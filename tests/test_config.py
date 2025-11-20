@@ -1,5 +1,6 @@
 """Unit tests for the Drime configuration module."""
 
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -152,6 +153,9 @@ class TestSaveAPIKey:
             config.CONFIG_DIR = original_dir
             config.CONFIG_FILE = original_file
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="File permissions work differently on Windows"
+    )
     @patch.dict("os.environ", {}, clear=True)
     def test_save_api_key_sets_permissions(self, tmp_path):
         """Test that config file has secure permissions."""
