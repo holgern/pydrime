@@ -549,12 +549,51 @@ def upload(  # noqa: C901
             )
             duplicates = validation_result.get("duplicates", [])
 
-            # Filter out the remote_path from duplicates since it's the target folder
-            # we're uploading INTO, not a new folder we're creating
-            if remote_path and duplicates:
-                # Extract just the top-level folder name from remote_path
-                remote_folder = PurePosixPath(remote_path).parts[0]
-                duplicates = [d for d in duplicates if d != remote_folder]
+            # Filter out folders from duplicates - we always go inside existing
+            # folders rather than treating them as duplicates. Only files should
+            # be checked for duplicates.
+            if duplicates:
+                # Collect all folder names from our upload paths
+                folders_in_upload = set()
+                for _, rel_path in files_to_upload:
+                    path_parts = PurePosixPath(rel_path).parts
+                    # Add all parent folder names (exclude the filename)
+                    for i in range(len(path_parts) - 1):
+                        folder_name = path_parts[i]
+                        folders_in_upload.add(folder_name)
+
+                # Also check if any duplicate is an existing folder on the server
+                duplicates_to_keep = []
+                for dup_name in duplicates:
+                    # Skip if it's a folder in our upload paths
+                    if dup_name in folders_in_upload:
+                        continue
+
+                    # Check if the duplicate is an existing folder on the server
+                    is_folder = False
+                    try:
+                        search_result = client.get_file_entries(
+                            query=dup_name, workspace_id=workspace
+                        )
+                        if search_result and search_result.get("data"):
+                            from .models import FileEntriesResult
+
+                            file_entries = FileEntriesResult.from_api_response(
+                                search_result
+                            )
+                            # Check if any exact match is a folder
+                            for entry in file_entries.entries:
+                                if entry.name == dup_name and entry.is_folder:
+                                    is_folder = True
+                                    break
+                    except DrimeAPIError:
+                        pass
+
+                    # Only keep non-folder duplicates
+                    if not is_folder:
+                        duplicates_to_keep.append(dup_name)
+
+                duplicates = duplicates_to_keep
         except DrimeAPIError:
             # If validation fails, continue without duplicate detection
             duplicates = []
