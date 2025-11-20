@@ -1407,8 +1407,9 @@ class TestPwdCommand:
         result = runner.invoke(main, ["pwd"])
 
         assert result.exit_code == 0
-        # Should show folder name with ID
-        assert result.output.strip() == "/Documents (ID: 480432024)"
+        # Should show folder name with ID and workspace
+        assert "/Documents (ID: 480432024)" in result.output
+        assert "Workspace: 0" in result.output
 
     @patch("pydrime.cli.config")
     def test_pwd_at_root(self, mock_config, runner):
@@ -1419,7 +1420,8 @@ class TestPwdCommand:
         result = runner.invoke(main, ["pwd"])
 
         assert result.exit_code == 0
-        assert result.output.strip() == "/ (ID: 0)"
+        assert "/ (ID: 0)" in result.output
+        assert "Workspace: 0" in result.output
 
     @patch("pydrime.cli.config")
     def test_pwd_json_format(self, mock_config, runner):
@@ -1454,6 +1456,53 @@ class TestPwdCommand:
 
         assert result.exit_code == 0
         assert result.output.strip() == "0"
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_pwd_with_workspace_name(self, mock_config, mock_client_class, runner):
+        """Test pwd displays workspace name when available."""
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 1465
+        mock_config.is_configured.return_value = True
+
+        # Mock the DrimeClient and get_workspaces to return workspace info
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {
+            "workspaces": [
+                {"id": 1465, "name": "test"},
+                {"id": 5, "name": "Team Workspace"},
+            ]
+        }
+
+        result = runner.invoke(main, ["pwd"])
+
+        assert result.exit_code == 0
+        assert "/ (ID: 0)" in result.output
+        assert "Workspace: test (1465)" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_cd_uses_default_workspace(self, mock_config, mock_client_class, runner):
+        """Test cd command uses default workspace when resolving folder names."""
+        mock_config.is_configured.return_value = True
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 1465
+        mock_config.save_current_folder = Mock()
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.resolve_folder_identifier.return_value = 480983233
+        mock_client.get_file_entries.return_value = {"data": []}
+
+        result = runner.invoke(main, ["cd", "subdir1"])
+
+        assert result.exit_code == 0
+        assert "Changed to folder ID: 480983233" in result.output
+        # Verify workspace_id was passed to resolve_folder_identifier
+        mock_client.resolve_folder_identifier.assert_called_once_with(
+            identifier="subdir1", parent_id=None, workspace_id=1465
+        )
 
 
 class TestRecursiveFlag:
