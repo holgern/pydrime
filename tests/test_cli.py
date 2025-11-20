@@ -2632,3 +2632,210 @@ class TestWindowsPathHandling:
         assert (
             "\\" not in posix_parent
         ), "PurePosixPath parent should not have backslashes"
+
+
+class TestRemotePathDuplicateDetection:
+    """Tests for duplicate detection when using remote-path parameter."""
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_remote_path_folder_not_flagged_as_duplicate(
+        self, mock_config, mock_client_class, runner, tmp_path
+    ):
+        """Test that the remote-path folder itself is not flagged as duplicate."""
+        # Create test file
+        test_file = tmp_path / "file.txt"
+        test_file.write_text("content")
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 0
+        mock_config.get_current_folder.return_value = None
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        # Simulate that "backup" folder already exists (which is expected)
+        mock_client.validate_uploads.return_value = {
+            "duplicates": ["backup"]  # API reports backup folder as duplicate
+        }
+
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 100,
+                    "name": "backup",
+                    "type": "folder",
+                }
+            ]
+        }
+
+        # Upload with -r backup should NOT trigger duplicate warning for "backup"
+        result = runner.invoke(
+            main, ["upload", str(test_file), "-r", "backup", "--on-duplicate", "skip"]
+        )
+
+        assert result.exit_code == 0
+        # Should NOT show duplicate warning
+        assert (
+            "duplicate" not in result.output.lower()
+            or "Found 0 duplicate" in result.output
+        )
+        # Should proceed with upload without prompting
+        assert "Action" not in result.output  # No prompt shown
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_remote_path_file_duplicates_still_detected(
+        self, mock_config, mock_client_class, runner, tmp_path
+    ):
+        """Test that file duplicates are still detected when using remote-path."""
+        # Create test files
+        (tmp_path / "data").mkdir()
+        file1 = tmp_path / "data" / "file1.txt"
+        file2 = tmp_path / "data" / "file2.txt"
+        file1.write_text("content1")
+        file2.write_text("content2")
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 0
+        mock_config.get_current_folder.return_value = None
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        # Simulate that "backup" folder exists AND file1.txt is a duplicate
+        mock_client.validate_uploads.return_value = {
+            "duplicates": ["backup", "file1.txt"]
+        }
+
+        def mock_get_file_entries(query=None, workspace_id=0):
+            if query == "backup":
+                return {
+                    "data": [
+                        {
+                            "id": 100,
+                            "name": "backup",
+                            "type": "folder",
+                        }
+                    ]
+                }
+            elif query == "file1.txt":
+                return {
+                    "data": [
+                        {
+                            "id": 200,
+                            "name": "file1.txt",
+                            "type": "text",
+                        }
+                    ]
+                }
+            return {"data": []}
+
+        mock_client.get_file_entries.side_effect = mock_get_file_entries
+
+        # Upload should skip the duplicate file but not complain about backup folder
+        result = runner.invoke(
+            main,
+            [
+                "upload",
+                str(tmp_path / "data"),
+                "-r",
+                "backup",
+                "--on-duplicate",
+                "skip",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Should show duplicate warning for file1.txt but not for backup
+        assert "file1.txt" in result.output
+        assert "1 duplicate" in result.output
+        # Should NOT prompt about backup folder
+        assert "backup" not in [
+            line
+            for line in result.output.split("\n")
+            if "duplicate" in line.lower() and "ID: 100" in line
+        ]
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_remote_path_nested_folder_only_top_level_filtered(
+        self, mock_config, mock_client_class, runner, tmp_path
+    ):
+        """Test that only the top-level remote-path folder is
+        filtered from duplicates."""
+        # Create test file
+        test_file = tmp_path / "file.txt"
+        test_file.write_text("content")
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 0
+        mock_config.get_current_folder.return_value = None
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        # Use nested remote path: backup/2024/11
+        # Only "backup" should be filtered, not "2024" or "11"
+        mock_client.validate_uploads.return_value = {
+            "duplicates": [
+                "backup",
+                "2024",
+            ]  # backup exists, 2024 subfolder also exists
+        }
+
+        def mock_get_file_entries(query=None, workspace_id=0):
+            if query == "backup":
+                return {
+                    "data": [
+                        {
+                            "id": 100,
+                            "name": "backup",
+                            "type": "folder",
+                        }
+                    ]
+                }
+            elif query == "2024":
+                return {
+                    "data": [
+                        {
+                            "id": 101,
+                            "name": "2024",
+                            "type": "folder",
+                        }
+                    ]
+                }
+            return {"data": []}
+
+        mock_client.get_file_entries.side_effect = mock_get_file_entries
+
+        # Upload with nested remote path
+        result = runner.invoke(
+            main,
+            [
+                "upload",
+                str(test_file),
+                "-r",
+                "backup/2024/11",
+                "--on-duplicate",
+                "skip",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Should show duplicate warning for 2024 but not for backup
+        if "duplicate" in result.output.lower():
+            assert "2024" in result.output
+            # backup should be filtered out
+            duplicate_lines = [
+                line
+                for line in result.output.split("\n")
+                if "duplicate" in line.lower()
+            ]
+            backup_in_duplicates = any("backup" in line for line in duplicate_lines)
+            assert (
+                not backup_in_duplicates
+            ), "backup folder should not be in duplicate warnings"
