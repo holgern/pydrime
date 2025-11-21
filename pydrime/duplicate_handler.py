@@ -379,7 +379,7 @@ class DuplicateHandler:
 
                 # Get the folder ID
                 folder_entry = self.entries_manager.find_folder_by_name(
-                    folder_name, parent_id=None
+                    folder_name, parent_id=self.parent_id
                 )
                 if not folder_entry:
                     continue
