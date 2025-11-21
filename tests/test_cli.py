@@ -228,8 +228,8 @@ class TestUploadCommand:
 
         assert result.exit_code == 0
         assert "Workspace: Test Workspace (5)" in result.output
-        # In dry-run, it shows "Location:" not "Parent folder:"
-        assert "Location: /MyFolder" in result.output
+        # In dry-run, it shows "Base location:"
+        assert "Base location: /MyFolder" in result.output
         assert "Dry run mode" in result.output
 
     @patch("pydrime.cli.DrimeClient")
@@ -254,8 +254,8 @@ class TestUploadCommand:
 
         assert result.exit_code == 0
         assert "Workspace: Personal (0)" in result.output
-        # In dry-run, it shows "Location:" not "Parent folder:"
-        assert "Location: / (Root)" in result.output
+        # In dry-run, it shows "Base location:"
+        assert "Base location: /" in result.output
 
     @patch("pydrime.cli.scan_directory")
     @patch("pydrime.cli.DrimeClient")
@@ -2409,3 +2409,226 @@ class TestFolderStructureDetection:
                     assert (
                         "/" in rel_path or rel_path == ""
                     ), f"relativePath should use forward slashes: {rel_path}"
+
+
+class TestWindowsPathHandling:
+    """Tests for Windows path handling in upload and validation."""
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_windows_nested_folders_parsed_correctly(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test that Windows-style nested paths like data\\01\\ are parsed correctly."""
+        import tempfile
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 0
+        mock_config.get_current_folder.return_value = None
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+        mock_client.validate_uploads.return_value = {"duplicates": []}
+
+        # Create nested directory structure
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create structure: data/01/02/file.txt
+            (base / "data").mkdir()
+            (base / "data" / "01").mkdir()
+            (base / "data" / "01" / "02").mkdir()
+            (base / "data" / "01" / "02" / "file.txt").write_text("content")
+
+            # Run upload dry-run
+            result = runner.invoke(main, ["upload", str(base), "--dry-run"])
+
+            assert result.exit_code == 0
+            output = result.output
+
+            # Check that folders are shown with forward slashes, not mixed
+            assert "data/" in output or "📁 data/" in output
+            assert "data/01/" in output or "📁 data/01/" in output
+            assert "data/01/02/" in output or "📁 data/01/02/" in output
+
+            # Ensure no mixed separators (backslash followed by forward slash)
+            assert "\\/" not in output, "Found mixed separators in output"
+
+            # Check that files are grouped correctly
+            assert "file.txt" in output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_validation_files_use_pure_posix_paths(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test that validation_files construction uses PurePosixPath."""
+        import tempfile
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 0
+        mock_config.get_current_folder.return_value = None
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+        mock_client.validate_uploads.return_value = {"duplicates": []}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create nested structure
+            (base / "folder1").mkdir()
+            (base / "folder1" / "folder2").mkdir()
+            (base / "folder1" / "folder2" / "test.txt").write_text("test")
+
+            # Run upload to trigger validate_uploads
+            runner.invoke(main, ["upload", str(base)])
+
+            # Check that validate_uploads was called
+            assert mock_client.validate_uploads.called
+
+            # Get the validation files argument
+            call_args = mock_client.validate_uploads.call_args
+            files_arg = call_args[1]["files"] if call_args[1] else call_args[0][0]
+
+            # Find the file with nested path
+            nested_file = [f for f in files_arg if f["name"] == "test.txt"][0]
+            rel_path = nested_file.get("relativePath", "")
+
+            # Check that relativePath uses forward slashes only
+            assert "\\" not in rel_path, f"relativePath contains backslash: {rel_path}"
+            assert (
+                rel_path == f"{Path(tmpdir).name}/folder1/folder2"
+            ), f"Expected proper POSIX path, got: {rel_path}"
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_dry_run_folder_extraction_pure_posix(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test that folder extraction in dry-run uses PurePosixPath."""
+        import tempfile
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 0
+        mock_config.get_current_folder.return_value = None
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create structure with multiple levels
+            (base / "a").mkdir()
+            (base / "a" / "b").mkdir()
+            (base / "a" / "b" / "c").mkdir()
+            (base / "a" / "b" / "c" / "file.txt").write_text("deep")
+
+            # Run upload dry-run
+            result = runner.invoke(main, ["upload", str(base), "--dry-run"])
+
+            assert result.exit_code == 0
+            output = result.output
+
+            # Extract folder paths from output
+            lines = output.split("\n")
+            folder_lines = [line.strip() for line in lines if "📁" in line]
+
+            # Check that all folders use forward slashes
+            for line in folder_lines:
+                # Extract the path from the line (after the emoji)
+                if "📁" in line:
+                    path_part = line.split("📁")[1].strip()
+                    # Should not contain backslashes
+                    assert (
+                        "\\" not in path_part
+                    ), f"Folder path contains backslash: {path_part}"
+                    # Should end with forward slash
+                    assert path_part.endswith(
+                        "/"
+                    ), f"Folder path should end with /: {path_part}"
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_file_grouping_uses_pure_posix_paths(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test that file grouping by directory uses PurePosixPath."""
+        import tempfile
+
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = 0
+        mock_config.get_current_folder.return_value = None
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create files in nested directories
+            (base / "dir1").mkdir()
+            (base / "dir1" / "dir2").mkdir()
+            (base / "dir1" / "file1.txt").write_text("file1")
+            (base / "dir1" / "dir2" / "file2.txt").write_text("file2")
+
+            # Run upload dry-run
+            result = runner.invoke(main, ["upload", str(base), "--dry-run"])
+
+            assert result.exit_code == 0
+            output = result.output
+
+            # Check that directory paths in "In <path>:" use forward slashes
+            lines = output.split("\n")
+            in_lines = [line for line in lines if line.strip().startswith("In ")]
+
+            for line in in_lines:
+                # Should not contain backslashes
+                assert (
+                    "\\" not in line
+                ), f"Directory grouping contains backslash: {line}"
+                # Should use forward slashes for nested paths
+                if "root" not in line.lower():
+                    assert "/" in line, f"Expected forward slash in path: {line}"
+
+    def test_pure_posix_path_handling_simulation(self):
+        """Test PurePosixPath vs Path behavior with simulated Windows paths."""
+        from pathlib import PurePosixPath, PureWindowsPath
+
+        # Simulate a path with forward slashes (from scan_directory)
+        posix_rel_path = "data/01/02/file.txt"
+
+        # Using Path on Windows would convert to backslashes internally
+        # Simulate this with PureWindowsPath
+        win_path = PureWindowsPath(posix_rel_path)
+        parts = win_path.parts
+
+        # Reconstructing with str(PureWindowsPath(*parts)) gives backslashes
+        win_reconstructed = str(PureWindowsPath(*parts[:3]))
+        assert "\\" in win_reconstructed, "Windows path should have backslashes"
+
+        # But using PurePosixPath preserves forward slashes
+        posix_path = PurePosixPath(posix_rel_path)
+        posix_parts = posix_path.parts
+        posix_reconstructed = str(PurePosixPath(*posix_parts[:3]))
+
+        assert (
+            "\\" not in posix_reconstructed
+        ), "PurePosixPath should not have backslashes"
+        assert (
+            posix_reconstructed == "data/01/02"
+        ), f"Expected 'data/01/02', got '{posix_reconstructed}'"
+
+        # Check parent extraction
+        posix_parent = str(posix_path.parent)
+        assert (
+            posix_parent == "data/01/02"
+        ), f"Expected 'data/01/02', got '{posix_parent}'"
+        assert (
+            "\\" not in posix_parent
+        ), "PurePosixPath parent should not have backslashes"
