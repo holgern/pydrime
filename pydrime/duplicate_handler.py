@@ -521,15 +521,16 @@ class DuplicateHandler:
             rel_path: Relative path to apply renames to
 
         Returns:
-            Updated path with renames applied
+            Updated path with renames applied (always with forward slashes)
         """
         upload_path = rel_path
-        path_obj = Path(rel_path)
+        # Use PurePosixPath to ensure forward slashes on all platforms
+        path_obj = PurePosixPath(rel_path)
 
         # Check if the filename needs renaming
         if path_obj.name in self.rename_map:
             new_filename = self.rename_map[path_obj.name]
-            if path_obj.parent != Path("."):
+            if path_obj.parent != PurePosixPath("."):
                 upload_path = str(path_obj.parent / new_filename)
             else:
                 upload_path = new_filename
@@ -538,6 +539,6 @@ class DuplicateHandler:
         parts = list(path_obj.parts)
         renamed_parts = [self.rename_map.get(part, part) for part in parts]
         if renamed_parts != list(parts):
-            upload_path = str(Path(*renamed_parts))
+            upload_path = str(PurePosixPath(*renamed_parts))
 
         return upload_path
