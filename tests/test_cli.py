@@ -2989,11 +2989,9 @@ class TestRemotePathDuplicateDetection:
         )
 
         assert result.exit_code == 0
-        # Should NOT show duplicate warning
-        assert (
-            "duplicate" not in result.output.lower()
-            or "Found 0 duplicate" in result.output
-        )
+        # Should NOT show duplicate warning (but progress messages are OK)
+        assert "Duplicate detected:" not in result.output
+        assert "Found" not in result.output or "Found 0 duplicate" in result.output
         # Should proceed with upload without prompting
         assert "Action" not in result.output  # No prompt shown
 

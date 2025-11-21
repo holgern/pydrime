@@ -7,7 +7,7 @@ import click
 
 from .api import DrimeClient
 from .exceptions import DrimeAPIError
-from .models import FileEntriesResult
+from .models import FileEntriesResult, _format_size
 from .output import OutputFormatter
 
 
@@ -20,6 +20,7 @@ class DuplicateHandler:
         out: OutputFormatter,
         workspace_id: int,
         on_duplicate: str = "ask",
+        parent_id: Optional[int] = None,
     ):
         """Initialize duplicate handler.
 
@@ -28,11 +29,13 @@ class DuplicateHandler:
             out: Output formatter
             workspace_id: Workspace ID
             on_duplicate: Action for duplicates ('ask', 'replace', 'rename', 'skip')
+            parent_id: Base parent folder ID for uploads (None for root)
         """
         self.client = client
         self.out = out
         self.workspace_id = workspace_id
         self.on_duplicate = on_duplicate
+        self.parent_id = parent_id
         # Set when user chooses or from on_duplicate if not 'ask'
         self.chosen_action = None
         self.apply_to_all = on_duplicate != "ask"
@@ -54,6 +57,9 @@ class DuplicateHandler:
             files_to_upload: List of (file_path, relative_path) tuples
         """
         # Prepare validation files
+        if not self.out.quiet:
+            self.out.info("Checking for duplicates...")
+
         validation_files = [
             {
                 "name": PurePosixPath(rel_path).name,
@@ -78,6 +84,11 @@ class DuplicateHandler:
             # Check for file-level duplicates in filtered folders
             filtered_folders = set(folder_duplicates) - set(duplicates)
             if filtered_folders:
+                if not self.out.quiet:
+                    folder_count = len(filtered_folders)
+                    self.out.info(
+                        f"Checking {folder_count} folder(s) for file duplicates..."
+                    )
                 file_duplicates = self._check_file_duplicates_in_folders(
                     files_to_upload, filtered_folders
                 )
@@ -87,27 +98,122 @@ class DuplicateHandler:
             duplicates = []
 
         if not duplicates:
+            if not self.out.quiet:
+                self.out.success("✓ No duplicates found")
             return
 
         # Look up IDs for all duplicates
-        duplicate_info = self._lookup_duplicate_ids(duplicates)
-
-        # Show duplicate warning
         if not self.out.quiet:
-            self.out.warning(f"\nFound {len(duplicates)} duplicate(s):")
-            for dup in duplicates:
-                if dup in duplicate_info and duplicate_info[dup]:
-                    ids_str = ", ".join(f"ID: {id}" for id, _ in duplicate_info[dup])
-                    self.out.warning(f"  • {dup} ({ids_str})")
-                else:
-                    self.out.warning(f"  • {dup}")
-            self.out.print("")
+            self.out.info(f"Looking up details for {len(duplicates)} duplicate(s)...")
+        duplicate_info = self._lookup_duplicate_ids(duplicates, files_to_upload)
+
+        # Show duplicate summary with sizes
+        if not self.out.quiet:
+            self._display_duplicate_summary(duplicates, duplicate_info, files_to_upload)
 
         # Handle each duplicate
         for duplicate_name in duplicates:
             self._handle_single_duplicate(
                 duplicate_name, duplicate_info, files_to_upload
             )
+
+        # Show final summary after all actions taken
+        if not self.out.quiet and duplicates:
+            self._display_action_summary(duplicates, files_to_upload)
+
+    def _display_duplicate_summary(
+        self,
+        duplicates: list[str],
+        duplicate_info: dict[str, list[tuple[int, Optional[str]]]],
+        files_to_upload: list[tuple[Path, str]],
+    ) -> None:
+        """Display summary of duplicates with sizes before prompting user.
+
+        Args:
+            duplicates: List of duplicate names
+            duplicate_info: Dict mapping duplicate name to list of (id, path)
+            files_to_upload: List of (file_path, relative_path) tuples
+        """
+        self.out.warning(f"\nFound {len(duplicates)} duplicate(s):")
+        self.out.print("")
+
+        total_size = 0
+        for dup in duplicates:
+            # Find the file size from files_to_upload
+            file_size = 0
+            for file_path, rel_path in files_to_upload:
+                if PurePosixPath(rel_path).name == dup:
+                    file_size = file_path.stat().st_size
+                    break
+
+            total_size += file_size
+            size_str = _format_size(file_size)
+
+            # Show ID and path if available
+            if dup in duplicate_info and duplicate_info[dup]:
+                ids = [str(id) for id, _ in duplicate_info[dup]]
+                if len(ids) == 1:
+                    self.out.warning(f"  • {dup} ({size_str}, ID: {ids[0]})")
+                else:
+                    ids_str = ", ".join(ids)
+                    self.out.warning(f"  • {dup} ({size_str}, IDs: {ids_str})")
+            else:
+                self.out.warning(f"  • {dup} ({size_str})")
+
+        self.out.print("")
+        self.out.info(f"Total duplicate size: {_format_size(total_size)}")
+        self.out.print("")
+
+    def _display_action_summary(
+        self,
+        duplicates: list[str],
+        files_to_upload: list[tuple[Path, str]],
+    ) -> None:
+        """Display summary of actions taken after duplicate handling.
+
+        Args:
+            duplicates: List of duplicate names
+            files_to_upload: List of (file_path, relative_path) tuples
+        """
+        self.out.print("")
+        self.out.info("Duplicate handling summary:")
+
+        skipped = 0
+        renamed = 0
+        replaced = 0
+        skipped_size = 0
+        renamed_size = 0
+        replaced_size = 0
+
+        for dup in duplicates:
+            # Find the file size
+            file_size = 0
+            for file_path, rel_path in files_to_upload:
+                if PurePosixPath(rel_path).name == dup:
+                    file_size = file_path.stat().st_size
+                    break
+
+            # Check which action was taken
+            if dup in self.files_to_skip:
+                skipped += 1
+                skipped_size += file_size
+            elif dup in self.rename_map:
+                renamed += 1
+                renamed_size += file_size
+            else:
+                # Check if any entry was marked for deletion (replace)
+                replaced += 1
+                replaced_size += file_size
+
+        if skipped > 0:
+            self.out.info(f"  Skipped: {skipped} file(s), {_format_size(skipped_size)}")
+        if renamed > 0:
+            self.out.info(f"  Renamed: {renamed} file(s), {_format_size(renamed_size)}")
+        if replaced > 0:
+            self.out.info(
+                f"  Replaced: {replaced} file(s), {_format_size(replaced_size)}"
+            )
+        self.out.print("")
 
     def _filter_folder_duplicates(
         self, duplicates: list[str], files_to_upload: list[tuple[Path, str]]
@@ -181,8 +287,14 @@ class DuplicateHandler:
                 files_by_folder[top_folder].append((file_path, rel_path))
 
         # For each folder, check if files exist
-        for folder_name, files in files_by_folder.items():
+        for idx, (folder_name, files) in enumerate(files_by_folder.items(), 1):
             try:
+                if not self.out.quiet:
+                    total = len(files_by_folder)
+                    self.out.progress_message(
+                        f"  Scanning folder '{folder_name}' ({idx}/{total})..."
+                    )
+
                 # Get the folder ID
                 search_result = self.client.get_file_entries(
                     query=folder_name, workspace_id=self.workspace_id
@@ -290,13 +402,58 @@ class DuplicateHandler:
             pass
         return False
 
+    def _resolve_parent_folder_id(self, folder_path: str) -> Optional[int]:
+        """Resolve a folder path to its ID.
+
+        Args:
+            folder_path: Relative folder path (e.g., "backup/data")
+
+        Returns:
+            Folder ID if found, None otherwise
+        """
+        # Start from the base parent_id
+        current_parent_id = self.parent_id
+
+        # Split path and navigate through folders
+        path_parts = PurePosixPath(folder_path).parts
+        for folder_name in path_parts:
+            try:
+                # Search for folder in current parent
+                search_result = self.client.get_file_entries(
+                    query=folder_name,
+                    workspace_id=self.workspace_id,
+                )
+                if not search_result or not search_result.get("data"):
+                    return None
+
+                file_entries = FileEntriesResult.from_api_response(search_result)
+
+                # Find exact folder match
+                folder_entry = None
+                for entry in file_entries.entries:
+                    if entry.name == folder_name and entry.is_folder:
+                        folder_entry = entry
+                        break
+
+                if not folder_entry:
+                    return None
+
+                current_parent_id = folder_entry.id
+            except DrimeAPIError:
+                return None
+
+        return current_parent_id
+
     def _lookup_duplicate_ids(
-        self, duplicates: list[str]
+        self,
+        duplicates: list[str],
+        files_to_upload: list[tuple[Path, str]],
     ) -> dict[str, list[tuple[int, Optional[str]]]]:
-        """Look up IDs for all duplicates.
+        """Look up IDs for all duplicates in their target upload folders.
 
         Args:
             duplicates: List of duplicate names
+            files_to_upload: List of (file_path, relative_path) tuples
 
         Returns:
             Dict mapping duplicate name to list of (id, path) tuples
@@ -304,10 +461,38 @@ class DuplicateHandler:
         duplicate_info = {}
         for dup_name in duplicates:
             try:
-                search_result = self.client.get_file_entries(
-                    query=dup_name,
-                    workspace_id=self.workspace_id,
-                )
+                # Find the relative path for this duplicate
+                target_rel_path = None
+                for _file_path, rel_path in files_to_upload:
+                    if PurePosixPath(rel_path).name == dup_name:
+                        target_rel_path = rel_path
+                        break
+
+                if not target_rel_path:
+                    continue
+
+                # Get the parent folder path
+                parent_path = PurePosixPath(target_rel_path).parent
+
+                # Resolve parent folder ID
+                target_parent_id = self.parent_id
+                if parent_path != PurePosixPath("."):
+                    # Navigate through folder structure
+                    target_parent_id = self._resolve_parent_folder_id(str(parent_path))
+
+                if target_parent_id is None:
+                    # Fallback to global search if parent can't be resolved
+                    search_result = self.client.get_file_entries(
+                        query=dup_name,
+                        workspace_id=self.workspace_id,
+                    )
+                else:
+                    # Search in specific parent folder
+                    search_result = self.client.get_file_entries(
+                        parent_ids=[target_parent_id],
+                        workspace_id=self.workspace_id,
+                    )
+
                 if search_result and search_result.get("data"):
                     file_entries = FileEntriesResult.from_api_response(search_result)
                     # Find exact matches (case-sensitive)
@@ -351,7 +536,6 @@ class DuplicateHandler:
             self.chosen_action = click.prompt(
                 "Action",
                 type=click.Choice(["replace", "rename", "skip"]),
-                default="rename",
             )
 
             apply_choice = click.prompt(

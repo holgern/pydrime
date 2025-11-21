@@ -316,3 +316,359 @@ class TestApplyRenames:
         result = handler.apply_renames("folder/subfolder/test.txt")
 
         assert result == "folder (1)/subfolder/test (1).txt"
+
+
+class TestParentFolderContext:
+    """Tests for parent folder context in duplicate detection."""
+
+    def test_initialization_with_parent_id(self):
+        """Test initialization with parent_id parameter."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+
+        handler = DuplicateHandler(mock_client, out, 0, "ask", parent_id=123)
+
+        assert handler.parent_id == 123
+
+    def test_initialization_without_parent_id(self):
+        """Test initialization without parent_id (defaults to None)."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        assert handler.parent_id is None
+
+    def test_resolve_parent_folder_id_simple_path(self):
+        """Test resolving a simple folder path to ID."""
+        mock_client = MagicMock()
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 100,
+                    "name": "backup",
+                    "type": "folder",
+                    "hash": "hash1",
+                    "mime": None,
+                    "file_size": 0,
+                    "parent_id": 0,
+                    "created_at": "2023-01-01",
+                    "updated_at": "2023-01-01",
+                    "owner": {"email": "test@example.com"},
+                }
+            ]
+        }
+
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        folder_id = handler._resolve_parent_folder_id("backup")
+
+        assert folder_id == 100
+
+    def test_resolve_parent_folder_id_nested_path(self):
+        """Test resolving a nested folder path to ID."""
+        mock_client = MagicMock()
+
+        def mock_get_entries(query=None, workspace_id=0, **kwargs):
+            if query == "backup":
+                return {
+                    "data": [
+                        {
+                            "id": 100,
+                            "name": "backup",
+                            "type": "folder",
+                            "hash": "hash1",
+                            "mime": None,
+                            "file_size": 0,
+                            "parent_id": 0,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                        }
+                    ]
+                }
+            elif query == "data":
+                return {
+                    "data": [
+                        {
+                            "id": 200,
+                            "name": "data",
+                            "type": "folder",
+                            "hash": "hash2",
+                            "mime": None,
+                            "file_size": 0,
+                            "parent_id": 100,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                        }
+                    ]
+                }
+            return {"data": []}
+
+        mock_client.get_file_entries.side_effect = mock_get_entries
+
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        folder_id = handler._resolve_parent_folder_id("backup/data")
+
+        assert folder_id == 200
+
+    def test_resolve_parent_folder_id_not_found(self):
+        """Test resolving folder path when folder doesn't exist."""
+        mock_client = MagicMock()
+        mock_client.get_file_entries.return_value = {"data": []}
+
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        folder_id = handler._resolve_parent_folder_id("nonexistent")
+
+        assert folder_id is None
+
+    def test_resolve_parent_folder_id_api_error(self):
+        """Test resolving folder path when API error occurs."""
+        mock_client = MagicMock()
+        mock_client.get_file_entries.side_effect = DrimeAPIError("API Error")
+
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        folder_id = handler._resolve_parent_folder_id("backup")
+
+        assert folder_id is None
+
+    def test_lookup_duplicate_ids_with_parent_context(self, tmp_path):
+        """Test that duplicate IDs are looked up in correct parent folder."""
+        mock_client = MagicMock()
+
+        # Mock get_file_entries to return different results based on parent_ids
+        def mock_get_entries(query=None, parent_ids=None, workspace_id=0, **kwargs):
+            if parent_ids == [100]:
+                # Return file in specific folder
+                return {
+                    "data": [
+                        {
+                            "id": 999,
+                            "name": "test.txt",
+                            "type": "text",
+                            "hash": "hash1",
+                            "mime": "text/plain",
+                            "file_size": 100,
+                            "parent_id": 100,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                            "path": "/backup/test.txt",
+                        }
+                    ]
+                }
+            return {"data": []}
+
+        mock_client.get_file_entries.side_effect = mock_get_entries
+
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask", parent_id=100)
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        result = handler._lookup_duplicate_ids(["test.txt"], files_to_upload)
+
+        assert "test.txt" in result
+        assert len(result["test.txt"]) == 1
+        assert result["test.txt"][0][0] == 999
+        assert result["test.txt"][0][1] == "/backup/test.txt"
+
+    def test_lookup_duplicate_ids_in_subfolder(self, tmp_path):
+        """Test duplicate IDs lookup for file in subfolder."""
+        mock_client = MagicMock()
+
+        def mock_get_entries(query=None, parent_ids=None, workspace_id=0, **kwargs):
+            if query == "backup":
+                return {
+                    "data": [
+                        {
+                            "id": 100,
+                            "name": "backup",
+                            "type": "folder",
+                            "hash": "hash1",
+                            "mime": None,
+                            "file_size": 0,
+                            "parent_id": 0,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                        }
+                    ]
+                }
+            elif parent_ids == [100]:
+                # Return file in backup folder
+                return {
+                    "data": [
+                        {
+                            "id": 555,
+                            "name": "test.txt",
+                            "type": "text",
+                            "hash": "hash2",
+                            "mime": "text/plain",
+                            "file_size": 100,
+                            "parent_id": 100,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                            "path": "/backup/test.txt",
+                        }
+                    ]
+                }
+            return {"data": []}
+
+        mock_client.get_file_entries.side_effect = mock_get_entries
+
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask", parent_id=None)
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "backup/test.txt")]
+
+        result = handler._lookup_duplicate_ids(["test.txt"], files_to_upload)
+
+        assert "test.txt" in result
+        assert len(result["test.txt"]) == 1
+        assert result["test.txt"][0][0] == 555
+
+    def test_lookup_duplicate_ids_multiple_in_same_folder(self, tmp_path):
+        """Test that only IDs from target folder are returned, not all."""
+        mock_client = MagicMock()
+
+        def mock_get_entries(query=None, parent_ids=None, workspace_id=0, **kwargs):
+            if parent_ids == [200]:
+                # Return only files in the specific target folder
+                return {
+                    "data": [
+                        {
+                            "id": 333,
+                            "name": "test.txt",
+                            "type": "text",
+                            "hash": "hash1",
+                            "mime": "text/plain",
+                            "file_size": 100,
+                            "parent_id": 200,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                            "path": "/backup/test.txt",
+                        }
+                    ]
+                }
+            elif query == "test.txt":
+                # Global search would return many results
+                return {
+                    "data": [
+                        {
+                            "id": 111,
+                            "name": "test.txt",
+                            "type": "text",
+                            "hash": "hash1",
+                            "mime": "text/plain",
+                            "file_size": 100,
+                            "parent_id": 10,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                            "path": "/folder1/test.txt",
+                        },
+                        {
+                            "id": 222,
+                            "name": "test.txt",
+                            "type": "text",
+                            "hash": "hash2",
+                            "mime": "text/plain",
+                            "file_size": 100,
+                            "parent_id": 20,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                            "path": "/folder2/test.txt",
+                        },
+                        {
+                            "id": 333,
+                            "name": "test.txt",
+                            "type": "text",
+                            "hash": "hash3",
+                            "mime": "text/plain",
+                            "file_size": 100,
+                            "parent_id": 200,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                            "path": "/backup/test.txt",
+                        },
+                    ]
+                }
+            return {"data": []}
+
+        mock_client.get_file_entries.side_effect = mock_get_entries
+
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask", parent_id=200)
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        result = handler._lookup_duplicate_ids(["test.txt"], files_to_upload)
+
+        # Should only return ID 333 from parent_id=200, not all IDs
+        assert "test.txt" in result
+        assert len(result["test.txt"]) == 1
+        assert result["test.txt"][0][0] == 333
+        # Should NOT include IDs 111 and 222 from other folders
+
+    def test_lookup_duplicate_ids_fallback_to_global_search(self, tmp_path):
+        """Test fallback to global search when parent resolution fails."""
+        mock_client = MagicMock()
+
+        def mock_get_entries(query=None, parent_ids=None, workspace_id=0, **kwargs):
+            if query == "nonexistent":
+                # Folder doesn't exist, will return None from resolve
+                return {"data": []}
+            elif query == "test.txt":
+                # Fallback to global search
+                return {
+                    "data": [
+                        {
+                            "id": 777,
+                            "name": "test.txt",
+                            "type": "text",
+                            "hash": "hash1",
+                            "mime": "text/plain",
+                            "file_size": 100,
+                            "parent_id": 0,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                        }
+                    ]
+                }
+            return {"data": []}
+
+        mock_client.get_file_entries.side_effect = mock_get_entries
+
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask", parent_id=None)
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "nonexistent/test.txt")]
+
+        result = handler._lookup_duplicate_ids(["test.txt"], files_to_upload)
+
+        # Should fallback to global search and find the file
+        assert "test.txt" in result
+        assert len(result["test.txt"]) == 1
+        assert result["test.txt"][0][0] == 777
