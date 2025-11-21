@@ -14,6 +14,7 @@ from .exceptions import (
     DrimeRateLimitError,
     DrimeUploadError,
 )
+from .file_entries_manager import FileEntriesManager
 from .utils import calculate_drime_hash, decode_drime_hash
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "DrimePermissionError",
     "DrimeRateLimitError",
     "DrimeUploadError",
+    "FileEntriesManager",
     "calculate_drime_hash",
     "decode_drime_hash",
 ]
