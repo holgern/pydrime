@@ -1,6 +1,7 @@
 """CLI interface for Drime Cloud uploader."""
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional, cast
 
@@ -25,6 +26,35 @@ from .progress import UploadProgressTracker
 from .upload_preview import display_upload_preview
 from .utils import is_file_id, normalize_to_hash
 from .workspace_utils import format_workspace_display, get_folder_display_name
+
+
+def parse_iso_timestamp(timestamp_str: Optional[str]) -> Optional[datetime]:
+    """Parse ISO format timestamp from Drime API.
+
+    Args:
+        timestamp_str: ISO format timestamp string (e.g., "2025-01-15T10:30:00.000000Z")
+
+    Returns:
+        datetime object or None if parsing fails
+    """
+    if not timestamp_str:
+        return None
+
+    try:
+        # Handle various ISO formats
+        # Remove 'Z' suffix and parse
+        timestamp_str = timestamp_str.rstrip("Z")
+
+        # Try parsing with microseconds
+        try:
+            return datetime.fromisoformat(timestamp_str)
+        except ValueError:
+            # Try without microseconds
+            if "." in timestamp_str:
+                timestamp_str = timestamp_str.split(".")[0]
+            return datetime.fromisoformat(timestamp_str)
+    except (ValueError, AttributeError):
+        return None
 
 
 def scan_directory(
@@ -1623,6 +1653,429 @@ def download(
         ctx.exit(130)  # Standard exit code for SIGINT
     except DrimeAPIError as e:
         out.error(str(e))
+        ctx.exit(1)
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--remote-path", "-r", help="Remote destination path")
+@click.option(
+    "--workspace",
+    "-w",
+    type=int,
+    default=None,
+    help="Workspace ID (uses default workspace if not specified)",
+)
+@click.option(
+    "--dry-run", is_flag=True, help="Show what would be synced without syncing"
+)
+@click.option(
+    "--workers",
+    "-j",
+    type=int,
+    default=1,
+    help="Number of parallel workers (default: 1, use 4-8 for parallel transfers)",
+)
+@click.option(
+    "--no-progress",
+    is_flag=True,
+    help="Disable progress bars",
+)
+@click.option(
+    "--chunk-size",
+    "-c",
+    type=int,
+    default=25,
+    help="Chunk size in MB for multipart uploads (default: 25MB)",
+)
+@click.option(
+    "--multipart-threshold",
+    "-m",
+    type=int,
+    default=30,
+    help="File size threshold in MB for using multipart upload (default: 30MB)",
+)
+@click.pass_context
+def sync(  # noqa: C901
+    ctx: Any,
+    path: str,
+    remote_path: Optional[str],
+    workspace: Optional[int],
+    dry_run: bool,
+    workers: int,
+    no_progress: bool,
+    chunk_size: int,
+    multipart_threshold: int,
+) -> None:
+    """Sync files between local directory and Drime Cloud.
+
+    PATH: Local directory to sync
+
+    Automatically syncs files based on modification time and size:
+    - Uploads new local files
+    - Downloads new cloud files
+    - For existing files: newer file wins (based on modification time)
+    - Files with same timestamp but different size are flagged as conflicts
+
+    No user interaction required - all decisions are made automatically.
+
+    Examples:
+        pydrime sync ./my_folder                    # Sync folder bidirectionally
+        pydrime sync ./docs -r remote_docs          # Sync with remote path
+        pydrime sync . -w 5                         # Sync in workspace 5
+        pydrime sync ./data --dry-run               # Preview sync changes
+        pydrime sync ./large_folder -j 4            # Parallel sync with 4 workers
+    """
+    out: OutputFormatter = ctx.obj["out"]
+    local_path = Path(path)
+
+    # Validate path is a directory
+    if not local_path.is_dir():
+        out.error("PATH must be a directory for syncing")
+        ctx.exit(1)
+
+    # Validate and convert MB to bytes
+    if chunk_size < 5:
+        out.error("Chunk size must be at least 5MB")
+        ctx.exit(1)
+    if chunk_size > 100:
+        out.error("Chunk size cannot exceed 100MB")
+        ctx.exit(1)
+    if multipart_threshold < 1:
+        out.error("Multipart threshold must be at least 1MB")
+        ctx.exit(1)
+    if chunk_size >= multipart_threshold:
+        out.error("Chunk size must be smaller than multipart threshold")
+        ctx.exit(1)
+
+    chunk_size_bytes = chunk_size * 1024 * 1024
+    multipart_threshold_bytes = multipart_threshold * 1024 * 1024
+
+    # Use auth helper
+    api_key = require_api_key(ctx, out)
+
+    # Use default workspace if none specified
+    if workspace is None:
+        workspace = config.get_default_workspace() or 0
+
+    # Initialize client
+    client = DrimeClient(api_key=api_key)
+
+    # Get current folder context
+    current_folder_id = config.get_current_folder()
+
+    if not out.quiet:
+        # Show workspace information
+        workspace_display, _ = format_workspace_display(client, workspace)
+        out.info(f"Workspace: {workspace_display}")
+
+        # Show parent folder information
+        folder_display, _ = get_folder_display_name(client, current_folder_id)
+        out.info(f"Parent folder: {folder_display}")
+
+        if remote_path:
+            out.info(f"Remote path structure: {remote_path}")
+
+        out.info("")  # Empty line for readability
+
+    try:
+        # Step 1: Scan local directory
+        if not out.quiet:
+            out.info(f"Scanning local directory: {local_path}")
+
+        # Scan with the local_path itself as base_path to get relative paths without the folder name
+        local_files = scan_directory(local_path, local_path, out)
+
+        # Apply remote path prefix if specified
+        if remote_path:
+            local_files = [
+                (file_path, f"{remote_path}/{rel_path}")
+                for file_path, rel_path in local_files
+            ]
+
+        # Build local file mapping: {relative_path: (Path, size, mtime)}
+        local_file_map: dict[str, tuple[Path, int, float]] = {}
+        for file_path, rel_path in local_files:
+            stat = file_path.stat()
+            local_file_map[rel_path] = (file_path, stat.st_size, stat.st_mtime)
+
+        if not out.quiet:
+            out.info(f"Found {len(local_file_map)} local file(s)")
+
+        # Step 2: Get remote files
+        if not out.quiet:
+            out.info("Fetching remote files...")
+
+        # Get all remote files recursively with their paths
+        remote_entries_with_paths: list[tuple[FileEntry, str]] = []
+
+        def fetch_remote_recursive(parent_id: Optional[int], path_prefix: str) -> None:
+            """Recursively fetch all remote files with path tracking."""
+            try:
+                result = client.get_file_entries(
+                    parent_ids=[parent_id] if parent_id else None,
+                    workspace_id=workspace,
+                )
+                file_entries = FileEntriesResult.from_api_response(result)
+
+                for entry in file_entries.entries:
+                    entry_path = (
+                        f"{path_prefix}/{entry.name}" if path_prefix else entry.name
+                    )
+                    if entry.is_folder:
+                        # Recursively fetch folder contents
+                        fetch_remote_recursive(entry.id, entry_path)
+                    else:
+                        remote_entries_with_paths.append((entry, entry_path))
+            except DrimeAPIError:
+                pass  # Skip inaccessible folders
+
+        # Determine the remote folder to sync with
+        # If remote_path is specified, use it
+        # Otherwise, look for a folder with the same name as local_path in current_folder_id
+        remote_sync_folder_id = current_folder_id
+        remote_base_path = remote_path if remote_path else local_path.name
+
+        if not remote_path:
+            # Try to find a matching folder in the current directory
+            try:
+                result = client.get_file_entries(
+                    parent_ids=[current_folder_id] if current_folder_id else None,
+                    workspace_id=workspace,
+                )
+                file_entries = FileEntriesResult.from_api_response(result)
+
+                for entry in file_entries.entries:
+                    if entry.is_folder and entry.name == local_path.name:
+                        # Found matching folder - sync into it
+                        remote_sync_folder_id = entry.id
+                        remote_base_path = ""  # We're already inside the folder
+                        if not out.quiet:
+                            out.info(
+                                f"Found remote folder '{entry.name}' (ID: {entry.id})"
+                            )
+                        break
+            except DrimeAPIError:
+                pass
+
+        fetch_remote_recursive(remote_sync_folder_id, remote_base_path)
+
+        # Build remote file mapping: {relative_path: FileEntry}
+        remote_file_map: dict[str, FileEntry] = {}
+
+        for entry, entry_path in remote_entries_with_paths:
+            remote_file_map[entry_path] = entry
+
+        if not out.quiet:
+            out.info(f"Found {len(remote_file_map)} remote file(s)")
+            out.info("")
+
+        # Step 3: Compare and categorize files
+        files_to_upload: list[tuple[Path, str]] = []  # (local_path, remote_path)
+        files_to_download: list[
+            tuple[FileEntry, Path]
+        ] = []  # (remote_entry, local_path)
+        files_in_sync: list[str] = []
+        files_conflict: list[tuple[str, str]] = []  # (path, reason)
+
+        # Find files only in local (need upload) or compare existing
+        for rel_path, (file_path, local_size, local_mtime) in local_file_map.items():
+            if rel_path not in remote_file_map:
+                # File only exists locally - upload it
+                files_to_upload.append((file_path, rel_path))
+            else:
+                # File exists in both - compare
+                remote_entry = remote_file_map[rel_path]
+                remote_size = remote_entry.file_size or 0
+                remote_updated = parse_iso_timestamp(remote_entry.updated_at)
+
+                # Compare by size first
+                if remote_size != local_size:
+                    # Size mismatch - use modification time to decide
+                    if remote_updated:
+                        local_dt = datetime.fromtimestamp(local_mtime)
+                        time_diff = (local_dt - remote_updated).total_seconds()
+
+                        if time_diff > 2:
+                            # Local is newer
+                            files_to_upload.append((file_path, rel_path))
+                        elif time_diff < -2:
+                            # Remote is newer
+                            files_to_download.append((remote_entry, file_path))
+                        else:
+                            # Same time but different size - conflict
+                            files_conflict.append(
+                                (
+                                    rel_path,
+                                    f"Same timestamp but size differs: "
+                                    f"local={out.format_size(local_size)}, "
+                                    f"remote={out.format_size(remote_size)}",
+                                )
+                            )
+                    else:
+                        # No remote timestamp - upload local (assume local is source of truth)
+                        files_to_upload.append((file_path, rel_path))
+                else:
+                    # Same size - check modification time
+                    if remote_updated:
+                        local_dt = datetime.fromtimestamp(local_mtime)
+                        time_diff = (local_dt - remote_updated).total_seconds()
+
+                        # Consider in sync if within 2 seconds (filesystem precision)
+                        if abs(time_diff) <= 2:
+                            files_in_sync.append(rel_path)
+                        elif time_diff > 2:
+                            # Local is newer
+                            files_to_upload.append((file_path, rel_path))
+                        else:
+                            # Remote is newer
+                            files_to_download.append((remote_entry, file_path))
+                    else:
+                        # Same size, no timestamp difference detectable
+                        files_in_sync.append(rel_path)
+
+        # Find files only in remote (need download)
+        for rel_path, remote_entry in remote_file_map.items():
+            if rel_path not in local_file_map:
+                # Construct local path
+                # Remove remote_path prefix if present
+                local_rel_path = rel_path
+                if remote_path and local_rel_path.startswith(remote_path + "/"):
+                    local_rel_path = local_rel_path[len(remote_path) + 1 :]
+                elif remote_path and local_rel_path.startswith(remote_path):
+                    local_rel_path = local_rel_path[len(remote_path) :]
+
+                local_dest = local_path / local_rel_path
+                files_to_download.append((remote_entry, local_dest))
+
+        # Display sync plan
+        if not out.quiet:
+            out.print("=" * 60)
+            out.print("Sync Plan")
+            out.print("=" * 60)
+            out.print(f"Files to upload:      {len(files_to_upload)}")
+            out.print(f"Files to download:    {len(files_to_download)}")
+            out.print(f"Files in sync:        {len(files_in_sync)}")
+            out.print(f"Files with conflicts: {len(files_conflict)}")
+            out.print("=" * 60)
+            out.print("")
+
+            if files_to_upload:
+                out.info("Files to upload:")
+                for file_path, rel_path in files_to_upload[:10]:  # Show first 10
+                    size = file_path.stat().st_size
+                    out.print(f"  ↑ {rel_path} ({out.format_size(size)})")
+                if len(files_to_upload) > 10:
+                    out.print(f"  ... and {len(files_to_upload) - 10} more")
+                out.print("")
+
+            if files_to_download:
+                out.info("Files to download:")
+                for remote_entry, local_dest in files_to_download[:10]:
+                    out.print(
+                        f"  ↓ {remote_entry.name} "
+                        f"({out.format_size(remote_entry.file_size or 0)})"
+                    )
+                if len(files_to_download) > 10:
+                    out.print(f"  ... and {len(files_to_download) - 10} more")
+                out.print("")
+
+            if files_conflict:
+                out.warning("Files with conflicts (skipped):")
+                for rel_path, reason in files_conflict:
+                    out.print(f"  ⚠ {rel_path}: {reason}")
+                out.print("")
+
+        if dry_run:
+            out.warning("Dry run mode - no files were synced.")
+            return
+
+        # Step 4: Execute sync
+        upload_count = 0
+        download_count = 0
+        error_count = 0
+
+        # Upload files
+        if files_to_upload:
+            if not out.quiet:
+                out.info(f"Uploading {len(files_to_upload)} file(s)...")
+
+            for file_path, rel_path in files_to_upload:
+                try:
+                    if not no_progress and not out.quiet:
+                        size_str = out.format_size(file_path.stat().st_size)
+                        out.progress_message(f"Uploading {rel_path} ({size_str})")
+
+                    client.upload_file(
+                        file_path,
+                        parent_id=remote_sync_folder_id,
+                        relative_path=rel_path,
+                        workspace_id=workspace,
+                        chunk_size=chunk_size_bytes,
+                        use_multipart_threshold=multipart_threshold_bytes,
+                    )
+                    upload_count += 1
+                except DrimeAPIError as e:
+                    error_count += 1
+                    out.error(f"Error uploading {rel_path}: {e}")
+
+        # Download files
+        if files_to_download:
+            if not out.quiet:
+                out.info(f"Downloading {len(files_to_download)} file(s)...")
+
+            for remote_entry, local_dest in files_to_download:
+                try:
+                    # Ensure parent directory exists
+                    local_dest.parent.mkdir(parents=True, exist_ok=True)
+
+                    if not no_progress and not out.quiet:
+                        size_str = out.format_size(remote_entry.file_size or 0)
+                        out.progress_message(
+                            f"Downloading {remote_entry.name} ({size_str})"
+                        )
+
+                    client.download_file(remote_entry.hash, local_dest)
+                    download_count += 1
+                except DrimeAPIError as e:
+                    error_count += 1
+                    out.error(f"Error downloading {remote_entry.name}: {e}")
+
+        # Show summary
+        if out.json_output:
+            out.output_json(
+                {
+                    "uploaded": upload_count,
+                    "downloaded": download_count,
+                    "in_sync": len(files_in_sync),
+                    "conflicts": len(files_conflict),
+                    "errors": error_count,
+                }
+            )
+        else:
+            out.print("")
+            summary_items = [
+                ("Uploaded", f"{upload_count} file(s)"),
+                ("Downloaded", f"{download_count} file(s)"),
+                ("Already in sync", f"{len(files_in_sync)} file(s)"),
+            ]
+            if files_conflict:
+                summary_items.append(
+                    ("Conflicts (skipped)", f"{len(files_conflict)} file(s)")
+                )
+            if error_count > 0:
+                summary_items.append(("Errors", f"{error_count} file(s)"))
+
+            out.print_summary("Sync Complete", summary_items)
+
+        if error_count > 0:
+            ctx.exit(1)
+
+    except KeyboardInterrupt:
+        out.warning("\nSync cancelled by user")
+        ctx.exit(130)
+    except DrimeAPIError as e:
+        out.error(f"API error: {e}")
         ctx.exit(1)
 
 
