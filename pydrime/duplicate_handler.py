@@ -408,22 +408,39 @@ class DuplicateHandler:
         files = set()
 
         try:
-            result = self.client.get_file_entries(
-                parent_ids=[folder_id], workspace_id=self.workspace_id
-            )
-            entries = FileEntriesResult.from_api_response(result)
+            # Handle pagination - fetch all pages
+            current_page = 1
+            per_page = 100  # Use larger page size for efficiency
 
-            for entry in entries.entries:
-                if entry.is_folder:
-                    # Recursively get files in subfolder
-                    subfolder_files = self._get_files_in_folder_recursive(
-                        entry.id, visited
-                    )
-                    # Prefix with folder name
-                    for f in subfolder_files:
-                        files.add(f"{entry.name}/{f}")
-                else:
-                    files.add(entry.name)
+            while True:
+                result = self.client.get_file_entries(
+                    parent_ids=[folder_id],
+                    workspace_id=self.workspace_id,
+                    per_page=per_page,
+                    page=current_page,
+                )
+                entries = FileEntriesResult.from_api_response(result)
+
+                for entry in entries.entries:
+                    if entry.is_folder:
+                        # Recursively get files in subfolder
+                        subfolder_files = self._get_files_in_folder_recursive(
+                            entry.id, visited
+                        )
+                        # Prefix with folder name
+                        for f in subfolder_files:
+                            files.add(f"{entry.name}/{f}")
+                    else:
+                        files.add(entry.name)
+
+                # Check if there are more pages
+                if entries.pagination:
+                    current = entries.pagination.get("current_page")
+                    last = entries.pagination.get("last_page")
+                    if current is not None and last is not None and current < last:
+                        current_page += 1
+                        continue  # Fetch next page
+                break  # No more pages
 
         except DrimeAPIError:
             pass
