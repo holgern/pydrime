@@ -1143,6 +1143,11 @@ def download(
         if output and not output_dir.exists():
             output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Shared progress display and task pool for parallel downloads
+        # These will be initialized if workers > 1
+        shared_progress_display: Optional[Any] = None
+        shared_task_queue: Optional[Any] = None
+
         def resolve_identifier_to_hash(identifier: str) -> str:
             """Resolve identifier (name/ID/hash) to hash value."""
             try:
@@ -1256,7 +1261,15 @@ def download(
             entry_name: str,
             show_progress: bool = True,
         ) -> None:
-            """Download a single file."""
+            """Download a single file.
+
+            Args:
+                hash_value: Hash of the file to download
+                identifier: Original identifier used to request this file
+                dest_path: Destination path for the file
+                entry_name: Name of the file entry
+                show_progress: Whether to show progress bar
+            """
             # Determine output path
             if dest_path:
                 # If dest_path is a directory, join it with the filename
@@ -1295,9 +1308,51 @@ def download(
                     output_path = get_unique_filename(output_path)
                     out.info(f"Renaming to avoid duplicate: {output_path.name}")
 
+            # Try to get a task from the shared queue for parallel downloads
+            task_id: Optional[Any] = None
+            if shared_task_queue is not None:
+                try:
+                    # Non-blocking get - if queue is empty, we'll create
+                    # individual progress
+                    task_id = shared_task_queue.get_nowait()
+                except:  # noqa: E722
+                    task_id = None
+
             try:
-                if show_progress and not no_progress:
-                    # Create progress bar using rich.Progress
+                # Use shared progress display if we got a task ID
+                if task_id is not None and shared_progress_display is not None:
+                    # Capture progress display for use in callback
+                    progress_display_ref = shared_progress_display
+
+                    # Update the reusable task bar with this file's info
+                    progress_display_ref.update(
+                        task_id,
+                        description=f"[cyan]{entry_name}",
+                        completed=0,
+                        total=None,
+                    )
+
+                    def progress_callback(
+                        bytes_downloaded: int, total_bytes: int
+                    ) -> None:
+                        progress_display_ref.update(
+                            task_id, completed=bytes_downloaded, total=total_bytes
+                        )
+
+                    saved_path = client.download_file(
+                        hash_value, output_path, progress_callback=progress_callback
+                    )
+
+                    # Reset the task bar
+                    progress_display_ref.update(
+                        task_id,
+                        description="[dim]Worker: Waiting...",
+                        completed=0,
+                        total=100,
+                    )
+
+                elif show_progress and not no_progress:
+                    # Create individual progress bar (for sequential downloads)
                     with Progress(
                         "[progress.description]{task.description}",
                         BarColumn(),
@@ -1338,6 +1393,10 @@ def download(
                 )
             except DrimeAPIError as e:
                 out.error(f"Error downloading file: {e}")
+            finally:
+                # Return task ID to the pool if we used one
+                if task_id is not None and shared_task_queue is not None:
+                    shared_task_queue.put(task_id)
 
         def download_entry(
             identifier: str,
@@ -1386,25 +1445,66 @@ def download(
 
         # Parallel or sequential download
         if workers > 1 and len(entry_identifiers) > 1:
-            # Parallel download for multiple entries
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {}
-                for identifier in entry_identifiers:
-                    future = executor.submit(
-                        download_entry, identifier, output_dir if output else None
-                    )
-                    futures[future] = identifier
+            # Parallel download for multiple entries with progress pooling
+            if not out.quiet and not no_progress:
+                # Create shared progress display with task pool
+                shared_progress_display = Progress(
+                    "[progress.description]{task.description}",
+                    BarColumn(),
+                    "[progress.percentage]{task.percentage:>3.0f}%",
+                    DownloadColumn(),
+                    TransferSpeedColumn(),
+                    TimeElapsedColumn(),
+                    TimeRemainingColumn(),
+                    refresh_per_second=10,
+                )
+                shared_progress_display.start()
 
-                # Progress bar for overall progress
-                if not out.quiet and not no_progress:
-                    with Progress(
-                        "[progress.description]{task.description}",
-                        BarColumn(),
-                        "[progress.percentage]{task.percentage:>3.0f}%",
-                    ) as overall_progress:
-                        task = overall_progress.add_task(
-                            "Overall Download Progress", total=len(futures)
-                        )
+                # Add overall progress bar
+                overall_task_id = shared_progress_display.add_task(
+                    "[green]Overall Download Progress",
+                    total=len(entry_identifiers),
+                    completed=0,
+                )
+
+                # Create a limited pool of progress bars (one per worker)
+                import queue
+
+                progress_task_pool = []
+                for i in range(workers):
+                    task_id = shared_progress_display.add_task(
+                        f"[dim]Worker {i + 1}: Waiting...",
+                        total=100,
+                        visible=True,
+                    )
+                    progress_task_pool.append(task_id)
+
+                # Track available task IDs - use thread-safe queue
+                shared_task_queue = queue.Queue()
+                for task_id in progress_task_pool:
+                    shared_task_queue.put(task_id)
+
+                # Wrapper to track completion for overall progress
+                def download_with_progress_tracking(
+                    identifier: str, dest_path: Optional[Path]
+                ) -> None:
+                    try:
+                        download_entry(identifier, dest_path)
+                    finally:
+                        # Update overall progress
+                        if shared_progress_display:
+                            shared_progress_display.update(overall_task_id, advance=1)
+
+                try:
+                    with ThreadPoolExecutor(max_workers=workers) as executor:
+                        futures = {}
+                        for identifier in entry_identifiers:
+                            future = executor.submit(
+                                download_with_progress_tracking,
+                                identifier,
+                                output_dir if output else None,
+                            )
+                            futures[future] = identifier
 
                         for future in as_completed(futures):
                             identifier = futures[future]
@@ -1412,8 +1512,27 @@ def download(
                                 future.result()
                             except Exception as e:
                                 out.error(f"Error downloading {identifier}: {e}")
+                finally:
+                    shared_progress_display.stop()
+                    # Reset shared variables
+                    shared_progress_display = None
+                    shared_task_queue = None
+            else:
+                # No progress display - simple parallel download
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures = {}
+                    for identifier in entry_identifiers:
+                        future = executor.submit(
+                            download_entry, identifier, output_dir if output else None
+                        )
+                        futures[future] = identifier
 
-                            overall_progress.update(task, advance=1)
+                    for future in as_completed(futures):
+                        identifier = futures[future]
+                        try:
+                            future.result()
+                        except Exception as e:
+                            out.error(f"Error downloading {identifier}: {e}")
         else:
             # Sequential download
             for identifier in entry_identifiers:
