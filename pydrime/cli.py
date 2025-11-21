@@ -9,18 +9,22 @@ from rich.progress import (
     BarColumn,
     DownloadColumn,
     Progress,
-    TaskID,
     TimeElapsedColumn,
     TimeRemainingColumn,
     TransferSpeedColumn,
 )
 
 from .api import DrimeClient
+from .auth import require_api_key
 from .config import config
+from .duplicate_handler import DuplicateHandler
 from .exceptions import DrimeAPIError, DrimeNotFoundError
 from .models import FileEntriesResult, FileEntry, SchemaValidationWarning, UserStatus
 from .output import OutputFormatter
+from .progress import UploadProgressTracker
+from .upload_preview import display_upload_preview
 from .utils import is_file_id, normalize_to_hash
+from .workspace_utils import format_workspace_display, get_folder_display_name
 
 
 def scan_directory(
@@ -197,7 +201,6 @@ def upload(  # noqa: C901
 
     PATH: Local file or directory to upload
     """
-    api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
     local_path = Path(path)
 
@@ -218,13 +221,8 @@ def upload(  # noqa: C901
     chunk_size_bytes = chunk_size * 1024 * 1024
     multipart_threshold_bytes = multipart_threshold * 1024 * 1024
 
-    if not config.is_configured() and not api_key:
-        out.error("API key not configured.")
-        out.info("Run 'drime init' to configure your API key, or:")
-        out.info("• Set the DRIME_API_KEY environment variable")
-        out.info("• Use --api-key option")
-        out.info("• Create a .env file with DRIME_API_KEY=your_key_here")
-        ctx.exit(1)
+    # Use auth helper
+    api_key = require_api_key(ctx, out)
 
     # Use default workspace if none specified
     if workspace is None:
@@ -239,39 +237,14 @@ def upload(  # noqa: C901
 
     if not out.quiet:
         # Show workspace information
-        if workspace == 0:
-            out.info("Workspace: Personal (0)")
-        else:
-            # Try to get workspace name
-            workspace_name = None
-            try:
-                result = client.get_workspaces()
-                if isinstance(result, dict) and "workspaces" in result:
-                    for ws in result["workspaces"]:
-                        if ws.get("id") == workspace:
-                            workspace_name = ws.get("name")
-                            break
-            except (DrimeAPIError, Exception):
-                pass
-
-            if workspace_name:
-                out.info(f"Workspace: {workspace_name} ({workspace})")
-            else:
-                out.info(f"Workspace: {workspace}")
+        workspace_display, _ = format_workspace_display(client, workspace)
+        out.info(f"Workspace: {workspace_display}")
 
         # Show parent folder information
-        if current_folder_id is None:
-            out.info("Parent folder: / (Root, ID: 0)")
-        else:
-            # Try to get folder name
-            try:
-                folder_info = client.get_folder_info(current_folder_id)
-                current_folder_name = folder_info.get("name")
-                out.info(
-                    f"Parent folder: /{current_folder_name} (ID: {current_folder_id})"
-                )
-            except (DrimeAPIError, DrimeNotFoundError):
-                out.info(f"Parent folder: ID {current_folder_id}")
+        folder_display, current_folder_name = get_folder_display_name(
+            client, current_folder_id
+        )
+        out.info(f"Parent folder: {folder_display}")
 
         if remote_path:
             out.info(f"Remote path structure: {remote_path}")
@@ -303,531 +276,55 @@ def upload(  # noqa: C901
     total_size = sum(f[0].stat().st_size for f in files_to_upload)
 
     if dry_run:
-        # Enhanced dry-run output showing structure
-        if not out.quiet:
-            out.print("\n" + "=" * 70)
-            out.print("DRY RUN - Upload Preview")
-            out.print("=" * 70 + "\n")
-
-            # Show destination
-            out.print("Destination:")
-            if workspace == 0:
-                out.print("  Workspace: Personal (0)")
-            else:
-                workspace_name = None
-                try:
-                    result = client.get_workspaces()
-                    if isinstance(result, dict) and "workspaces" in result:
-                        for ws in result["workspaces"]:
-                            if ws.get("id") == workspace:
-                                workspace_name = ws.get("name")
-                                break
-                except (DrimeAPIError, Exception):
-                    pass
-                if workspace_name:
-                    out.print(f"  Workspace: {workspace_name} ({workspace})")
-                else:
-                    out.print(f"  Workspace: {workspace}")
-
-            # Build the full destination path
-            if current_folder_id is None:
-                base_location = "/"
-            else:
-                if current_folder_name:
-                    base_location = f"/{current_folder_name}"
-                else:
-                    base_location = f"/Folder_{current_folder_id}"
-
-            out.print(f"  Base location: {base_location}")
-
-            # Show where files will actually land
-            if files_to_upload:
-                # Get the first file to show the structure
-                first_rel_path = files_to_upload[0][1]
-                from pathlib import PurePosixPath
-
-                # Extract the top-level folder from the relative path
-                first_parts = PurePosixPath(first_rel_path).parts
-                if len(first_parts) > 1:
-                    top_folder = first_parts[0]
-                    if base_location == "/":
-                        out.print(f"  Files will be uploaded to: /{top_folder}/...")
-                    else:
-                        out.print(
-                            f"  Files will be uploaded to: "
-                            f"{base_location}/{top_folder}/..."
-                        )
-                else:
-                    out.print(f"  Files will be uploaded to: {base_location}")
-
-            out.print("")
-
-            # Extract and show folders that will be created
-            folders_to_create = set()
-            for _, rel_path in files_to_upload:
-                # Use PurePosixPath since rel_path is in POSIX format
-                from pathlib import PurePosixPath
-
-                path_parts = PurePosixPath(rel_path).parts
-                # Build all parent folder paths
-                for i in range(len(path_parts) - 1):  # Exclude the filename
-                    folder_path = str(PurePosixPath(*path_parts[: i + 1]))
-                    folders_to_create.add(folder_path)
-
-            if folders_to_create:
-                sorted_folders = sorted(folders_to_create)
-                out.print(f"Folders to create: {len(sorted_folders)}")
-                for folder in sorted_folders:
-                    out.print(f"  📁 {folder}/")
-                out.print("")
-
-            # Show files to upload with structure
-            out.print(f"Files to upload: {len(files_to_upload)}")
-
-            # Group files by directory for better visualization
-            files_by_dir = {}
-            for file_path, rel_path in files_to_upload:
-                # Use PurePosixPath since rel_path is in POSIX format
-                from pathlib import PurePosixPath
-
-                posix_path = PurePosixPath(rel_path)
-                dir_path = str(posix_path.parent)
-                if dir_path == ".":
-                    dir_path = "(root)"
-                if dir_path not in files_by_dir:
-                    files_by_dir[dir_path] = []
-                file_size = file_path.stat().st_size
-                files_by_dir[dir_path].append((posix_path.name, file_size))
-
-            # Display files grouped by directory
-            for dir_path in sorted(files_by_dir.keys()):
-                if dir_path == "(root)":
-                    out.print("\n  In root:")
-                else:
-                    out.print(f"\n  In {dir_path}/:")
-                for filename, size in sorted(files_by_dir[dir_path]):
-                    out.print(f"    📄 {filename} ({out.format_size(size)})")
-
-            # Summary
-            out.print("\n" + "=" * 70)
-            out.print(
-                f"Total: {len(files_to_upload)} files, {out.format_size(total_size)}"
-            )
-            out.print("=" * 70 + "\n")
-
+        # Use the display_upload_preview function
+        display_upload_preview(
+            out,
+            client,
+            files_to_upload,
+            workspace,
+            current_folder_id,
+            current_folder_name,
+            is_dry_run=True,
+        )
         out.warning("Dry run mode - no files were uploaded.")
         return
 
-    # Display summary for actual upload (same format as dry-run)
-    if not out.quiet:
-        out.print("\n" + "=" * 70)
-        out.print("Upload Preview")
-        out.print("=" * 70 + "\n")
-
-        # Show destination
-        out.print("Destination:")
-        if workspace == 0:
-            out.print("  Workspace: Personal (0)")
-        else:
-            workspace_name = None
-            try:
-                result = client.get_workspaces()
-                if isinstance(result, dict) and "workspaces" in result:
-                    for ws in result["workspaces"]:
-                        if ws.get("id") == workspace:
-                            workspace_name = ws.get("name")
-                            break
-            except (DrimeAPIError, Exception):
-                pass
-            if workspace_name:
-                out.print(f"  Workspace: {workspace_name} ({workspace})")
-            else:
-                out.print(f"  Workspace: {workspace}")
-
-        # Build the full destination path
-        if current_folder_id is None:
-            base_location = "/"
-        else:
-            if current_folder_name:
-                base_location = f"/{current_folder_name}"
-            else:
-                base_location = f"/Folder_{current_folder_id}"
-
-        out.print(f"  Base location: {base_location}")
-
-        # Show where files will actually land
-        if files_to_upload:
-            # Get the first file to show the structure
-            first_rel_path = files_to_upload[0][1]
-            from pathlib import PurePosixPath
-
-            # Extract the top-level folder from the relative path
-            first_parts = PurePosixPath(first_rel_path).parts
-            if len(first_parts) > 1:
-                top_folder = first_parts[0]
-                if base_location == "/":
-                    out.print(f"  Files will be uploaded to: /{top_folder}/...")
-                else:
-                    out.print(
-                        f"  Files will be uploaded to: {base_location}/{top_folder}/..."
-                    )
-            else:
-                out.print(f"  Files will be uploaded to: {base_location}")
-
-        out.print("")
-
-        # Extract and show folders that will be created
-        folders_to_create = set()
-        for _, rel_path in files_to_upload:
-            # Use PurePosixPath since rel_path is in POSIX format
-            from pathlib import PurePosixPath
-
-            path_parts = PurePosixPath(rel_path).parts
-            # Build all parent folder paths
-            for i in range(len(path_parts) - 1):  # Exclude the filename
-                folder_path = str(PurePosixPath(*path_parts[: i + 1]))
-                folders_to_create.add(folder_path)
-
-        if folders_to_create:
-            sorted_folders = sorted(folders_to_create)
-            out.print(f"Folders to create: {len(sorted_folders)}")
-            for folder in sorted_folders:
-                out.print(f"  📁 {folder}/")
-            out.print("")
-
-        # Show files to upload with structure
-        out.print(f"Files to upload: {len(files_to_upload)}")
-
-        # Group files by directory for better visualization
-        files_by_dir = {}
-        for file_path, rel_path in files_to_upload:
-            # Use PurePosixPath since rel_path is in POSIX format
-            from pathlib import PurePosixPath
-
-            posix_path = PurePosixPath(rel_path)
-            dir_path = str(posix_path.parent)
-            if dir_path == ".":
-                dir_path = "(root)"
-            if dir_path not in files_by_dir:
-                files_by_dir[dir_path] = []
-            file_size = file_path.stat().st_size
-            files_by_dir[dir_path].append((posix_path.name, file_size))
-
-        # Display files grouped by directory
-        for dir_path in sorted(files_by_dir.keys()):
-            if dir_path == "(root)":
-                out.print("\n  In root:")
-            else:
-                out.print(f"\n  In {dir_path}/:")
-            for filename, size in sorted(files_by_dir[dir_path]):
-                out.print(f"    📄 {filename} ({out.format_size(size)})")
-
-        # Summary
-        out.print("\n" + "=" * 70)
-        out.print(f"Total: {len(files_to_upload)} files, {out.format_size(total_size)}")
-        out.print("=" * 70 + "\n")
+    # Display summary for actual upload (using same preview function)
+    display_upload_preview(
+        out,
+        client,
+        files_to_upload,
+        workspace,
+        current_folder_id,
+        current_folder_name,
+        is_dry_run=False,
+    )
 
     # Validate uploads and handle duplicates
     try:
-        # Validate uploads for duplicates
-        from pathlib import PurePosixPath
-
-        validation_files = [
-            {
-                "name": PurePosixPath(rel_path).name,
-                "size": file_path.stat().st_size,
-                "relativePath": str(PurePosixPath(rel_path).parent)
-                if PurePosixPath(rel_path).parent != PurePosixPath(".")
-                else "",
-            }
-            for file_path, rel_path in files_to_upload
-        ]
-
-        try:
-            validation_result = client.validate_uploads(
-                files=validation_files, workspace_id=workspace
-            )
-            duplicates = validation_result.get("duplicates", [])
-
-            # Filter out folders from duplicates - we always go inside existing
-            # folders rather than treating them as duplicates. Only files should
-            # be checked for duplicates.
-            if duplicates:
-                # Collect all folder names from our upload paths
-                folders_in_upload = set()
-                for _, rel_path in files_to_upload:
-                    path_parts = PurePosixPath(rel_path).parts
-                    # Add all parent folder names (exclude the filename)
-                    for i in range(len(path_parts) - 1):
-                        folder_name = path_parts[i]
-                        folders_in_upload.add(folder_name)
-
-                # Also check if any duplicate is an existing folder on the server
-                duplicates_to_keep = []
-                for dup_name in duplicates:
-                    # Skip if it's a folder in our upload paths
-                    if dup_name in folders_in_upload:
-                        continue
-
-                    # Check if the duplicate is an existing folder on the server
-                    is_folder = False
-                    try:
-                        search_result = client.get_file_entries(
-                            query=dup_name, workspace_id=workspace
-                        )
-                        if search_result and search_result.get("data"):
-                            from .models import FileEntriesResult
-
-                            file_entries = FileEntriesResult.from_api_response(
-                                search_result
-                            )
-                            # Check if any exact match is a folder
-                            for entry in file_entries.entries:
-                                if entry.name == dup_name and entry.is_folder:
-                                    is_folder = True
-                                    break
-                    except DrimeAPIError:
-                        pass
-
-                    # Only keep non-folder duplicates
-                    if not is_folder:
-                        duplicates_to_keep.append(dup_name)
-
-                duplicates = duplicates_to_keep
-        except DrimeAPIError:
-            # If validation fails, continue without duplicate detection
-            duplicates = []
-
-        # Handle duplicates
-        chosen_action = on_duplicate
-        apply_to_all = on_duplicate != "ask"
-        files_to_skip = set()
-        rename_map = {}  # Maps original name/path to new name
-        entries_to_delete = []  # List of entry IDs to delete for replace action
-
-        if duplicates:
-            # First, look up IDs for all duplicates
-            # Maps duplicate name to list of (id, path) tuples
-            duplicate_info = {}
-            for dup_name in duplicates:
-                try:
-                    search_result = client.get_file_entries(
-                        query=dup_name,
-                        workspace_id=workspace,
-                    )
-                    if search_result and search_result.get("data"):
-                        from .models import FileEntriesResult
-
-                        file_entries = FileEntriesResult.from_api_response(
-                            search_result
-                        )
-                        # Find exact matches (case-sensitive)
-                        matching_entries = [
-                            e for e in file_entries.entries if e.name == dup_name
-                        ]
-                        if matching_entries:
-                            duplicate_info[dup_name] = [
-                                (e.id, e.path if hasattr(e, "path") else None)
-                                for e in matching_entries
-                            ]
-                except DrimeAPIError:
-                    # If we can't look up the ID, continue without it
-                    pass
-
-            if not out.quiet:
-                out.warning(f"\nFound {len(duplicates)} duplicate(s):")
-                for dup in duplicates:
-                    if dup in duplicate_info and duplicate_info[dup]:
-                        ids_str = ", ".join(
-                            f"ID: {id}" for id, _ in duplicate_info[dup]
-                        )
-                        out.warning(f"  • {dup} ({ids_str})")
-                    else:
-                        out.warning(f"  • {dup}")
-                out.print("")
-
-            for duplicate_name in duplicates:
-                if not apply_to_all:
-                    # Show ID in the prompt if available
-                    if (
-                        duplicate_name in duplicate_info
-                        and duplicate_info[duplicate_name]
-                    ):
-                        ids_str = ", ".join(
-                            f"ID: {id}" for id, _ in duplicate_info[duplicate_name]
-                        )
-                        out.warning(
-                            f"Duplicate detected: '{duplicate_name}' ({ids_str})"
-                        )
-                    else:
-                        out.warning(f"Duplicate detected: '{duplicate_name}'")
-                    chosen_action = click.prompt(
-                        "Action",
-                        type=click.Choice(["replace", "rename", "skip"]),
-                        default="rename",
-                    )
-
-                    apply_choice = click.prompt(
-                        "Apply this choice to all duplicates?",
-                        type=click.Choice(["y", "n"]),
-                        default="n",
-                    )
-                    apply_to_all = apply_choice.lower() == "y"
-
-                if chosen_action == "skip":
-                    # Mark all files/paths matching this duplicate for skipping
-                    for _file_path, rel_path in files_to_upload:
-                        path_obj = Path(rel_path)
-                        # Check if filename or parent folder matches duplicate
-                        if (
-                            path_obj.name == duplicate_name
-                            or duplicate_name in path_obj.parts
-                        ):
-                            files_to_skip.add(rel_path)
-                    if not out.quiet:
-                        out.info(f"Will skip files matching: {duplicate_name}")
-
-                elif chosen_action == "rename":
-                    try:
-                        new_name = client.get_available_name(
-                            duplicate_name, workspace_id=workspace
-                        )
-
-                        # Store the rename mapping for this duplicate
-                        rename_map[duplicate_name] = new_name
-
-                        if not out.quiet:
-                            out.info(f"Will rename '{duplicate_name}' → '{new_name}'")
-
-                    except DrimeAPIError as e:
-                        out.error(
-                            f"Could not get available name for '{duplicate_name}': {e}"
-                        )
-                        out.error("Skipping this file.")
-                        # Mark for skipping instead of aborting
-                        for _file_path, rel_path in files_to_upload:
-                            path_obj = Path(rel_path)
-                            if (
-                                path_obj.name == duplicate_name
-                                or duplicate_name in path_obj.parts
-                            ):
-                                files_to_skip.add(rel_path)
-
-                elif chosen_action == "replace":
-                    # For 'replace', use already looked-up IDs if available
-                    if (
-                        duplicate_name in duplicate_info
-                        and duplicate_info[duplicate_name]
-                    ):
-                        for entry_id, _ in duplicate_info[duplicate_name]:
-                            entries_to_delete.append(entry_id)
-                            if not out.quiet:
-                                out.info(
-                                    f"Will delete existing '{duplicate_name}' "
-                                    f"(ID: {entry_id}) before upload"
-                                )
-                    else:
-                        # Fall back to searching if we don't have the info
-                        try:
-                            search_result = client.get_file_entries(
-                                query=duplicate_name,
-                                workspace_id=workspace,
-                            )
-
-                            if search_result and search_result.get("data"):
-                                from .models import FileEntriesResult
-
-                                file_entries = FileEntriesResult.from_api_response(
-                                    search_result
-                                )
-
-                                # Find exact matches (case-sensitive)
-                                matching_entries = [
-                                    e
-                                    for e in file_entries.entries
-                                    if e.name == duplicate_name
-                                ]
-
-                                if matching_entries:
-                                    for entry in matching_entries:
-                                        entries_to_delete.append(entry.id)
-                                        if not out.quiet:
-                                            out.info(
-                                                f"Will delete existing "
-                                                f"'{duplicate_name}' "
-                                                f"(ID: {entry.id}) before upload"
-                                            )
-                                else:
-                                    if not out.quiet:
-                                        out.warning(
-                                            f"Could not find exact match for "
-                                            f"'{duplicate_name}' to delete - will "
-                                            "attempt upload anyway"
-                                        )
-                            else:
-                                if not out.quiet:
-                                    out.warning(
-                                        f"Could not search for existing "
-                                        f"'{duplicate_name}' "
-                                        "- will attempt upload anyway"
-                                    )
-                        except DrimeAPIError as e:
-                            out.warning(
-                                f"Could not search for existing '{duplicate_name}': {e}"
-                            )
-                            out.warning("Will attempt upload anyway")
+        # Use DuplicateHandler class
+        dup_handler = DuplicateHandler(client, out, workspace, on_duplicate)
+        dup_handler.validate_and_handle_duplicates(files_to_upload)
 
         # Delete entries marked for replacement
-        if entries_to_delete:
-            try:
-                if not out.quiet:
-                    out.info(
-                        f"Moving {len(entries_to_delete)} existing entries to trash..."
-                    )
-                client.delete_file_entries(entries_to_delete, delete_forever=False)
-                if not out.quiet:
-                    out.success(f"✓ Moved {len(entries_to_delete)} entries to trash")
-            except DrimeAPIError as e:
-                out.error(f"Failed to delete existing entries: {e}")
-                out.error("Aborting upload to avoid conflicts")
-                ctx.exit(1)
+        if not dup_handler.delete_marked_entries():
+            ctx.exit(1)
 
         success_count = 0
         error_count = 0
         skipped_count = 0
         uploaded_files = []
 
-        # Helper function to apply path renames
-        def apply_renames(rel_path: str) -> str:
-            upload_path = rel_path
-            path_obj = Path(rel_path)
-
-            # Check if the filename needs renaming
-            if path_obj.name in rename_map:
-                new_filename = rename_map[path_obj.name]
-                if path_obj.parent != Path("."):
-                    upload_path = str(path_obj.parent / new_filename)
-                else:
-                    upload_path = new_filename
-
-            # Check if any parent folder in the path needs renaming
-            parts = list(path_obj.parts)
-            renamed_parts = [rename_map.get(part, part) for part in parts]
-            if renamed_parts != list(parts):
-                upload_path = str(Path(*renamed_parts))
-
-            return upload_path
-
         # Prepare files for upload (filter skipped, apply renames)
         files_to_process = []
         for file_path, rel_path in files_to_upload:
-            if rel_path in files_to_skip:
+            if rel_path in dup_handler.files_to_skip:
                 skipped_count += 1
                 if not out.quiet:
                     out.info(f"Skipping: {rel_path}")
                 continue
 
-            upload_path = apply_renames(rel_path)
+            upload_path = dup_handler.apply_renames(rel_path)
             files_to_process.append((file_path, upload_path, rel_path))
 
         # Create progress display
@@ -846,56 +343,40 @@ def upload(  # noqa: C901
         else:
             progress_display = None
 
-        # Shared state for tracking overall progress (thread-safe)
-        import threading
-
-        overall_progress_lock = threading.Lock()
-        overall_progress_state: dict[str, Any] = {
-            "bytes_uploaded": 0,
-            "overall_task_id": None,
-        }
-        file_progress_tracking: dict[
-            str, int
-        ] = {}  # Track bytes uploaded per file for rollback on failure
+        # Create progress tracker for parallel uploads
+        progress_tracker = UploadProgressTracker()
 
         # Helper function to upload a single file with progress
         def upload_single_file_with_progress(
             file_path: Path, upload_path: str, task_id: Any
         ) -> Any:
-            last_bytes = {"value": 0}
-            file_key = str(file_path)  # Unique key for tracking this file
-
-            def progress_callback(bytes_uploaded: int, total_bytes: int) -> None:
-                if progress_display:
-                    # Update individual file progress with total to ensure
-                    # speed calculation
+            callback = None
+            if progress_display and task_id is not None:
+                # Create file-specific progress callback with individual task tracking
+                def file_progress_callback(
+                    bytes_uploaded: int, total_bytes: int
+                ) -> None:
+                    # Update individual file progress
                     progress_display.update(
                         task_id, completed=bytes_uploaded, total=total_bytes
                     )
 
-                    # Update overall progress with incremental change (thread-safe)
-                    if overall_progress_state["overall_task_id"] is not None:
-                        increment = bytes_uploaded - last_bytes["value"]
-                        with overall_progress_lock:
-                            bytes_count = cast(
-                                int, overall_progress_state["bytes_uploaded"]
-                            )
-                            overall_progress_state["bytes_uploaded"] = (
-                                bytes_count + increment
-                            )
-                            file_progress_tracking[file_key] = bytes_uploaded
-                            progress_display.update(
-                                cast(TaskID, overall_progress_state["overall_task_id"]),
-                                completed=overall_progress_state["bytes_uploaded"],
-                            )
-                        last_bytes["value"] = bytes_uploaded
+                # Create overall progress callback using tracker
+                overall_callback = progress_tracker.create_file_callback(
+                    file_path, progress_display
+                )
+
+                # Combine both callbacks
+                def callback(bytes_uploaded: int, total_bytes: int) -> None:
+                    file_progress_callback(bytes_uploaded, total_bytes)
+                    overall_callback(bytes_uploaded, total_bytes)
 
             return client.upload_file(
                 file_path,
                 parent_id=current_folder_id,
                 relative_path=upload_path,
                 workspace_id=workspace,
-                progress_callback=progress_callback if progress_display else None,
+                progress_callback=callback,
                 chunk_size=chunk_size_bytes,
                 use_multipart_threshold=multipart_threshold_bytes,
             )
@@ -914,7 +395,7 @@ def upload(  # noqa: C901
                     overall_task_id = progress_display.add_task(
                         "[green]Overall Progress", total=total_size
                     )
-                    overall_progress_state["overall_task_id"] = overall_task_id
+                    progress_tracker.set_overall_task(overall_task_id)
 
                 with ThreadPoolExecutor(max_workers=workers) as executor:
                     futures = {}
@@ -939,7 +420,6 @@ def upload(  # noqa: C901
 
                     for future in as_completed(futures):
                         file_path, upload_path, rel_path, task_id = futures[future]
-                        file_key = str(file_path)
                         try:
                             result = future.result()
                             success_count += 1
@@ -958,31 +438,10 @@ def upload(  # noqa: C901
                             error_count += 1
 
                             # Rollback progress for failed file
-                            if file_key in file_progress_tracking and progress_display:
-                                bytes_to_rollback = file_progress_tracking[file_key]
-                                with overall_progress_lock:
-                                    bytes_count = cast(
-                                        int, overall_progress_state["bytes_uploaded"]
-                                    )
-                                    overall_progress_state["bytes_uploaded"] = (
-                                        bytes_count - bytes_to_rollback
-                                    )
-                                    if (
-                                        overall_progress_state["overall_task_id"]
-                                        is not None
-                                    ):
-                                        progress_display.update(
-                                            cast(
-                                                TaskID,
-                                                overall_progress_state[
-                                                    "overall_task_id"
-                                                ],
-                                            ),
-                                            completed=overall_progress_state[
-                                                "bytes_uploaded"
-                                            ],
-                                        )
-                                del file_progress_tracking[file_key]
+                            if progress_display:
+                                progress_tracker.rollback_file_progress(
+                                    file_path, progress_display
+                                )
 
                             # Mark individual file task as failed
                             if progress_display and task_id is not None:
@@ -1010,7 +469,7 @@ def upload(  # noqa: C901
                     overall_task_id = progress_display.add_task(
                         "[green]Overall Progress", total=total_size
                     )
-                    overall_progress_state["overall_task_id"] = overall_task_id
+                    progress_tracker.set_overall_task(overall_task_id)
 
                 for idx, (file_path, upload_path, rel_path) in enumerate(
                     files_to_process, 1
@@ -1720,7 +1179,9 @@ def download(
                 out.info(f"Downloading folder: {entry.name}")
 
             try:
-                folder_result = client.get_file_entries(parent_ids=[entry.id])
+                folder_result = client.get_file_entries(
+                    parent_ids=[entry.id], workspace_id=entry.workspace_id or workspace
+                )
                 folder_entries = FileEntriesResult.from_api_response(folder_result)
 
                 for sub_entry in folder_entries.entries:

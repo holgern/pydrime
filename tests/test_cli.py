@@ -188,10 +188,14 @@ class TestUploadCommand:
 
         assert "Dry run mode" in result.output or "Upload cancelled" in result.output
 
+    @patch("pydrime.auth.config")
     @patch("pydrime.cli.config")
-    def test_upload_without_api_key(self, mock_config, runner, tmp_path):
+    def test_upload_without_api_key(
+        self, mock_cli_config, mock_auth_config, runner, tmp_path
+    ):
         """Test upload without API key configured."""
-        mock_config.is_configured.return_value = False
+        mock_cli_config.is_configured.return_value = False
+        mock_auth_config.is_configured.return_value = False
 
         test_file = tmp_path / "test.txt"
         test_file.write_text("test content")
@@ -2971,7 +2975,9 @@ class TestRemotePathDuplicateDetection:
             "duplicates": ["backup", "file1.txt"]
         }
 
-        def mock_get_file_entries(query=None, workspace_id=0):
+        def mock_get_file_entries(
+            query=None, workspace_id=0, parent_ids=None, **kwargs
+        ):
             if query == "backup":
                 return {
                     "data": [
@@ -2992,6 +2998,9 @@ class TestRemotePathDuplicateDetection:
                         }
                     ]
                 }
+            elif parent_ids:
+                # Return empty for folder contents checks
+                return {"data": []}
             return {"data": []}
 
         mock_client.get_file_entries.side_effect = mock_get_file_entries
@@ -3048,7 +3057,9 @@ class TestRemotePathDuplicateDetection:
             ]  # backup exists, 2024 subfolder also exists
         }
 
-        def mock_get_file_entries(query=None, workspace_id=0):
+        def mock_get_file_entries(
+            query=None, workspace_id=0, parent_ids=None, **kwargs
+        ):
             if query == "backup":
                 return {
                     "data": [
