@@ -48,6 +48,9 @@ class DuplicateHandler:
         self.rename_map: dict[str, str] = {}
         self.entries_to_delete: list[int] = []
 
+        # Performance optimization: cache for folder ID lookups
+        self._folder_id_cache: dict[str, Optional[int]] = {}
+
     def validate_and_handle_duplicates(
         self, files_to_upload: list[tuple[Path, str]]
     ) -> None:
@@ -239,21 +242,69 @@ class DuplicateHandler:
                 folder_name = path_parts[i]
                 folders_in_upload.add(folder_name)
 
-        # Filter duplicates
+        # Batch check which duplicates are folders on the server
+        # Do a single API call to check all at once
+        duplicates_to_check = [d for d in duplicates if d not in folders_in_upload]
+
+        if not duplicates_to_check:
+            return []
+
+        folder_set = self._batch_check_folders(duplicates_to_check)
+
+        # Filter duplicates - keep only non-folders
         duplicates_to_keep = []
         for dup_name in duplicates:
             # Skip if it's a folder in our upload paths
             if dup_name in folders_in_upload:
                 continue
 
-            # Check if the duplicate is an existing folder on the server
-            is_folder = self._is_existing_folder(dup_name)
+            # Skip if it's a folder on server
+            if dup_name in folder_set:
+                continue
 
-            # Only keep non-folder duplicates
-            if not is_folder:
-                duplicates_to_keep.append(dup_name)
+            duplicates_to_keep.append(dup_name)
 
         return duplicates_to_keep
+
+    def _batch_check_folders(self, names: list[str]) -> set[str]:
+        """Batch check which names are folders on the server.
+
+        Args:
+            names: List of names to check
+
+        Returns:
+            Set of names that are folders
+        """
+        folder_names = set()
+
+        # Try to get all entries in one or few API calls
+        # We check a reasonable batch at a time to avoid overwhelming the API
+        for name in names:
+            try:
+                # Check cache first
+                cache_key = f"is_folder:{name}"
+                if cache_key in self._folder_id_cache:
+                    if self._folder_id_cache[cache_key]:
+                        folder_names.add(name)
+                    continue
+
+                search_result = self.client.get_file_entries(
+                    query=name, workspace_id=self.workspace_id
+                )
+                if search_result and search_result.get("data"):
+                    file_entries = FileEntriesResult.from_api_response(search_result)
+                    # Check if any exact match is a folder
+                    for entry in file_entries.entries:
+                        if entry.name == name and entry.is_folder:
+                            folder_names.add(name)
+                            self._folder_id_cache[cache_key] = entry.id
+                            break
+                    else:
+                        self._folder_id_cache[cache_key] = None
+            except DrimeAPIError:
+                pass
+
+        return folder_names
 
     def _check_file_duplicates_in_folders(
         self, files_to_upload: list[tuple[Path, str]], folder_names: set[str]
@@ -403,7 +454,7 @@ class DuplicateHandler:
         return False
 
     def _resolve_parent_folder_id(self, folder_path: str) -> Optional[int]:
-        """Resolve a folder path to its ID.
+        """Resolve a folder path to its ID with caching.
 
         Args:
             folder_path: Relative folder path (e.g., "backup/data")
@@ -411,12 +462,29 @@ class DuplicateHandler:
         Returns:
             Folder ID if found, None otherwise
         """
+        # Check cache first
+        if folder_path in self._folder_id_cache:
+            return self._folder_id_cache[folder_path]
+
         # Start from the base parent_id
         current_parent_id = self.parent_id
 
         # Split path and navigate through folders
         path_parts = PurePosixPath(folder_path).parts
-        for folder_name in path_parts:
+        current_path = ""
+
+        for idx, folder_name in enumerate(path_parts):
+            # Build incremental path for caching
+            current_path = folder_name if idx == 0 else f"{current_path}/{folder_name}"
+
+            # Check if we already have this path cached
+            if current_path in self._folder_id_cache:
+                current_parent_id = self._folder_id_cache[current_path]
+                if current_parent_id is None:
+                    self._folder_id_cache[folder_path] = None
+                    return None
+                continue
+
             try:
                 # Search for folder in current parent
                 search_result = self.client.get_file_entries(
@@ -424,6 +492,8 @@ class DuplicateHandler:
                     workspace_id=self.workspace_id,
                 )
                 if not search_result or not search_result.get("data"):
+                    self._folder_id_cache[current_path] = None
+                    self._folder_id_cache[folder_path] = None
                     return None
 
                 file_entries = FileEntriesResult.from_api_response(search_result)
@@ -436,12 +506,19 @@ class DuplicateHandler:
                         break
 
                 if not folder_entry:
+                    self._folder_id_cache[current_path] = None
+                    self._folder_id_cache[folder_path] = None
                     return None
 
                 current_parent_id = folder_entry.id
+                self._folder_id_cache[current_path] = current_parent_id
             except DrimeAPIError:
+                self._folder_id_cache[current_path] = None
+                self._folder_id_cache[folder_path] = None
                 return None
 
+        # Cache the final result
+        self._folder_id_cache[folder_path] = current_parent_id
         return current_parent_id
 
     def _lookup_duplicate_ids(
@@ -458,55 +535,101 @@ class DuplicateHandler:
         Returns:
             Dict mapping duplicate name to list of (id, path) tuples
         """
-        duplicate_info = {}
+        # Pre-build a map of duplicate names to their target paths
+        # This avoids repeated searches through files_to_upload
+        dup_to_path: dict[str, str] = {}
+        for _file_path, rel_path in files_to_upload:
+            name = PurePosixPath(rel_path).name
+            if name in duplicates and name not in dup_to_path:
+                dup_to_path[name] = rel_path
+
+        # Group duplicates by their target parent folder
+        # to batch API calls for files in the same folder
+        by_parent: dict[Optional[int], list[str]] = {}
+        dup_to_parent: dict[str, Optional[int]] = {}
+
         for dup_name in duplicates:
+            if dup_name not in dup_to_path:
+                continue
+
+            target_rel_path = dup_to_path[dup_name]
+            parent_path = PurePosixPath(target_rel_path).parent
+
+            # Resolve parent folder ID
+            target_parent_id = self.parent_id
+            if parent_path != PurePosixPath("."):
+                target_parent_id = self._resolve_parent_folder_id(str(parent_path))
+
+            dup_to_parent[dup_name] = target_parent_id
+            if target_parent_id not in by_parent:
+                by_parent[target_parent_id] = []
+            by_parent[target_parent_id].append(dup_name)
+
+        # Now fetch entries grouped by parent folder
+        duplicate_info = {}
+
+        for parent_id, dup_names in by_parent.items():
             try:
-                # Find the relative path for this duplicate
-                target_rel_path = None
-                for _file_path, rel_path in files_to_upload:
-                    if PurePosixPath(rel_path).name == dup_name:
-                        target_rel_path = rel_path
-                        break
-
-                if not target_rel_path:
-                    continue
-
-                # Get the parent folder path
-                parent_path = PurePosixPath(target_rel_path).parent
-
-                # Resolve parent folder ID
-                target_parent_id = self.parent_id
-                if parent_path != PurePosixPath("."):
-                    # Navigate through folder structure
-                    target_parent_id = self._resolve_parent_folder_id(str(parent_path))
-
-                if target_parent_id is None:
-                    # Fallback to global search if parent can't be resolved
-                    search_result = self.client.get_file_entries(
-                        query=dup_name,
-                        workspace_id=self.workspace_id,
-                    )
+                if parent_id is None:
+                    # Fallback to global search for each
+                    for dup_name in dup_names:
+                        try:
+                            search_result = self.client.get_file_entries(
+                                query=dup_name,
+                                workspace_id=self.workspace_id,
+                            )
+                            if search_result and search_result.get("data"):
+                                file_entries = FileEntriesResult.from_api_response(
+                                    search_result
+                                )
+                                matching_entries = [
+                                    e
+                                    for e in file_entries.entries
+                                    if e.name == dup_name
+                                ]
+                                if matching_entries:
+                                    duplicate_info[dup_name] = [
+                                        (
+                                            e.id,
+                                            e.path if hasattr(e, "path") else None,
+                                        )
+                                        for e in matching_entries
+                                    ]
+                        except DrimeAPIError:
+                            pass
                 else:
-                    # Search in specific parent folder
+                    # Batch: Get all entries in this parent folder at once
                     search_result = self.client.get_file_entries(
-                        parent_ids=[target_parent_id],
+                        parent_ids=[parent_id],
                         workspace_id=self.workspace_id,
                     )
 
-                if search_result and search_result.get("data"):
-                    file_entries = FileEntriesResult.from_api_response(search_result)
-                    # Find exact matches (case-sensitive)
-                    matching_entries = [
-                        e for e in file_entries.entries if e.name == dup_name
-                    ]
-                    if matching_entries:
-                        duplicate_info[dup_name] = [
-                            (e.id, e.path if hasattr(e, "path") else None)
-                            for e in matching_entries
-                        ]
+                    if search_result and search_result.get("data"):
+                        file_entries = FileEntriesResult.from_api_response(
+                            search_result
+                        )
+
+                        # Build a map for quick lookup
+                        entries_by_name: dict[str, list] = {}
+                        for entry in file_entries.entries:
+                            if entry.name not in entries_by_name:
+                                entries_by_name[entry.name] = []
+                            entries_by_name[entry.name].append(entry)
+
+                        # Match duplicates with entries
+                        for dup_name in dup_names:
+                            if dup_name in entries_by_name:
+                                duplicate_info[dup_name] = [
+                                    (
+                                        e.id,
+                                        e.path if hasattr(e, "path") else None,
+                                    )
+                                    for e in entries_by_name[dup_name]
+                                ]
             except DrimeAPIError:
-                # If we can't look up the ID, continue without it
+                # If batch fails, continue without these duplicates
                 pass
+
         return duplicate_info
 
     def _handle_single_duplicate(
