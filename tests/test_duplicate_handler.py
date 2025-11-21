@@ -1,9 +1,11 @@
 """Tests for duplicate file handler."""
 
+from typing import Optional
 from unittest.mock import MagicMock
 
 from pydrime.duplicate_handler import DuplicateHandler
 from pydrime.exceptions import DrimeAPIError
+from pydrime.models import FileEntry
 from pydrime.output import OutputFormatter
 
 
@@ -695,7 +697,6 @@ class TestDisplayDuplicates:
 
     def test_display_duplicates_with_multiple_ids(self, tmp_path):
         """Test displaying duplicates with multiple IDs."""
-        from typing import Optional
 
         mock_client = MagicMock()
         out = OutputFormatter(json_output=False, quiet=False)
@@ -717,7 +718,6 @@ class TestDisplayDuplicates:
 
     def test_display_duplicates_with_single_id(self, tmp_path):
         """Test displaying duplicates with single ID."""
-        from typing import Optional
 
         mock_client = MagicMock()
         out = OutputFormatter(json_output=False, quiet=False)
@@ -739,7 +739,6 @@ class TestDisplayDuplicates:
 
     def test_display_duplicates_without_ids(self, tmp_path):
         """Test displaying duplicates without ID info."""
-        from typing import Optional
 
         mock_client = MagicMock()
         out = OutputFormatter(json_output=False, quiet=False)
@@ -866,3 +865,130 @@ class TestFolderResolution:
         # Should cache None and return None on API error
         assert folder_id is None
         assert handler._folder_id_cache["backup"] is None
+
+
+class TestBatchCheckFolders:
+    """Tests for _batch_check_folders method (performance optimization)."""
+
+    def test_batch_check_folders_with_all_cached(self):
+        """Test batch check uses cache when all names are cached."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        # Pre-populate cache
+        handler._folder_id_cache["is_folder:folder1"] = 100
+        handler._folder_id_cache["is_folder:folder2"] = 200
+        handler._folder_id_cache["is_folder:file.txt"] = None
+
+        result = handler._batch_check_folders(["folder1", "folder2", "file.txt"])
+
+        assert result == {"folder1", "folder2"}
+        # Should not call entries_manager if all cached
+        assert not hasattr(handler.entries_manager, "get_all_in_folder_called")
+
+    def test_batch_check_folders_optimized_single_api_call(self):
+        """Test batch check makes single API call for uncached names."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask", parent_id=0)
+
+        # Mock entries_manager.get_all_in_folder to return folders
+        mock_entries = [
+            FileEntry(
+                id=100,
+                name="folder1",
+                file_name="folder1",
+                mime="",
+                file_size=0,
+                parent_id=0,
+                created_at="2023-01-01",
+                type="folder",
+                extension=None,
+                hash="hash1",
+                url="",
+            ),
+            FileEntry(
+                id=200,
+                name="folder2",
+                file_name="folder2",
+                mime="",
+                file_size=0,
+                parent_id=0,
+                created_at="2023-01-01",
+                type="folder",
+                extension=None,
+                hash="hash2",
+                url="",
+            ),
+            FileEntry(
+                id=300,
+                name="file.txt",
+                file_name="file.txt",
+                mime="text/plain",
+                file_size=100,
+                parent_id=0,
+                created_at="2023-01-01",
+                type="text",
+                extension="txt",
+                hash="hash3",
+                url="",
+            ),
+        ]
+        handler.entries_manager.get_all_in_folder = MagicMock(return_value=mock_entries)
+
+        result = handler._batch_check_folders(["folder1", "folder2", "file.txt"])
+
+        assert result == {"folder1", "folder2"}
+        # Should make exactly 1 API call
+        handler.entries_manager.get_all_in_folder.assert_called_once_with(
+            folder_id=0, use_cache=False, per_page=100
+        )
+        # Should cache results
+        assert handler._folder_id_cache["is_folder:folder1"] == 100
+        assert handler._folder_id_cache["is_folder:folder2"] == 200
+        assert handler._folder_id_cache["is_folder:file.txt"] is None
+
+    def test_batch_check_folders_fallback_on_api_error(self):
+        """Test batch check falls back to individual searches on API error."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask", parent_id=0)
+
+        # Mock get_all_in_folder to raise API error
+        handler.entries_manager.get_all_in_folder = MagicMock(
+            side_effect=DrimeAPIError("API Error")
+        )
+
+        # Mock search_by_name for fallback
+        def mock_search_by_name(name, exact_match=True):
+            if name == "folder1":
+                return [
+                    FileEntry(
+                        id=100,
+                        name="folder1",
+                        file_name="folder1",
+                        mime="",
+                        file_size=0,
+                        parent_id=0,
+                        created_at="2023-01-01",
+                        type="folder",
+                        extension=None,
+                        hash="hash1",
+                        url="",
+                    )
+                ]
+            return []
+
+        handler.entries_manager.search_by_name = MagicMock(
+            side_effect=mock_search_by_name
+        )
+
+        result = handler._batch_check_folders(["folder1", "file.txt"])
+
+        assert result == {"folder1"}
+        # Should fall back to individual searches
+        assert handler.entries_manager.search_by_name.call_count == 2
+        # Should cache results
+        assert handler._folder_id_cache["is_folder:folder1"] == 100
+        assert handler._folder_id_cache["is_folder:file.txt"] is None
