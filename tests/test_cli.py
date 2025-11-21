@@ -1718,6 +1718,183 @@ class TestRecursiveFlag:
         assert result.exit_code == 0
         assert "Downloading folder: myfolder" in result.output
 
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_download_file_when_folder_exists(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test downloading file when a folder with same name exists - should rename."""
+        mock_config.is_configured.return_value = True
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+
+        # Mock resolve_entry_identifier to return entry ID
+        mock_client.resolve_entry_identifier.return_value = 123
+
+        # Mock get_file_entries to return a file
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 123,
+                    "name": "test",
+                    "type": "text",
+                    "hash": "hash123",
+                    "file_size": 100,
+                    "parent_id": None,
+                    "created_at": "2025-01-01T00:00:00.000000Z",
+                    "users": [],
+                    "tags": [],
+                    "permissions": None,
+                    "public": False,
+                    "file_name": "test",
+                    "mime": "text/plain",
+                    "url": "",
+                }
+            ]
+        }
+
+        mock_client.download_file.return_value = Path("test (1)")
+
+        with runner.isolated_filesystem():
+            # Create a directory with the same name as the file we want to download
+            Path("test").mkdir()
+
+            result = runner.invoke(main, ["download", "test"])
+
+            assert result.exit_code == 0
+            assert (
+                "Directory exists with same name, renaming file to: test (1)"
+                in result.output
+            )
+            mock_client.download_file.assert_called_once()
+            # Check that download was called with renamed path
+            call_args = mock_client.download_file.call_args
+            assert str(call_args[0][1]).endswith("test (1)")
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_download_folder_when_file_exists(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test downloading folder when a file with same name exists - should error."""
+        mock_config.is_configured.return_value = True
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+
+        # Mock resolve_entry_identifier to return entry ID
+        mock_client.resolve_entry_identifier.return_value = 456
+
+        # Mock get_file_entries to return a folder
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 456,
+                    "name": "myfolder",
+                    "type": "folder",
+                    "hash": "hash456",
+                    "file_size": 0,
+                    "parent_id": None,
+                    "created_at": "2025-01-01T00:00:00.000000Z",
+                    "users": [],
+                    "tags": [],
+                    "permissions": None,
+                    "public": False,
+                    "file_name": "myfolder",
+                    "mime": "folder",
+                    "url": "",
+                }
+            ]
+        }
+
+        with runner.isolated_filesystem():
+            # Create a file with the same name as the folder we want to download
+            Path("myfolder").touch()
+
+            result = runner.invoke(main, ["download", "myfolder"])
+
+            assert result.exit_code == 0
+            assert "Cannot download folder 'myfolder'" in result.output
+            assert "a file with this name already exists" in result.output
+            # Should not attempt to download folder contents
+            assert mock_client.download_file.call_count == 0
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_download_folder_when_folder_exists(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test folder download when folder exists - should work (go into it)."""
+        mock_config.is_configured.return_value = True
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+
+        # Mock resolve_entry_identifier
+        mock_client.resolve_entry_identifier.return_value = 789
+
+        # Mock get_file_entries to return a folder and its contents
+        mock_client.get_file_entries.side_effect = [
+            {
+                "data": [
+                    {
+                        "id": 789,
+                        "name": "existingfolder",
+                        "type": "folder",
+                        "hash": "hash789",
+                        "file_size": 0,
+                        "parent_id": None,
+                        "created_at": "2025-01-01T00:00:00.000000Z",
+                        "users": [],
+                        "tags": [],
+                        "permissions": None,
+                        "public": False,
+                        "file_name": "existingfolder",
+                        "mime": "folder",
+                        "url": "",
+                    }
+                ]
+            },
+            # Mock folder contents
+            {
+                "data": [
+                    {
+                        "id": 790,
+                        "name": "file.txt",
+                        "type": "file",
+                        "hash": "hash790",
+                        "file_size": 100,
+                        "parent_id": 789,
+                        "created_at": "2025-01-01T00:00:00.000000Z",
+                        "users": [],
+                        "tags": [],
+                        "permissions": None,
+                        "public": False,
+                        "file_name": "file.txt",
+                        "mime": "text/plain",
+                        "url": "",
+                    }
+                ]
+            },
+        ]
+
+        mock_client.download_file.return_value = Path("existingfolder/file.txt")
+
+        with runner.isolated_filesystem():
+            # Create the folder beforehand
+            Path("existingfolder").mkdir()
+
+            result = runner.invoke(main, ["download", "existingfolder"])
+
+            assert result.exit_code == 0
+            assert "Downloading folder: existingfolder" in result.output
+            # Should download the file inside
+            mock_client.download_file.assert_called_once()
+
 
 class TestWorkspaceCommand:
     """Tests for the workspace command."""
