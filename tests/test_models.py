@@ -1201,3 +1201,130 @@ class TestFileEntriesResult:
         assert entry is not None
         assert entry.id == 1
         assert result.get_by_name("nonexistent.txt") is None
+
+
+class TestAdditionalModels:
+    """Additional tests for remaining model coverage."""
+
+    def test_role_from_dict(self):
+        """Test creating Role from dictionary."""
+        data = {
+            "id": 1,
+            "name": "admin",
+            "default": True,
+            "guests": False,
+            "created_at": "2024-01-01",
+            "updated_at": "2024-01-01",
+        }
+        role = Role.from_dict(data)
+        assert role.id == 1
+        assert role.name == "admin"
+        assert role.default is True
+        assert role.guests is False
+
+    def test_permission_from_dict(self):
+        """Test creating Permission from dictionary."""
+        data = {
+            "id": 1,
+            "name": "files.download",
+            "restrictions": [],
+        }
+        perm = Permission.from_dict(data)
+        assert perm.id == 1
+        assert perm.name == "files.download"
+        assert perm.restrictions == []
+
+    def test_subscription_status_text_cancelled(self):
+        """Test status text for cancelled subscription."""
+        sub = Subscription(
+            id=1,
+            user_id=1,
+            price_id=1,
+            gateway_name="stripe",
+            quantity=1,
+            created_at="2024-01-01",
+            updated_at="2024-01-01",
+            product_id=1,
+            on_grace_period=False,
+            on_trial=False,
+            valid=False,
+            active=False,
+            cancelled=True,
+        )
+        assert sub.status_text == "Cancelled"
+
+    def test_subscription_status_text_grace_period(self):
+        """Test status text for subscription on grace period."""
+        sub = Subscription(
+            id=1,
+            user_id=1,
+            price_id=1,
+            gateway_name="stripe",
+            quantity=1,
+            created_at="2024-01-01",
+            updated_at="2024-01-01",
+            product_id=1,
+            on_grace_period=True,
+            on_trial=False,
+            valid=True,
+            active=False,
+            cancelled=False,
+        )
+        assert sub.status_text == "Grace Period"
+
+    def test_user_from_dict_with_all_fields(self):
+        """Test creating User from dictionary with all optional fields."""
+        data = {
+            "id": 1,
+            "email": "test@example.com",
+            "created_at": "2024-01-01",
+            "updated_at": "2024-01-01",
+            "first_name": "John",
+            "last_name": "Doe",
+            "display_name": "John D.",
+            "avatar": "https://example.com/avatar.png",
+            "timezone": "America/New_York",
+            "country": "US",
+            "language": "en",
+            "email_verified_at": "2024-01-01",
+            "roles": [],
+            "subscriptions": [],
+            "permissions": [],
+        }
+        user = User.from_dict(data)
+        assert user.id == 1
+        assert user.first_name == "John"
+        assert user.last_name == "Doe"
+        assert user.display_name == "John D."
+        assert user.avatar == "https://example.com/avatar.png"
+        assert user.timezone == "America/New_York"
+        assert user.country == "US"
+
+    def test_user_full_name_email_fallback(self):
+        """Test that full_name uses email username when no names provided."""
+        user = User(
+            id=1,
+            email="test@example.com",
+            created_at="2024-01-01",
+            updated_at="2024-01-01",
+        )
+        assert user.full_name == "test"
+
+    def test_subscription_plan_name_without_product(self):
+        """Test plan name when product is not provided."""
+        sub = Subscription(
+            id=1,
+            user_id=1,
+            price_id=1,
+            gateway_name="stripe",
+            quantity=1,
+            created_at="2024-01-01",
+            updated_at="2024-01-01",
+            product_id=1,
+            on_grace_period=False,
+            on_trial=False,
+            valid=True,
+            active=True,
+            cancelled=False,
+        )
+        assert sub.plan_name == "Unknown"

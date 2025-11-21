@@ -479,13 +479,14 @@ def upload(  # noqa: C901
                                 file_path, upload_path, task_id
                             )
 
-                            # Mark task as complete
+                            # Mark task as complete and hide it
                             if progress_display:
                                 progress_display.update(
                                     task_id,
                                     description="[dim]Worker: Waiting...",
                                     completed=0,
                                     total=100,
+                                    visible=False,
                                 )
                             return result
                         finally:

@@ -95,7 +95,7 @@ def display_upload_preview(
     out.print(f"Files to upload: {len(files_to_upload)}")
 
     # Group files by directory for better visualization
-    files_by_dir = {}
+    files_by_dir: dict[str, list[tuple[str, int]]] = {}
     for file_path, rel_path in files_to_upload:
         posix_path = PurePosixPath(rel_path)
         dir_path = str(posix_path.parent)

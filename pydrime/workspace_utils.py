@@ -21,7 +21,8 @@ def get_workspace_name(client: DrimeClient, workspace_id: int) -> Optional[str]:
         if isinstance(result, dict) and "workspaces" in result:
             for ws in result["workspaces"]:
                 if ws.get("id") == workspace_id:
-                    return ws.get("name")
+                    name: Optional[str] = ws.get("name")
+                    return name
     except (DrimeAPIError, Exception):
         pass
     return None

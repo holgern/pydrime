@@ -19,7 +19,7 @@ def require_api_key(ctx: Any, out: OutputFormatter) -> Optional[str]:
     Raises:
         SystemExit: If API key is not configured
     """
-    api_key = ctx.obj.get("api_key")
+    api_key: Optional[str] = ctx.obj.get("api_key")
 
     # Check if API key is not configured (None or empty string)
     if not config.is_configured() and (not api_key or api_key == ""):
@@ -46,7 +46,7 @@ def require_api_key_simple(ctx: Any, out: OutputFormatter) -> Optional[str]:
     Raises:
         SystemExit: If API key is not configured
     """
-    api_key = ctx.obj.get("api_key")
+    api_key: Optional[str] = ctx.obj.get("api_key")
 
     # Check if API key is not configured (None or empty string)
     if not config.is_configured() and (not api_key or api_key == ""):

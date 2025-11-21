@@ -10,7 +10,7 @@ from rich.progress import TaskID
 class UploadProgressTracker:
     """Thread-safe progress tracker for parallel uploads."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize progress tracker."""
         self.lock = threading.Lock()
         self.bytes_uploaded = 0
