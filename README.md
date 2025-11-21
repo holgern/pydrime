@@ -1,3 +1,8 @@
+[![PyPI - Version](https://img.shields.io/pypi/v/pydrime)](https://pypi.org/project/pydrime/)
+![PyPI - Python Version](https://img.shields.io/pypi/pyversions/pydrime)
+![PyPI - Downloads](https://img.shields.io/pypi/dm/pydrime)
+[![codecov](https://codecov.io/gh/holgern/pydrime/graph/badge.svg?token=iCHXwbjAXG)](https://codecov.io/gh/holgern/pydrime)
+
 # PyDrime
 
 A command-line tool for uploading files and directories to Drime Cloud.
