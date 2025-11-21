@@ -283,8 +283,9 @@ def upload(  # noqa: C901
         files_to_upload = [(local_path, remote_path or local_path.name)]
     else:
         out.info(f"Scanning directory: {local_path}")
-        # Use parent as base_path so the folder name is included in relative paths
-        base_path = local_path.parent if remote_path is None else local_path
+        # Always use parent as base_path so the folder name is included in
+        # relative paths
+        base_path = local_path.parent
         files_to_upload = scan_directory(local_path, base_path, out)
 
         # If remote_path is specified, prepend it to all relative paths
