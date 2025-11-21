@@ -942,6 +942,8 @@ class FileEntriesResult:
                 "total": data.get("total"),
                 "from": data.get("from"),
                 "to": data.get("to"),
+                "next_page": data.get("next_page"),
+                "prev_page": data.get("prev_page"),
             }
 
         return cls(entries=entries, raw_data=data, pagination=pagination)
