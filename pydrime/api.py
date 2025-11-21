@@ -96,7 +96,9 @@ class DrimeClient:
 
         except requests.exceptions.HTTPError as e:
             # Try to get error message from response
-            status_code = e.response.status_code if e.response else None
+            # Note: e.response can be a Response object that evaluates to False
+            # if the status code indicates an error, so we must check "is not None"
+            status_code = e.response.status_code if e.response is not None else None
 
             # Handle common HTTP status codes with user-friendly messages
             if status_code == 401:
@@ -116,24 +118,24 @@ class DrimeClient:
             else:
                 error_msg = f"API request failed with status {status_code}"
 
-            # Try to extract more details from response body
-            try:
-                if e.response is not None and e.response.content:
-                    error_data = e.response.json()
-                    if isinstance(error_data, dict):
-                        # Try to extract error message from common fields
-                        msg = (
-                            error_data.get("message")
-                            or error_data.get("error")
-                            or error_data.get("detail")
-                        )
-                        if msg:
-                            error_msg = f"{error_msg}: {msg}"
-            except Exception:
-                # If we can't parse the error response, use the status-based message
-                pass
+                # Try to extract more details from response body
+                try:
+                    if e.response is not None and e.response.content:
+                        error_data = e.response.json()
+                        if isinstance(error_data, dict):
+                            # Try to extract error message from common fields
+                            msg = (
+                                error_data.get("message")
+                                or error_data.get("error")
+                                or error_data.get("detail")
+                            )
+                            if msg:
+                                error_msg = f"{error_msg}: {msg}"
+                except Exception:
+                    # If we can't parse the error response, use the status-based message
+                    pass
 
-            raise DrimeAPIError(error_msg) from e
+                raise DrimeAPIError(error_msg) from e
         except DrimeAPIError:
             # Re-raise our own exceptions
             raise
