@@ -492,6 +492,13 @@ def upload(  # noqa: C901
                 files=validation_files, workspace_id=workspace
             )
             duplicates = validation_result.get("duplicates", [])
+
+            # Filter out the remote_path from duplicates since it's the target folder
+            # we're uploading INTO, not a new folder we're creating
+            if remote_path and duplicates:
+                # Extract just the top-level folder name from remote_path
+                remote_folder = PurePosixPath(remote_path).parts[0]
+                duplicates = [d for d in duplicates if d != remote_folder]
         except DrimeAPIError:
             # If validation fails, continue without duplicate detection
             duplicates = []
