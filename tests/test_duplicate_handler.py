@@ -960,35 +960,33 @@ class TestBatchCheckFolders:
             side_effect=DrimeAPIError("API Error")
         )
 
-        # Mock search_by_name for fallback
-        def mock_search_by_name(name, exact_match=True):
+        # Mock find_folder_by_name for fallback
+        def mock_find_folder_by_name(name, parent_id=None):
             if name == "folder1":
-                return [
-                    FileEntry(
-                        id=100,
-                        name="folder1",
-                        file_name="folder1",
-                        mime="",
-                        file_size=0,
-                        parent_id=0,
-                        created_at="2023-01-01",
-                        type="folder",
-                        extension=None,
-                        hash="hash1",
-                        url="",
-                    )
-                ]
-            return []
+                return FileEntry(
+                    id=100,
+                    name="folder1",
+                    file_name="folder1",
+                    mime="",
+                    file_size=0,
+                    parent_id=0,
+                    created_at="2023-01-01",
+                    type="folder",
+                    extension=None,
+                    hash="hash1",
+                    url="",
+                )
+            return None
 
-        handler.entries_manager.search_by_name = MagicMock(
-            side_effect=mock_search_by_name
+        handler.entries_manager.find_folder_by_name = MagicMock(
+            side_effect=mock_find_folder_by_name
         )
 
         result = handler._batch_check_folders(["folder1", "file.txt"])
 
         assert result == {"folder1"}
         # Should fall back to individual searches
-        assert handler.entries_manager.search_by_name.call_count == 2
+        assert handler.entries_manager.find_folder_by_name.call_count == 2
         # Should cache results
         assert handler._folder_id_cache["is_folder:folder1"] == 100
         assert handler._folder_id_cache["is_folder:file.txt"] is None
