@@ -1774,9 +1774,14 @@ def cd(ctx: Any, folder_identifier: Optional[str]) -> None:
         client = DrimeClient(api_key=api_key)
         current_folder = config.get_current_folder()
 
+        # Get default workspace
+        workspace_id = config.get_default_workspace() or 0
+
         # Resolve folder identifier (ID or name) to folder ID
         folder_id = client.resolve_folder_identifier(
-            identifier=folder_identifier, parent_id=current_folder
+            identifier=folder_identifier,
+            parent_id=current_folder,
+            workspace_id=workspace_id,
         )
         if not out.quiet and not folder_identifier.isdigit():
             out.info(f"Resolved '{folder_identifier}' to folder ID: {folder_id}")
@@ -1826,6 +1831,7 @@ def pwd(ctx: Any, id_only: bool) -> None:
     current_folder = config.get_current_folder()
     default_workspace = config.get_default_workspace()
     folder_name = None
+    workspace_name = None
 
     # If --id-only flag is set, just print the ID and exit
     if id_only:
@@ -1835,14 +1841,29 @@ def pwd(ctx: Any, id_only: bool) -> None:
             out.print(str(current_folder))
         return
 
-    # Get folder name if we have a current folder
-    if current_folder is not None and (config.is_configured() or api_key):
+    # Get folder name and workspace name if configured
+    if config.is_configured() or api_key:
         try:
             client = DrimeClient(api_key=api_key)
-            folder_info = client.get_folder_info(current_folder)
-            folder_name = folder_info["name"]
+
+            # Get folder name if we have a current folder
+            if current_folder is not None:
+                folder_info = client.get_folder_info(current_folder)
+                folder_name = folder_info["name"]
+
+            # Get workspace name
+            if default_workspace:
+                workspaces_result = client.get_workspaces()
+                if (
+                    isinstance(workspaces_result, dict)
+                    and "workspaces" in workspaces_result
+                ):
+                    for ws in workspaces_result["workspaces"]:
+                        if ws["id"] == default_workspace:
+                            workspace_name = ws["name"]
+                            break
         except (DrimeAPIError, DrimeNotFoundError):
-            # If we can't get the folder name, just continue without it
+            # If we can't get the folder/workspace name, just continue without it
             pass
 
     if out.json_output:
@@ -1852,6 +1873,7 @@ def pwd(ctx: Any, id_only: bool) -> None:
                 "current_folder": current_folder,
                 "folder_name": folder_name,
                 "default_workspace": default_workspace or 0,
+                "workspace_name": workspace_name,
             }
         )
     else:
@@ -1863,6 +1885,12 @@ def pwd(ctx: Any, id_only: bool) -> None:
                 out.print(f"/{folder_name} (ID: {current_folder})")
             else:
                 out.print(f"/{current_folder} (ID: {current_folder})")
+
+        # Show workspace information
+        if workspace_name:
+            out.print(f"Workspace: {workspace_name} ({default_workspace})")
+        else:
+            out.print(f"Workspace: {default_workspace or 0}")
 
 
 @main.command()
