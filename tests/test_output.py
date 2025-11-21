@@ -248,4 +248,21 @@ class TestOutputFormatter:
         out = OutputFormatter()
         with patch.object(out.console, "print") as mock_print:
             out._output_text_columns([])
+            # Empty data should not print anything
             mock_print.assert_not_called()
+
+    def test_output_text_simple_fallback_no_name_field(self):
+        """Test _output_text_simple falls back to columns when data
+        has no 'name' field."""
+        out = OutputFormatter()
+        data = [{"id": 1, "status": "active"}, {"id": 2, "status": "inactive"}]
+        with patch.object(out, "_output_text_columns") as mock_columns:
+            out._output_text_simple(data)
+            mock_columns.assert_called_once_with(data)
+
+    def test_output_text_simple_empty_data(self):
+        """Test _output_text_simple with empty data."""
+        out = OutputFormatter()
+        with patch.object(out, "_output_text_columns") as mock_columns:
+            out._output_text_simple([])
+            mock_columns.assert_called_once_with([])

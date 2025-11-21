@@ -103,6 +103,41 @@ class TestSchemaValidation:
         SchemaValidationWarning.clear_warnings()
         assert not SchemaValidationWarning.has_warnings()
 
+    def test_optional_field_with_none_value(self):
+        """Test that None values for optional fields don't trigger warnings."""
+        SchemaValidationWarning.enable()
+
+        # Create a User with None value for optional field
+        data = {
+            "id": 1,
+            "email": "test@example.com",
+            "created_at": "2024-01-01",
+            "updated_at": "2024-01-01",
+            "first_name": None,  # Optional field with None value
+        }
+        User.from_dict(data)
+
+        # Should not have warnings about None values for optional fields
+        warnings = SchemaValidationWarning.get_warnings()
+        assert not any("first_name" in w and "Type mismatch" in w for w in warnings)
+
+    def test_field_type_validation(self):
+        """Test that field type validation works correctly."""
+        SchemaValidationWarning.enable()
+
+        # Create data with wrong type for email (required field)
+        data = {
+            "id": 1,
+            "email": 123,  # Should be str, not int
+            "created_at": "2024-01-01",
+            "updated_at": "2024-01-01",
+        }
+        User.from_dict(data)
+
+        warnings = SchemaValidationWarning.get_warnings()
+        assert len(warnings) > 0
+        assert any("email" in w and "Type mismatch" in w for w in warnings)
+
 
 class TestUserStatus:
     """Tests for UserStatus model."""
@@ -247,6 +282,68 @@ class TestSubscription:
         )
 
         assert sub.plan_name == "Premium Plan"
+
+    def test_from_dict(self):
+        """Test creating Subscription from dictionary."""
+        data = {
+            "id": 1,
+            "user_id": 1,
+            "price_id": 1,
+            "gateway_name": "stripe",
+            "quantity": 1,
+            "created_at": "2024-01-01",
+            "updated_at": "2024-01-01",
+            "product_id": 1,
+            "on_grace_period": False,
+            "on_trial": False,
+            "valid": True,
+            "active": True,
+            "cancelled": False,
+        }
+        sub = Subscription.from_dict(data)
+        assert sub.id == 1
+        assert sub.gateway_name == "stripe"
+        assert sub.active is True
+
+
+class TestProduct:
+    """Tests for Product model."""
+
+    def test_format_available_space(self):
+        """Test formatting available space."""
+        product = Product(
+            id=1,
+            name="Test Plan",
+            uuid="test-uuid",
+            available_space=1073741824,  # 1 GB
+            created_at="2024-01-01",
+            updated_at="2024-01-01",
+        )
+        formatted = product.format_available_space()
+        assert "GB" in formatted or "GiB" in formatted
+
+    def test_from_dict(self):
+        """Test creating Product from dictionary."""
+        data = {
+            "id": 1,
+            "name": "Premium",
+            "uuid": "test-uuid-123",
+            "available_space": 5368709120,  # 5 GB
+            "created_at": "2024-01-01",
+            "updated_at": "2024-01-01",
+            "description": "Premium plan",
+            "feature_list": ["Feature 1", "Feature 2"],
+            "position": 1,
+            "recommended": True,
+            "free": False,
+            "hidden": False,
+        }
+        product = Product.from_dict(data)
+        assert product.id == 1
+        assert product.name == "Premium"
+        assert product.uuid == "test-uuid-123"
+        assert product.available_space == 5368709120
+        assert product.recommended is True
 
 
 class TestUser:
