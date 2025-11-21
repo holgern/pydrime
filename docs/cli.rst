@@ -1,0 +1,716 @@
+Command Line Interface
+======================
+
+This page documents all available PyDrime CLI commands.
+
+Global Options
+--------------
+
+These options can be used with any command:
+
+.. code-block:: bash
+
+   pydrime [OPTIONS] COMMAND [ARGS]...
+
+Options:
+
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+* ``-q, --quiet`` - Suppress non-essential output
+* ``--json`` - Output in JSON format
+* ``--validate-schema`` - Enable API schema validation warnings (for debugging)
+* ``--version`` - Show version and exit
+* ``--help`` - Show help message
+
+Commands
+--------
+
+init
+~~~~
+
+Initialize Drime Cloud configuration.
+
+.. code-block:: bash
+
+   pydrime init [OPTIONS]
+
+**Options:**
+
+* ``-k, --api-key TEXT`` - Drime Cloud API key (will prompt if not provided)
+
+**Description:**
+
+Stores your API key securely in ``~/.config/pydrime/config`` for future use. The command validates the API key before saving.
+
+**Example:**
+
+.. code-block:: bash
+
+   pydrime init
+   # or provide key directly
+   pydrime init --api-key "your_key_here"
+
+status
+~~~~~~
+
+Check API key validity and connection status.
+
+.. code-block:: bash
+
+   pydrime status [OPTIONS]
+
+**Options:**
+
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Verifies that your API key is valid and displays information about the logged-in user.
+
+**Example:**
+
+.. code-block:: bash
+
+   pydrime status
+
+upload
+~~~~~~
+
+Upload a file or directory to Drime Cloud.
+
+.. code-block:: bash
+
+   pydrime upload [OPTIONS] PATH
+
+**Arguments:**
+
+* ``PATH`` - Local file or directory to upload
+
+**Options:**
+
+* ``-r, --remote-path TEXT`` - Remote destination path with folder structure
+* ``-w, --workspace INTEGER`` - Workspace ID (default: 0 for personal space)
+* ``-j, --workers INTEGER`` - Number of parallel workers (default: 1, use 4-8 for parallel uploads)
+* ``--chunk-size INTEGER`` - Chunk size in MB for multipart uploads (default: 25MB, range: 5-100MB)
+* ``--multipart-threshold INTEGER`` - File size threshold in MB for using multipart upload (default: 30MB, minimum: 1MB)
+* ``--on-duplicate [ask|replace|rename|skip]`` - What to do when duplicate files are detected (default: ask)
+* ``--no-progress`` - Disable progress bars
+* ``--dry-run`` - Show what would be uploaded without actually uploading
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Uploads files to Drime Cloud with automatic selection between simple and multipart upload based on file size.
+
+**Upload Methods:**
+
+* **Simple Upload** - For files smaller than ``--multipart-threshold`` (default: 30MB)
+
+  - Single HTTP request upload
+  - Fast for small files
+  - Progress shows completion only (0% → 100%)
+
+* **Multipart Upload** - For files larger than ``--multipart-threshold``
+
+  - Files split into chunks (configurable with ``--chunk-size``)
+  - More reliable for large files
+  - Resumable on network failures
+  - Real-time progress tracking per chunk
+  - Default chunk size: 25MB
+
+**Progress Bars:**
+
+When uploading multiple files, you'll see:
+
+* **Overall Progress** - Total bytes uploaded across all files
+* **Individual File Progress** - Per-file upload progress with transfer speed and time estimates
+* **Transfer Speed** - Real-time upload speed (MB/s)
+* **Time Remaining** - Estimated time to completion
+* **Time Elapsed** - Total time spent uploading
+
+Failed uploads are marked with a red ✗ and their progress is rolled back from the overall total.
+
+**Parallel Uploads:**
+
+Use the ``-j/--workers`` option to upload multiple files simultaneously:
+
+* ``-j 1`` - Sequential upload (default, safest)
+* ``-j 4`` - Upload 4 files in parallel (recommended for many files)
+* ``-j 8`` - Upload 8 files in parallel (for fast connections)
+
+**Note:** Parallel workers only affect multiple file uploads. Single file uploads always use one connection but benefit from chunked multipart for large files.
+
+**Performance Tuning:**
+
+Adjust chunk size and multipart threshold based on your connection:
+
+**Fast, Stable Connection:**
+
+.. code-block:: bash
+
+   pydrime upload bigfile.bin --chunk-size 50 --multipart-threshold 100
+
+* Larger chunks (50MB)
+* Higher threshold (100MB)
+* Fewer API calls
+* Faster overall
+
+**Slow, Unstable Connection:**
+
+.. code-block:: bash
+
+   pydrime upload bigfile.bin --chunk-size 10 --multipart-threshold 20
+
+* Smaller chunks (10MB)
+* Lower threshold (20MB)
+* More frequent progress updates
+* Easier to recover from failures
+
+**Batch Upload with Parallel Workers:**
+
+.. code-block:: bash
+
+   pydrime upload folder/ -j 4 --chunk-size 20
+
+* 4 parallel uploads
+* 20MB chunks for multipart files
+* Optimal for uploading many files
+
+**Duplicate Handling:**
+
+When files with the same name already exist, the ``--on-duplicate`` option controls the behavior:
+
+* ``ask`` - Prompt for each duplicate (default)
+* ``replace`` - Delete existing file and upload new one
+* ``rename`` - Automatically rename to avoid conflicts (e.g., ``file (1).txt``)
+* ``skip`` - Skip uploading the duplicate file
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Upload a single file
+   pydrime upload myfile.txt
+
+   # Upload with custom chunk size (faster for stable connections)
+   pydrime upload bigfile.zip --chunk-size 50
+
+   # Upload with smaller chunks (more reliable for unstable connections)
+   pydrime upload bigfile.zip --chunk-size 10 --multipart-threshold 15
+
+   # Upload to specific workspace
+   pydrime upload myfile.txt --workspace 123
+
+   # Upload with remote path
+   pydrime upload myfile.txt --remote-path "folder/file.txt"
+
+   # Upload directory with parallel workers
+   pydrime upload /path/to/directory -j 4
+
+   # Upload with custom performance settings
+   pydrime upload data/ -j 8 --chunk-size 30 --multipart-threshold 50
+
+   # Dry run (preview only)
+   pydrime upload /path/to/directory --dry-run
+
+   # Upload without progress bars
+   pydrime upload large_file.bin --no-progress
+
+   # Auto-replace duplicates without asking
+   pydrime upload folder/ --on-duplicate replace
+
+   # Auto-rename duplicates
+   pydrime upload folder/ --on-duplicate rename
+
+   # Skip duplicate files (incremental upload)
+   pydrime upload folder/ --on-duplicate skip
+
+
+ls
+~~
+
+List files and folders in a Drime Cloud directory.
+
+.. code-block:: bash
+
+   pydrime ls [OPTIONS] [PARENT_IDENTIFIER]
+
+**Arguments:**
+
+* ``PARENT_IDENTIFIER`` - ID or name of parent folder (omit to list current directory or root)
+
+**Options:**
+
+* ``-d, --deleted`` - Show deleted files
+* ``-s, --starred`` - Show starred files
+* ``-r, --recent`` - Show recent files
+* ``-S, --shared`` - Show shared files
+* ``-p, --page TEXT`` - Display files in specified folder hash/page
+* ``-w, --workspace INTEGER`` - Workspace ID
+* ``-q, --query TEXT`` - Search by name
+* ``-t, --type [folder|image|text|audio|video|pdf]`` - Filter by file type
+* ``--recursive`` - List files recursively
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Similar to Unix ``ls`` command, displays file and folder names in a columnar format.
+For detailed disk usage information including file sizes and metadata, use the ``du`` command.
+Supports both numeric folder IDs and folder names (resolved in current working directory).
+
+**Examples:**
+
+.. code-block:: bash
+
+   # List files in current directory
+   pydrime ls
+
+   # List files in folder by ID
+   pydrime ls 12345
+
+   # List files in folder by name
+   pydrime ls Documents
+
+   # Search for files
+   pydrime ls --query "report"
+
+   # List deleted files
+   pydrime ls --deleted
+
+   # List recursively
+   pydrime ls --recursive
+
+   # Output as JSON
+   pydrime --json ls
+
+du
+~~
+
+Show disk usage information for files and folders.
+
+.. code-block:: bash
+
+   pydrime du [OPTIONS] [PARENT_IDENTIFIER]
+
+**Arguments:**
+
+* ``PARENT_IDENTIFIER`` - ID or name of parent folder (omit to show current directory or root)
+
+**Options:**
+
+* ``-d, --deleted`` - Show deleted files
+* ``-s, --starred`` - Show starred files
+* ``-r, --recent`` - Show recent files
+* ``-S, --shared`` - Show shared files
+* ``-p, --page TEXT`` - Display files in specified folder hash/page
+* ``-w, --workspace INTEGER`` - Workspace ID
+* ``-q, --query TEXT`` - Search by name
+* ``-t, --type [folder|image|text|audio|video|pdf]`` - Filter by file type
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Similar to Unix ``du`` command, displays detailed information about files and folders
+including size, type, and metadata. Shows a summary with total size and file/folder counts.
+The API automatically calculates folder sizes to include all files inside.
+For a simple file listing, use the ``ls`` command.
+Supports both numeric folder IDs and folder names (resolved in current working directory).
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Show disk usage for current directory
+   pydrime du
+
+   # Show disk usage for folder by ID
+   pydrime du 12345
+
+   # Show disk usage for folder by name
+   pydrime du Documents
+
+   # Output as JSON
+   pydrime --json du
+
+mkdir
+~~~~~
+
+Create a directory in Drime Cloud.
+
+.. code-block:: bash
+
+   pydrime mkdir [OPTIONS] NAME
+
+**Arguments:**
+
+* ``NAME`` - Name of the directory to create
+
+**Options:**
+
+* ``-p, --parent-id INTEGER`` - Parent folder ID (omit to create in root)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Create folder in root
+   pydrime mkdir "My Folder"
+
+   # Create subfolder
+   pydrime mkdir "Subfolder" --parent-id 12345
+
+download
+~~~~~~~~
+
+Download file(s) or folder(s) from Drime Cloud.
+
+.. code-block:: bash
+
+   pydrime download [OPTIONS] ENTRY_IDENTIFIERS...
+
+**Arguments:**
+
+* ``ENTRY_IDENTIFIERS`` - One or more file/folder names, hashes, or numeric IDs
+
+**Options:**
+
+* ``-o, --output TEXT`` - Output directory path (for folders or multiple files)
+* ``-d, --on-duplicate [skip|overwrite|rename]`` - Action when file exists locally (default: overwrite)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Downloads files and folders from Drime Cloud. Supports multiple identifier types:
+
+* **Names** - File or folder names (resolved in current working directory)
+* **IDs** - Numeric entry IDs
+* **Hashes** - Entry hash values
+
+Folders are automatically downloaded recursively with all their contents and subfolder structure.
+
+**Duplicate Handling:**
+
+When a file already exists locally, the ``--on-duplicate`` option controls the behavior:
+
+* ``skip`` - Skip existing files without downloading (efficient, no API calls)
+* ``overwrite`` - Replace existing files (default behavior)
+* ``rename`` - Create new file with unique name (e.g., ``file (1).txt``, ``file (2).txt``)
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Download file by name
+   pydrime download test.txt
+
+   # Download file by ID
+   pydrime download 480424796
+
+   # Download file by hash
+   pydrime download NDgwNDI0Nzk2fA
+
+   # Download folder (automatically recursive)
+   pydrime download my_folder
+
+   # Download folder to specific directory
+   pydrime download my_folder --output /path/to/destination
+
+   # Download multiple files
+   pydrime download file1.txt file2.txt file3.txt
+
+   # Mix names, IDs, and hashes
+   pydrime download 480424796 NDgwNDI0ODAyfA test.txt
+
+   # Skip existing files (incremental download)
+   pydrime download my_folder --on-duplicate skip
+
+   # Rename duplicates to keep both versions
+   pydrime download test.txt --on-duplicate rename
+
+   # Overwrite existing files (default)
+   pydrime download test.txt --on-duplicate overwrite
+
+rename
+~~~~~~
+
+Rename a file or folder entry.
+
+.. code-block:: bash
+
+   pydrime rename [OPTIONS] ENTRY_IDENTIFIER NEW_NAME
+
+**Arguments:**
+
+* ``ENTRY_IDENTIFIER`` - ID or name of the entry to rename (names are resolved in the current working directory)
+* ``NEW_NAME`` - New name for the entry
+
+**Options:**
+
+* ``-d, --description TEXT`` - New description for the entry
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Supports both numeric IDs and file/folder names. Names are resolved in the current working directory.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Rename by ID
+   pydrime rename 12345 "New File Name.txt"
+
+   # Rename by name
+   pydrime rename test.txt "New File Name.txt"
+
+   # Rename folder by name
+   pydrime rename drime_test my_folder
+
+   # Rename with description
+   pydrime rename 12345 "New Name" --description "Updated file"
+
+rm
+~~
+
+Delete one or more file or folder entries.
+
+.. code-block:: bash
+
+   pydrime rm [OPTIONS] ENTRY_IDENTIFIERS...
+
+**Arguments:**
+
+* ``ENTRY_IDENTIFIERS`` - One or more entry IDs or names to delete (names are resolved in the current working directory)
+
+**Options:**
+
+* ``--permanent`` - Delete permanently (cannot be undone)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Moves entries to trash or deletes them permanently. Requires confirmation before deletion.
+Supports both numeric IDs and file/folder names resolved in the current working directory.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Move to trash by ID
+   pydrime rm 12345
+
+   # Delete by name
+   pydrime rm test.txt
+
+   # Delete folder by name
+   pydrime rm drime_test
+
+   # Delete multiple files (mix IDs and names)
+   pydrime rm 12345 test.txt folder_name
+
+   # Delete permanently
+   pydrime rm 12345 --permanent
+
+share
+~~~~~
+
+Create a shareable link for a file or folder.
+
+.. code-block:: bash
+
+   pydrime share [OPTIONS] ENTRY_IDENTIFIER
+
+**Arguments:**
+
+* ``ENTRY_IDENTIFIER`` - ID or name of the entry to share (names are resolved in the current working directory)
+
+**Options:**
+
+* ``-p, --password TEXT`` - Optional password for the link
+* ``-e, --expires TEXT`` - Expiration date (format: 2025-12-31T23:59:59.000000Z)
+* ``--allow-edit`` - Allow editing through the link
+* ``--allow-download`` - Allow downloading through the link (default: True)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Creates a public shareable link for a file or folder with optional password protection and expiration.
+Supports both numeric IDs and file/folder names resolved in the current working directory.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Simple share by ID
+   pydrime share 12345
+
+   # Share by name
+   pydrime share test.txt
+
+   # Share folder by name
+   pydrime share drime_test
+
+   # Password protected
+   pydrime share 12345 --password "mypassword"
+
+   # With expiration
+   pydrime share 12345 --expires "2025-12-31T23:59:59.000000Z"
+
+   # Allow editing
+   pydrime share 12345 --allow-edit --allow-download
+
+cd
+~~
+
+Change the current working directory.
+
+.. code-block:: bash
+
+   pydrime cd [OPTIONS] [FOLDER_IDENTIFIER]
+
+**Arguments:**
+
+* ``FOLDER_IDENTIFIER`` - Folder ID, name, or special value (omit for root, ``..`` for parent, ``/`` for root)
+
+**Options:**
+
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Changes the current working directory context for subsequent commands. Similar to Unix ``cd`` command.
+The current directory is saved in the configuration file and persists across sessions.
+Supports folder IDs, folder names (resolved in current directory), and special values.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Change to root directory
+   pydrime cd
+
+   # Change to folder by ID
+   pydrime cd 12345
+
+   # Change to folder by name
+   pydrime cd my_folder
+
+   # Go to parent directory
+   pydrime cd ..
+
+   # Go to root explicitly
+   pydrime cd /
+   pydrime cd 0
+
+pwd
+~~~
+
+Print current working directory.
+
+.. code-block:: bash
+
+   pydrime pwd [OPTIONS]
+
+**Options:**
+
+* ``--id-only`` - Output only the folder ID
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Shows the current folder path with ID and default workspace. Similar to Unix ``pwd`` command.
+The output includes the folder ID in the format ``/{folder_name} (ID: {id})`` or ``/ (ID: 0)`` for root.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Show current directory
+   pydrime pwd
+   # Output: /Documents (ID: 12345)
+   #         Workspace: 0
+
+   # Show only the ID
+   pydrime pwd --id-only
+   # Output: 12345
+
+   # Show in JSON format
+   pydrime --json pwd
+   # Output: {"id": 12345, "name": "Documents", "workspace": 0}
+
+workspaces
+~~~~~~~~~~
+
+List all workspaces you have access to.
+
+.. code-block:: bash
+
+   pydrime workspaces [OPTIONS]
+
+**Options:**
+
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Shows workspace name, ID, your role, and owner information for all workspaces you have access to.
+
+**Example:**
+
+.. code-block:: bash
+
+   pydrime workspaces
+
+validate
+~~~~~~~~
+
+Validate that local files/folders are correctly uploaded to Drime Cloud.
+
+.. code-block:: bash
+
+   pydrime validate [OPTIONS] PATHS...
+
+**Arguments:**
+
+* ``PATHS`` - One or more local file or directory paths to validate
+
+**Options:**
+
+* ``-w, --workspace INTEGER`` - Workspace ID (default: 0 for personal space)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Validates that local files and folders exist on Drime Cloud with matching sizes.
+For each local path, the command:
+
+1. Checks if a corresponding entry exists in Drime Cloud (by name)
+2. Verifies that files have matching sizes
+3. Reports any missing or mismatched entries
+
+Exit codes:
+
+* ``0`` - All files validated successfully
+* ``1`` - Validation issues found (missing files or size mismatches)
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Validate a single file
+   pydrime validate test.txt
+
+   # Validate a directory
+   pydrime validate my_folder
+
+   # Validate multiple paths
+   pydrime validate file1.txt folder1 file2.txt
+
+   # Validate in specific workspace
+   pydrime validate my_folder --workspace 123
+
+   # Output as JSON for scripting
+   pydrime --json validate my_folder
+
+   # Use in CI/CD (check exit code)
+   pydrime validate uploaded_files && echo "Validation passed"

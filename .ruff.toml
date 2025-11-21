@@ -1,0 +1,27 @@
+
+target-version = "py39"
+fix = true
+
+[lint]
+extend-select = [
+    "B",
+    "C90",
+    "E501",  # line too long (default 88)
+    "I",  # isort
+    "UP",  # pyupgrade
+]
+exclude = ["setup/*", "notebooks/*"]
+
+[format]
+exclude = ["setup/*", "notebooks/*"]
+
+[lint.per-file-ignores]
+"__init__.py" = ["F401", "I001"]  # ignore unused and unsorted imports in __init__.py
+"__manifest__.py" = ["B018"]  # useless expression
+"cli.py" = ["C901"]  # Allow higher complexity for CLI commands with recursive logic
+
+[lint.isort]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+[lint.mccabe]
+max-complexity = 22
