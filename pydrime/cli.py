@@ -1783,7 +1783,8 @@ def sync(  # noqa: C901
         if not out.quiet:
             out.info(f"Scanning local directory: {local_path}")
 
-        # Scan with the local_path itself as base_path to get relative paths without the folder name
+        # Scan with the local_path itself as base_path to get relative paths
+        # without the folder name
         local_files = scan_directory(local_path, local_path, out)
 
         # Apply remote path prefix if specified
@@ -1832,7 +1833,8 @@ def sync(  # noqa: C901
 
         # Determine the remote folder to sync with
         # If remote_path is specified, use it
-        # Otherwise, look for a folder with the same name as local_path in current_folder_id
+        # Otherwise, look for a folder with the same name as local_path
+        # in current_folder_id
         remote_sync_folder_id = current_folder_id
         remote_base_path = remote_path if remote_path else local_path.name
 
@@ -1913,7 +1915,8 @@ def sync(  # noqa: C901
                                 )
                             )
                     else:
-                        # No remote timestamp - upload local (assume local is source of truth)
+                        # No remote timestamp - upload local
+                        # (assume local is source of truth)
                         files_to_upload.append((file_path, rel_path))
                 else:
                     # Same size - check modification time
@@ -1971,7 +1974,7 @@ def sync(  # noqa: C901
 
             if files_to_download:
                 out.info("Files to download:")
-                for remote_entry, local_dest in files_to_download[:10]:
+                for remote_entry, _local_dest in files_to_download[:10]:
                     out.print(
                         f"  ↓ {remote_entry.name} "
                         f"({out.format_size(remote_entry.file_size or 0)})"
