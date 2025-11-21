@@ -2,8 +2,6 @@
 
 from unittest.mock import Mock
 
-import pytest
-
 from pydrime.file_entries_manager import FileEntriesManager
 
 

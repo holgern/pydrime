@@ -20,6 +20,7 @@ from .auth import require_api_key
 from .config import config
 from .duplicate_handler import DuplicateHandler
 from .exceptions import DrimeAPIError, DrimeNotFoundError
+from .file_entries_manager import FileEntriesManager
 from .models import FileEntriesResult, FileEntry, SchemaValidationWarning, UserStatus
 from .output import OutputFormatter
 from .progress import UploadProgressTracker
@@ -2728,6 +2729,68 @@ def validate(
 
         out.info(f"Validating {len(files_to_validate)} file(s)...\n")
 
+        # Use FileEntriesManager to fetch all remote files once
+        file_manager = FileEntriesManager(client, workspace)
+
+        # Get current folder context to determine where to start the search
+        current_folder_id = config.get_current_folder()
+
+        # Determine the remote folder to validate against
+        # If remote_path is specified, find that folder
+        # Otherwise, use current folder or root
+        remote_folder_id = current_folder_id
+        remote_base_path = ""
+
+        if remote_path:
+            # Try to find the remote folder by path
+            path_parts = remote_path.split("/")
+            folder_id = current_folder_id
+
+            for part in path_parts:
+                if part:  # Skip empty parts
+                    folder_entry = file_manager.find_folder_by_name(part, folder_id)
+                    if folder_entry:
+                        folder_id = folder_entry.id
+                    else:
+                        out.warning(
+                            f"Remote path '{remote_path}' not found, using root"
+                        )
+                        folder_id = current_folder_id
+                        break
+
+            remote_folder_id = folder_id
+            remote_base_path = remote_path
+        elif not local_path.is_file():
+            # If validating a directory without remote_path, look for matching folder
+            folder_entry = file_manager.find_folder_by_name(
+                local_path.name, current_folder_id
+            )
+            if folder_entry:
+                remote_folder_id = folder_entry.id
+                remote_base_path = ""
+                if not out.quiet:
+                    folder_info = f"'{folder_entry.name}' (ID: {folder_entry.id})"
+                    out.info(f"Found remote folder {folder_info}")
+
+        out.progress_message("Fetching remote files...")
+
+        # Get all remote files recursively
+        remote_files_with_paths = file_manager.get_all_recursive(
+            folder_id=remote_folder_id, path_prefix=remote_base_path
+        )
+
+        # Build a map of remote files: {path: FileEntry}
+        remote_file_map: dict[str, FileEntry] = {}
+        for entry, entry_path in remote_files_with_paths:
+            # Normalize path for comparison
+            normalized_path = entry_path
+            if remote_base_path and normalized_path.startswith(remote_base_path + "/"):
+                normalized_path = normalized_path[len(remote_base_path) + 1 :]
+            remote_file_map[normalized_path] = entry
+
+        if not out.quiet:
+            out.info(f"Found {len(remote_file_map)} remote file(s)\n")
+
         # Track validation results
         valid_files = []
         missing_files = []
@@ -2735,84 +2798,55 @@ def validate(
 
         for idx, (file_path, rel_path) in enumerate(files_to_validate, 1):
             local_size = file_path.stat().st_size
-            file_name = Path(rel_path).name
 
             out.progress_message(
                 f"Validating [{idx}/{len(files_to_validate)}]: {rel_path}"
             )
 
-            # Search for the file in Drime Cloud by name
-            try:
-                result = client.get_file_entries(
-                    query=file_name, workspace_id=workspace
-                )
+            # Look up the file in the remote map
+            # Try with and without remote_path prefix
+            lookup_path = rel_path
+            if remote_base_path and lookup_path.startswith(remote_base_path + "/"):
+                lookup_path = lookup_path[len(remote_base_path) + 1 :]
 
-                if not result or not result.get("data"):
-                    missing_files.append(
-                        {
-                            "path": rel_path,
-                            "local_size": local_size,
-                            "reason": "Not found in cloud",
-                        }
-                    )
-                    continue
+            matching_entry = remote_file_map.get(lookup_path)
 
-                file_entries = FileEntriesResult.from_api_response(result)
-
-                if file_entries.is_empty:
-                    missing_files.append(
-                        {
-                            "path": rel_path,
-                            "local_size": local_size,
-                            "reason": "Not found in cloud",
-                        }
-                    )
-                    continue
-
-                # Find exact name match (case-sensitive)
+            if not matching_entry:
+                # Also try looking up just the filename if full path doesn't match
+                file_name = Path(rel_path).name
                 matching_entry = None
-                for entry in file_entries.entries:
-                    if entry.name == file_name and not entry.is_folder:
+                for path, entry in remote_file_map.items():
+                    if Path(path).name == file_name:
                         matching_entry = entry
                         break
 
-                if not matching_entry:
-                    missing_files.append(
-                        {
-                            "path": rel_path,
-                            "local_size": local_size,
-                            "reason": "Not found in cloud",
-                        }
-                    )
-                    continue
-
-                # Check size
-                cloud_size = matching_entry.file_size or 0
-                if cloud_size != local_size:
-                    size_mismatch_files.append(
-                        {
-                            "path": rel_path,
-                            "local_size": local_size,
-                            "cloud_size": cloud_size,
-                            "cloud_id": matching_entry.id,
-                        }
-                    )
-                else:
-                    valid_files.append(
-                        {
-                            "path": rel_path,
-                            "size": local_size,
-                            "cloud_id": matching_entry.id,
-                        }
-                    )
-
-            except DrimeAPIError as e:
-                out.warning(f"Error checking {rel_path}: {e}")
+            if not matching_entry:
                 missing_files.append(
                     {
                         "path": rel_path,
                         "local_size": local_size,
-                        "reason": f"API error: {e}",
+                        "reason": "Not found in cloud",
+                    }
+                )
+                continue
+
+            # Check size
+            cloud_size = matching_entry.file_size or 0
+            if cloud_size != local_size:
+                size_mismatch_files.append(
+                    {
+                        "path": rel_path,
+                        "local_size": local_size,
+                        "cloud_size": cloud_size,
+                        "cloud_id": matching_entry.id,
+                    }
+                )
+            else:
+                valid_files.append(
+                    {
+                        "path": rel_path,
+                        "size": local_size,
+                        "cloud_id": matching_entry.id,
                     }
                 )
 

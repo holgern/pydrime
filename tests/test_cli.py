@@ -2355,9 +2355,10 @@ class TestValidateCommand:
         """Test validating a single file that exists with correct size."""
         mock_config.is_configured.return_value = True
         mock_config.get_default_workspace.return_value = None
+        mock_config.get_current_folder.return_value = None
 
         mock_client = Mock()
-        # Mock file entry response
+        # Mock file entry response for FileEntriesManager.get_all_recursive
         mock_client.get_file_entries.return_value = {
             "data": [
                 {
@@ -2367,7 +2368,8 @@ class TestValidateCommand:
                     "file_size": 100,
                     "hash": "abc123",
                 }
-            ]
+            ],
+            "pagination": None,
         }
         mock_client_class.return_value = mock_client
 
@@ -2387,10 +2389,11 @@ class TestValidateCommand:
         """Test validating a file that doesn't exist in cloud."""
         mock_config.is_configured.return_value = True
         mock_config.get_default_workspace.return_value = None
+        mock_config.get_current_folder.return_value = None
 
         mock_client = Mock()
         # Mock empty response
-        mock_client.get_file_entries.return_value = {"data": []}
+        mock_client.get_file_entries.return_value = {"data": [], "pagination": None}
         mock_client_class.return_value = mock_client
 
         with runner.isolated_filesystem():
@@ -2409,6 +2412,7 @@ class TestValidateCommand:
         """Test validating a file with size mismatch."""
         mock_config.is_configured.return_value = True
         mock_config.get_default_workspace.return_value = None
+        mock_config.get_current_folder.return_value = None
 
         mock_client = Mock()
         # Mock file entry with different size
@@ -2421,7 +2425,8 @@ class TestValidateCommand:
                     "file_size": 200,  # Different size
                     "hash": "abc123",
                 }
-            ]
+            ],
+            "pagination": None,
         }
         mock_client_class.return_value = mock_client
 
@@ -2440,6 +2445,7 @@ class TestValidateCommand:
         """Test validate with JSON output format."""
         mock_config.is_configured.return_value = True
         mock_config.get_default_workspace.return_value = None
+        mock_config.get_current_folder.return_value = None
 
         mock_client = Mock()
         mock_client.get_file_entries.return_value = {
@@ -2451,7 +2457,8 @@ class TestValidateCommand:
                     "file_size": 100,
                     "hash": "abc123",
                 }
-            ]
+            ],
+            "pagination": None,
         }
         mock_client_class.return_value = mock_client
 
