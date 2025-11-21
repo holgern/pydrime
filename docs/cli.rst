@@ -101,6 +101,24 @@ Upload a file or directory to Drime Cloud.
 
 Uploads files to Drime Cloud with automatic selection between simple and multipart upload based on file size.
 
+**Upload Destination Information:**
+
+Before uploading, the command displays:
+
+* **Workspace** - Shows the workspace name and ID where files will be uploaded
+
+  * ``Workspace: Personal (0)`` - Personal workspace
+  * ``Workspace: Team Workspace (5)`` - Custom workspace
+
+* **Parent folder** - Shows the current folder context where files will be uploaded
+
+  * ``Parent folder: / (Root, ID: 0)`` - Root directory
+  * ``Parent folder: /Documents (ID: 123)`` - Specific folder
+
+* **Remote path structure** - Shows the relative path structure if ``--remote-path`` is specified
+
+This information is displayed in both regular uploads and ``--dry-run`` mode to help you verify where files will be stored.
+
 **Upload Methods:**
 
 * **Simple Upload** - For files smaller than ``--multipart-threshold`` (default: 30MB)
@@ -660,6 +678,52 @@ Shows workspace name, ID, your role, and owner information for all workspaces yo
 .. code-block:: bash
 
    pydrime workspaces
+
+workspace
+~~~~~~~~~
+
+Set or show the default workspace.
+
+.. code-block:: bash
+
+   pydrime workspace [OPTIONS] [WORKSPACE_IDENTIFIER]
+
+**Arguments:**
+
+* ``WORKSPACE_IDENTIFIER`` - ID or name of the workspace to set as default (omit to show current default)
+
+**Options:**
+
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Sets or displays the default workspace used for operations. The workspace setting persists across sessions.
+Supports both numeric workspace IDs and workspace names with case-insensitive matching.
+
+When displaying the current workspace, shows both the workspace name and ID for clarity.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Show current default workspace
+   pydrime workspace
+   # Output: Default workspace: Personal (0)
+   #     or: Default workspace: Team Workspace (5)
+
+   # Set workspace by ID
+   pydrime workspace 5
+   # Output: Set default workspace to: Team Workspace (5)
+
+   # Set personal workspace
+   pydrime workspace 0
+   # Output: Set default workspace to: Personal (0)
+
+   # Set workspace by name (case-insensitive)
+   pydrime workspace test
+   pydrime workspace "My Team"
+   pydrime workspace TEAM  # Matches "team" workspace
 
 validate
 ~~~~~~~~

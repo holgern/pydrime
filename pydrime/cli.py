@@ -228,6 +228,54 @@ def upload(  # noqa: C901
     if workspace is None:
         workspace = config.get_default_workspace() or 0
 
+    # Initialize client early to check parent folder context
+    client = DrimeClient(api_key=api_key)
+
+    # Get current folder context for display
+    current_folder_id = config.get_current_folder()
+    current_folder_name = None
+
+    if not out.quiet:
+        # Show workspace information
+        if workspace == 0:
+            out.info("Workspace: Personal (0)")
+        else:
+            # Try to get workspace name
+            workspace_name = None
+            try:
+                result = client.get_workspaces()
+                if isinstance(result, dict) and "workspaces" in result:
+                    for ws in result["workspaces"]:
+                        if ws.get("id") == workspace:
+                            workspace_name = ws.get("name")
+                            break
+            except (DrimeAPIError, Exception):
+                pass
+
+            if workspace_name:
+                out.info(f"Workspace: {workspace_name} ({workspace})")
+            else:
+                out.info(f"Workspace: {workspace}")
+
+        # Show parent folder information
+        if current_folder_id is None:
+            out.info("Parent folder: / (Root, ID: 0)")
+        else:
+            # Try to get folder name
+            try:
+                folder_info = client.get_folder_info(current_folder_id)
+                current_folder_name = folder_info.get("name")
+                out.info(
+                    f"Parent folder: /{current_folder_name} (ID: {current_folder_id})"
+                )
+            except (DrimeAPIError, DrimeNotFoundError):
+                out.info(f"Parent folder: ID {current_folder_id}")
+
+        if remote_path:
+            out.info(f"Remote path structure: {remote_path}")
+
+        out.info("")  # Empty line for readability
+
     # Collect files to upload
     if local_path.is_file():
         files_to_upload = [(local_path, remote_path or local_path.name)]
@@ -275,10 +323,8 @@ def upload(  # noqa: C901
         out.warning("Dry run mode - no files were uploaded.")
         return
 
-    # Initialize client and upload
+    # Validate uploads and handle duplicates
     try:
-        client = DrimeClient(api_key=api_key)
-
         # Validate uploads for duplicates
         validation_files = [
             {
@@ -1057,17 +1103,23 @@ def du(
 
 
 @main.command()
-@click.argument("workspace_id", type=int, required=False)
+@click.argument("workspace_identifier", type=str, required=False)
 @click.pass_context
-def workspace(ctx: Any, workspace_id: Optional[int]) -> None:
+def workspace(ctx: Any, workspace_identifier: Optional[str]) -> None:
     """Set or show the default workspace.
 
-    WORKSPACE_ID: ID of the workspace to set as default (omit to show current default)
+    WORKSPACE_IDENTIFIER: ID or name of the workspace to set as default
+    (omit to show current default)
+
+    Supports both numeric IDs and workspace names. Names are matched
+    case-insensitively.
 
     Examples:
         pydrime workspace           # Show current default workspace
         pydrime workspace 5         # Set workspace 5 as default
         pydrime workspace 0         # Set personal workspace as default
+        pydrime workspace test      # Set "test" workspace as default by name
+        pydrime workspace "My Team" # Set workspace by name with spaces
     """
     api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
@@ -1077,19 +1129,69 @@ def workspace(ctx: Any, workspace_id: Optional[int]) -> None:
         out.info("Run 'pydrime init' to configure your API key")
         ctx.exit(1)
 
-    # If no workspace_id provided, show current default
-    if workspace_id is None:
+    # If no workspace_identifier provided, show current default
+    if workspace_identifier is None:
         current_default = config.get_default_workspace()
         if current_default is None:
             out.info("Default workspace: Personal (0)")
         else:
-            out.info(f"Default workspace: {current_default}")
+            # Try to get workspace name
+            workspace_name = None
+            try:
+                client = DrimeClient(api_key=api_key)
+                result = client.get_workspaces()
+                if isinstance(result, dict) and "workspaces" in result:
+                    workspaces_list = result["workspaces"]
+                    for ws in workspaces_list:
+                        if ws.get("id") == current_default:
+                            workspace_name = ws.get("name")
+                            break
+            except (DrimeAPIError, Exception):
+                # If we can't get the name, just show the ID
+                pass
+
+            if workspace_name:
+                out.info(f"Default workspace: {workspace_name} ({current_default})")
+            else:
+                out.info(f"Default workspace: {current_default}")
         return
 
     try:
         client = DrimeClient(api_key=api_key)
 
+        # Try to parse as integer first
+        workspace_id: Optional[int] = None
+        if workspace_identifier.isdigit():
+            workspace_id = int(workspace_identifier)
+        else:
+            # Try to resolve as workspace name
+            result = client.get_workspaces()
+            if isinstance(result, dict) and "workspaces" in result:
+                workspaces_list = result["workspaces"]
+                # Case-insensitive match
+                workspace_identifier_lower = workspace_identifier.lower()
+                for ws in workspaces_list:
+                    if ws.get("name", "").lower() == workspace_identifier_lower:
+                        workspace_id = ws.get("id")
+                        if not out.quiet:
+                            out.info(
+                                f"Resolved workspace '{workspace_identifier}' "
+                                f"to ID: {workspace_id}"
+                            )
+                        break
+
+                if workspace_id is None:
+                    out.error(
+                        f"Workspace '{workspace_identifier}' not found. "
+                        f"Use 'pydrime workspaces' to list available workspaces."
+                    )
+                    ctx.exit(1)
+            else:
+                out.error("Could not retrieve workspaces")
+                ctx.exit(1)
+
         # Verify the workspace exists if not 0 (personal)
+        workspace_name = None
         if workspace_id != 0:
             result = client.get_workspaces()
             if isinstance(result, dict) and "workspaces" in result:
@@ -1100,13 +1202,24 @@ def workspace(ctx: Any, workspace_id: Optional[int]) -> None:
                     out.error(f"Workspace {workspace_id} not found or not accessible")
                     ctx.exit(1)
 
+                # Get workspace name for success message
+                for ws in workspaces_list:
+                    if ws.get("id") == workspace_id:
+                        workspace_name = ws.get("name")
+                        break
+
         # Save the default workspace (None for 0, actual ID otherwise)
         config.save_default_workspace(workspace_id if workspace_id != 0 else None)
 
         if workspace_id == 0:
             out.success("Set default workspace to: Personal (0)")
         else:
-            out.success(f"Set default workspace to: {workspace_id}")
+            if workspace_name:
+                out.success(
+                    f"Set default workspace to: {workspace_name} ({workspace_id})"
+                )
+            else:
+                out.success(f"Set default workspace to: {workspace_id}")
 
     except DrimeAPIError as e:
         out.error(str(e))
