@@ -384,17 +384,16 @@ class DuplicateHandler:
                 if not folder_entry:
                     continue
 
-                # Get files in this folder recursively
-                existing_files = self._get_files_in_folder_recursive(folder_entry.id)
-
-                # Check each file we're uploading
-                for _, rel_path in files:
+                # Check each file we're uploading individually
+                # Instead of fetching all existing files, only check specific paths
+                for _file_path, rel_path in files:
                     # Get the path relative to the top folder
                     rel_to_folder = str(
                         PurePosixPath(rel_path).relative_to(folder_name)
                     )
 
-                    if rel_to_folder in existing_files:
+                    # Check if this specific file exists
+                    if self._file_exists_at_path(folder_entry.id, rel_to_folder):
                         # Just add the filename, not the full path
                         file_name = PurePosixPath(rel_path).name
                         if file_name not in file_duplicates:
@@ -406,10 +405,55 @@ class DuplicateHandler:
 
         return file_duplicates
 
+    def _file_exists_at_path(self, base_folder_id: int, rel_path: str) -> bool:
+        """Check if a specific file exists at a relative path within a folder.
+
+        This is much more efficient than fetching all files recursively.
+
+        Args:
+            base_folder_id: Base folder ID to start from
+            rel_path: Relative path to the file (e.g., "subdir/file.txt")
+
+        Returns:
+            True if the file exists at that path
+        """
+        try:
+            path_parts = PurePosixPath(rel_path).parts
+
+            # Navigate through folders to get to the parent folder
+            current_folder_id = base_folder_id
+            for part in path_parts[:-1]:  # All parts except the filename
+                # Find the subfolder
+                folder = self.entries_manager.find_folder_by_name(
+                    part, parent_id=current_folder_id
+                )
+                if not folder:
+                    return False  # Folder doesn't exist, so file can't exist
+                current_folder_id = folder.id
+
+            # Now check if the file exists in the final parent folder
+            filename = path_parts[-1]
+            entries = self.entries_manager.get_all_in_folder(
+                folder_id=current_folder_id, use_cache=False
+            )
+
+            # Check if any entry matches the filename (and is not a folder)
+            for entry in entries:
+                if entry.name == filename and not entry.is_folder:
+                    return True
+
+            return False
+        except (DrimeAPIError, ValueError, IndexError):
+            # If we can't determine, assume it doesn't exist
+            return False
+
     def _get_files_in_folder_recursive(
         self, folder_id: int, visited: Optional[set[int]] = None
     ) -> set[str]:
         """Get all file paths in a folder recursively.
+
+        DEPRECATED: This method is slow for large folders.
+        Use _file_exists_at_path instead.
 
         Args:
             folder_id: Folder ID to search
