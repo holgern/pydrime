@@ -1,5 +1,6 @@
 """CLI interface for Drime Cloud uploader."""
 
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -37,24 +38,63 @@ def parse_iso_timestamp(timestamp_str: Optional[str]) -> Optional[datetime]:
         timestamp_str: ISO format timestamp string (e.g., "2025-01-15T10:30:00.000000Z")
 
     Returns:
-        datetime object or None if parsing fails
+        datetime object in local timezone or None if parsing fails
     """
     if not timestamp_str:
         return None
 
     try:
         # Handle various ISO formats
-        # Remove 'Z' suffix and parse
-        timestamp_str = timestamp_str.rstrip("Z")
+        # The 'Z' suffix indicates UTC time
+        if timestamp_str.endswith("Z"):
+            timestamp_str = timestamp_str[:-1] + "+00:00"
 
-        # Try parsing with microseconds
+        # Try parsing with timezone
         try:
-            return datetime.fromisoformat(timestamp_str)
+            dt = datetime.fromisoformat(timestamp_str)
+            # Convert to local time (naive datetime in local timezone)
+            if dt.tzinfo is not None:
+                # Convert to timestamp (UTC) then to local naive datetime
+                timestamp = dt.timestamp()
+                return datetime.fromtimestamp(timestamp)
+            return dt
+        except ValueError:
+            # Try without microseconds
+            if "." in timestamp_str:
+                timestamp_str = timestamp_str.split(".")[0] + "+00:00"
+            dt = datetime.fromisoformat(timestamp_str)
+            if dt.tzinfo is not None:
+                timestamp = dt.timestamp()
+                return datetime.fromtimestamp(timestamp)
+            return dt
+    except (ValueError, AttributeError):
+        return None
+
+    try:
+        # Handle various ISO formats
+        # The 'Z' suffix indicates UTC time
+        if timestamp_str.endswith("Z"):
+            timestamp_str = timestamp_str[:-1] + "+00:00"
+
+        # Try parsing with timezone
+        try:
+            dt = datetime.fromisoformat(timestamp_str)
+            # Convert to local time (naive datetime in local timezone)
+            if dt.tzinfo is not None:
+                # Convert to timestamp (UTC) then to local naive datetime
+
+                timestamp = dt.timestamp()
+                return datetime.fromtimestamp(timestamp)
+            return dt
         except ValueError:
             # Try without microseconds
             if "." in timestamp_str:
                 timestamp_str = timestamp_str.split(".")[0]
-            return datetime.fromisoformat(timestamp_str)
+            dt = datetime.fromisoformat(timestamp_str)
+            if dt.tzinfo is not None:
+                timestamp = dt.timestamp()
+                return datetime.fromtimestamp(timestamp)
+            return dt
     except (ValueError, AttributeError):
         return None
 
@@ -2045,10 +2085,12 @@ def sync(  # noqa: C901
                         local_dt = datetime.fromtimestamp(local_mtime)
                         time_diff = (local_dt - remote_updated).total_seconds()
 
-                        # Consider in sync if within 2 seconds (filesystem precision)
-                        if abs(time_diff) <= 2:
+                        # Consider in sync if size matches and time is within
+                        # 10 seconds (tolerance for filesystem precision and
+                        # minor clock skew)
+                        if abs(time_diff) <= 10:
                             files_in_sync.append(rel_path)
-                        elif time_diff > 2:
+                        elif time_diff > 10:
                             # Local is newer
                             files_to_upload.append((file_path, rel_path))
                         else:
@@ -2139,6 +2181,10 @@ def sync(  # noqa: C901
                         use_multipart_threshold=multipart_threshold_bytes,
                     )
                     upload_count += 1
+
+                    # Update local file modification time to match upload time
+                    # This prevents the file from being re-uploaded on next sync
+                    os.utime(file_path, None)  # Set to current time
                 except DrimeAPIError as e:
                     error_count += 1
                     out.error(f"Error uploading {rel_path}: {e}")
@@ -2283,9 +2329,23 @@ def info(ctx: Any, hash_or_id_value: str) -> None:
                 out.print("  Parent ID: Root")
             if entry.owner:
                 out.print(f"  Owner: {entry.owner.email}")
-            out.print(f"  Created: {entry.created_at or 'N/A'}")
+
+            # Format created timestamp
+            created_dt = parse_iso_timestamp(entry.created_at)
+            created_str = (
+                created_dt.strftime("%Y-%m-%d %H:%M:%S") if created_dt else "N/A"
+            )
+            out.print(f"  Created: {created_str}")
+
             if entry.updated_at:
-                out.print(f"  Updated: {entry.updated_at}")
+                # Format updated timestamp
+                updated_dt = parse_iso_timestamp(entry.updated_at)
+                updated_str = (
+                    updated_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    if updated_dt
+                    else entry.updated_at
+                )
+                out.print(f"  Updated: {updated_str}")
             if entry.public:
                 out.print("  🌐 Public")
             if entry.description:
