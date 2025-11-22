@@ -199,9 +199,17 @@ class FileEntriesManager:
             FileEntry if found, None otherwise
         """
         if parent_id is not None:
-            # Search within specific parent
-            entries = self.get_all_in_folder(folder_id=parent_id, use_cache=False)
-            for entry in entries:
+            # Use API search with parent_ids filter for efficiency
+            # This avoids fetching all entries in the parent folder
+            result = self.client.get_file_entries(
+                query=folder_name,
+                entry_type="folder",
+                parent_ids=[parent_id],
+                workspace_id=self.workspace_id,
+            )
+            entries_result = FileEntriesResult.from_api_response(result)
+            # Find exact match (API search may return partial matches)
+            for entry in entries_result.entries:
                 if entry.name == folder_name and entry.is_folder:
                     return entry
         else:

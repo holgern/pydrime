@@ -888,62 +888,52 @@ class TestBatchCheckFolders:
         assert not hasattr(handler.entries_manager, "get_all_in_folder_called")
 
     def test_batch_check_folders_optimized_single_api_call(self):
-        """Test batch check makes single API call for uncached names."""
+        """Test batch check uses individual lookups for specific names."""
         mock_client = MagicMock()
         out = OutputFormatter(json_output=False, quiet=False)
         handler = DuplicateHandler(mock_client, out, 0, "ask", parent_id=0)
 
-        # Mock entries_manager.get_all_in_folder to return folders
-        mock_entries = [
-            FileEntry(
-                id=100,
-                name="folder1",
-                file_name="folder1",
-                mime="",
-                file_size=0,
-                parent_id=0,
-                created_at="2023-01-01",
-                type="folder",
-                extension=None,
-                hash="hash1",
-                url="",
-            ),
-            FileEntry(
-                id=200,
-                name="folder2",
-                file_name="folder2",
-                mime="",
-                file_size=0,
-                parent_id=0,
-                created_at="2023-01-01",
-                type="folder",
-                extension=None,
-                hash="hash2",
-                url="",
-            ),
-            FileEntry(
-                id=300,
-                name="file.txt",
-                file_name="file.txt",
-                mime="text/plain",
-                file_size=100,
-                parent_id=0,
-                created_at="2023-01-01",
-                type="text",
-                extension="txt",
-                hash="hash3",
-                url="",
-            ),
-        ]
-        handler.entries_manager.get_all_in_folder = MagicMock(return_value=mock_entries)
+        # Mock find_folder_by_name to return folders
+        def mock_find_folder(name, parent_id=None):
+            if name == "folder1":
+                return FileEntry(
+                    id=100,
+                    name="folder1",
+                    file_name="folder1",
+                    mime="",
+                    file_size=0,
+                    parent_id=0,
+                    created_at="2023-01-01",
+                    type="folder",
+                    extension=None,
+                    hash="hash1",
+                    url="",
+                )
+            elif name == "folder2":
+                return FileEntry(
+                    id=200,
+                    name="folder2",
+                    file_name="folder2",
+                    mime="",
+                    file_size=0,
+                    parent_id=0,
+                    created_at="2023-01-01",
+                    type="folder",
+                    extension=None,
+                    hash="hash2",
+                    url="",
+                )
+            return None
+
+        handler.entries_manager.find_folder_by_name = MagicMock(
+            side_effect=mock_find_folder
+        )
 
         result = handler._batch_check_folders(["folder1", "folder2", "file.txt"])
 
         assert result == {"folder1", "folder2"}
-        # Should make exactly 1 API call
-        handler.entries_manager.get_all_in_folder.assert_called_once_with(
-            folder_id=0, use_cache=False, per_page=100
-        )
+        # Should make 3 individual lookups (one for each name)
+        assert handler.entries_manager.find_folder_by_name.call_count == 3
         # Should cache results
         assert handler._folder_id_cache["is_folder:folder1"] == 100
         assert handler._folder_id_cache["is_folder:folder2"] == 200

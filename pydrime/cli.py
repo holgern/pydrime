@@ -676,7 +676,7 @@ def upload(  # noqa: C901
 @click.option("--recent", "-r", is_flag=True, help="Show recent files")
 @click.option("--shared", "-S", is_flag=True, help="Show shared files")
 @click.option(
-    "--page", "-p", type=str, help="Display files in specified folder hash/page"
+    "--folder-hash", type=str, help="Display files in specified folder hash/page"
 )
 @click.option("--workspace", "-w", type=int, default=None, help="Workspace ID")
 @click.option("--query", "-q", help="Search by name")
@@ -687,6 +687,10 @@ def upload(  # noqa: C901
     help="Filter by file type",
 )
 @click.option("--recursive", is_flag=True, help="List files recursively")
+@click.option("--page", "-p", type=int, default=1, help="Page number (1-based)")
+@click.option(
+    "--page-size", type=int, default=50, help="Number of items per page (default: 50)"
+)
 @click.pass_context
 def ls(  # noqa: C901
     ctx: Any,
@@ -695,11 +699,13 @@ def ls(  # noqa: C901
     starred: bool,
     recent: bool,
     shared: bool,
-    page: Optional[str],
+    folder_hash: Optional[str],
     workspace: Optional[int],
     query: Optional[str],
     type: Optional[str],
     recursive: bool,
+    page: int,
+    page_size: int,
 ) -> None:
     """List files and folders in a Drime Cloud directory.
 
@@ -709,10 +715,11 @@ def ls(  # noqa: C901
     Use 'du' command for detailed disk usage information.
 
     Examples:
-        pydrime ls                  # List current directory
-        pydrime ls 480432024        # List folder by ID
-        pydrime ls test_folder      # List folder by name
-        pydrime ls Documents        # List folder by name
+        pydrime ls                          # List current directory
+        pydrime ls 480432024                # List folder by ID
+        pydrime ls test_folder              # List folder by name
+        pydrime ls Documents                # List folder by name
+        pydrime ls --page 2 --page-size 100 # List page 2 with 100 items per page
     """
     api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
@@ -741,7 +748,7 @@ def ls(  # noqa: C901
             )
             if not out.quiet and not parent_identifier.isdigit():
                 out.info(f"Resolved '{parent_identifier}' to folder ID: {parent_id}")
-        elif not any([deleted, starred, recent, shared, page, query]):
+        elif not any([deleted, starred, recent, shared, folder_hash, query]):
             # If no parent_identifier specified, use current working directory
             parent_id = config.get_current_folder()
 
@@ -754,8 +761,10 @@ def ls(  # noqa: C901
             "query": query,
             "entry_type": type,
             "workspace_id": workspace,
-            "folder_id": page,
-            "page_id": page,
+            "folder_id": folder_hash,
+            "page_id": folder_hash,
+            "per_page": page_size,
+            "page": page,
         }
 
         # Add parent_id if specified
@@ -799,6 +808,15 @@ def ls(  # noqa: C901
 
         if file_entries.is_empty:
             # For empty directory, output nothing (like Unix ls)
+            if not out.quiet and file_entries.pagination:
+                # Show pagination info even if no results on this page
+                pagination = file_entries.pagination
+                if pagination.get("total"):
+                    out.info(f"No results on page {page}")
+                    out.info(
+                        f"Total: {pagination['total']} items across "
+                        f"{pagination.get('last_page', '?')} pages"
+                    )
             return
 
         # Text format - simple list of names (like Unix ls)
@@ -808,6 +826,31 @@ def ls(  # noqa: C901
             ["name"],
             {"name": "Name"},
         )
+
+        # Display pagination info if not recursive
+        if not out.quiet and not recursive and file_entries.pagination:
+            pagination = file_entries.pagination
+            current = pagination.get("current_page", page)
+            total_pages = pagination.get("last_page")
+            total_items = pagination.get("total")
+            from_item = pagination.get("from")
+            to_item = pagination.get("to")
+            next_page = pagination.get("next_page")
+            prev_page = pagination.get("prev_page")
+
+            if total_items is not None:
+                out.info("")
+                out.info(f"Page {current} of {total_pages}")
+                out.info(f"Showing items {from_item}-{to_item} of {total_items} total")
+
+                # Show navigation hints
+                hints = []
+                if next_page:
+                    hints.append(f"--page {next_page} for next page")
+                if prev_page:
+                    hints.append(f"--page {prev_page} for previous page")
+                if hints:
+                    out.info(f"Use {' or '.join(hints)}")
 
     except DrimeNotFoundError as e:
         out.error(str(e))

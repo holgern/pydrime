@@ -1095,6 +1095,7 @@ class DrimeClient:
             query=folder_name,
             entry_type="folder",
             parent_ids=parent_ids,
+            per_page=10,  # Small limit since we only need one match
         )
 
         if not result or not result.get("data"):
