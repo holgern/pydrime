@@ -6,7 +6,11 @@ import pytest
 import requests
 
 from pydrime.api import DrimeClient
-from pydrime.exceptions import DrimeAPIError, DrimeFileNotFoundError
+from pydrime.exceptions import (
+    DrimeAPIError,
+    DrimeFileNotFoundError,
+    DrimeRateLimitError,
+)
 
 
 class TestDrimeClient:
@@ -172,13 +176,15 @@ class TestAPIRequest:
         """Test handling of 429 Rate Limit error."""
         mock_response = Mock()
         mock_response.status_code = 429
+        mock_response.headers = {}  # No Retry-After header
         mock_request.return_value = mock_response
         mock_request.return_value.raise_for_status.side_effect = (
             requests.exceptions.HTTPError(response=mock_response)
         )
 
-        client = DrimeClient(api_key="test_key")
-        with pytest.raises(DrimeAPIError, match="Rate limit exceeded"):
+        # Create client with max_retries=0 to avoid retrying
+        client = DrimeClient(api_key="test_key", max_retries=0)
+        with pytest.raises(DrimeRateLimitError, match="Rate limit exceeded"):
             client._request("GET", "/test")
 
     @patch("pydrime.api.requests.Session.request")
