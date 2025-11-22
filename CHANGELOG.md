@@ -2,6 +2,89 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.6 - 2025-11-22
+
+### <!-- 0 -->⛰️ Features
+
+- _(duplicate_handler)_ User cache to improve performance
+
+## 0.2.5 - 2025-11-22
+
+### <!-- 0 -->⛰️ Features
+
+- _(cli)_ The ls command has page and page_size now
+- _(dulicate_handler)_ Opimization for reducing the amount of api calls
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- _(duplicate_handler)_ Improved search
+
+## 0.2.4 - 2025-11-22
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- _(duplicate_handler)_ Add missing parent_id
+
+## 0.2.3 - 2025-11-22
+
+### <!-- 0 -->⛰️ Features
+
+- _(duplicate_handler)_ Fix duplicate check for a lot of files
+
+## 0.2.2 - 2025-11-22
+
+### <!-- 0 -->⛰️ Features
+
+- _(cli)_ New find duplicate command
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- _(cli)_ Set progress bar visible on new files
+- _(cli)_ Fix find-uplicates folder parameter
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- _(No Category)_ Fix pre-commit
+
+## 0.2.1 - 2025-11-22
+
+### <!-- 2 -->🚜 Refactor
+
+- _(No Category)_ Refactor sync by using file manager
+
+### <!-- 6 -->🧪 Testing
+
+- _(No Category)_ Increase coverage
+- _(No Category)_ Increase coverage and fix mypy check
+
+## 0.2.0 - 2025-11-22
+
+### <!-- 0 -->⛰️ Features
+
+- _(No Category)_ New sync command
+- _(No Category)_ Missing page parameter has beed added to api
+
+### <!-- 2 -->🚜 Refactor
+
+- _(No Category)_ Get file entries call are moved into an own class
+- _(No Category)_ Use FileEntriesManager in cli
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- _(No Category)_ Fix pre-commit
+
+## 0.1.9 - 2025-11-22
+
+### <!-- 0 -->⛰️ Features
+
+- _(duplicate_handler)_ Speed improvement
+
+## 0.1.8 - 2025-11-22
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- _(duplicate_handler)_ Take parent_id into account
+
 ## 0.1.7 - 2025-11-22
 
 ### <!-- 0 -->⛰️ Features
@@ -12,7 +95,21 @@ All notable changes to this project will be documented in this file.
 
 ### <!-- 1 -->🐛 Bug Fixes
 
+- _(duplicate_handler)_ Posix file handler for windows
 - _(No Category)_ Allow to abort upload on windows, improve error handling on delete
+
+### <!-- 3 -->📚 Documentation
+
+- _(No Category)_ Add changelog
+
+### <!-- 6 -->🧪 Testing
+
+- _(No Category)_ Fix mocking after refactoring
+- _(No Category)_ Fix mocking after refactoring
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- _(No Category)_ Fix pre-commit
 
 ## 0.1.6 - 2025-11-21
 
