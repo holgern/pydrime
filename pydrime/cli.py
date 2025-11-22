@@ -2,7 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, Callable, Optional, cast
 
 import click
 from rich.progress import (
@@ -348,18 +348,19 @@ def upload(  # noqa: C901
 
         # Helper function to upload a single file with progress
         def upload_single_file_with_progress(
-            file_path: Path, upload_path: str, task_id: Any
+            file_path: Path, upload_path: str, task_id: Optional[Any]
         ) -> Any:
-            callback = None
+            callback: Optional[Callable[[int, int], None]] = None
             if progress_display and task_id is not None:
                 # Create file-specific progress callback with individual task tracking
                 def file_progress_callback(
                     bytes_uploaded: int, total_bytes: int
                 ) -> None:
                     # Update individual file progress
-                    progress_display.update(
-                        task_id, completed=bytes_uploaded, total=total_bytes
-                    )
+                    if progress_display:
+                        progress_display.update(
+                            task_id, completed=bytes_uploaded, total=total_bytes
+                        )
 
                 # Create overall progress callback using tracker
                 overall_callback = progress_tracker.create_file_callback(
@@ -367,9 +368,11 @@ def upload(  # noqa: C901
                 )
 
                 # Combine both callbacks
-                def callback(bytes_uploaded: int, total_bytes: int) -> None:
+                def callback_combined(bytes_uploaded: int, total_bytes: int) -> None:
                     file_progress_callback(bytes_uploaded, total_bytes)
                     overall_callback(bytes_uploaded, total_bytes)
+
+                callback = callback_combined
 
             return client.upload_file(
                 file_path,
@@ -390,6 +393,9 @@ def upload(  # noqa: C901
                 # Parallel upload with overall progress
                 total_size = sum(f[0].stat().st_size for f in files_to_process)
 
+                # Define upload wrapper function (will be conditionally used)
+                upload_with_task_pool: Optional[Callable[[Path, str], Any]] = None
+
                 # Add overall progress bar if progress display is enabled
                 if progress_display:
                     overall_task_id = progress_display.add_task(
@@ -397,29 +403,80 @@ def upload(  # noqa: C901
                     )
                     progress_tracker.set_overall_task(overall_task_id)
 
+                    # Create a limited pool of progress bars (one per worker)
+                    # to avoid cluttering the screen
+                    import queue
+
+                    progress_task_pool = []
+                    for i in range(workers):
+                        task_id = progress_display.add_task(
+                            f"[dim]Worker {i + 1}: Waiting...",
+                            total=100,
+                            visible=True,
+                        )
+                        progress_task_pool.append(task_id)
+
+                    # Track available task IDs - use thread-safe queue
+                    available_tasks_queue: queue.Queue[Any] = queue.Queue()
+                    for task_id in progress_task_pool:
+                        available_tasks_queue.put(task_id)
+
+                    # Wrapper to handle task allocation
+                    def upload_with_task_pool_impl(
+                        file_path: Path, upload_path: str
+                    ) -> Any:
+                        # Get a task ID from the pool
+                        task_id = available_tasks_queue.get()
+                        try:
+                            # Update task to show current file
+                            file_size = file_path.stat().st_size
+                            if progress_display:
+                                progress_display.update(
+                                    task_id,
+                                    description=f"[cyan]{file_path.name}",
+                                    completed=0,
+                                    total=file_size,
+                                )
+
+                            # Upload the file
+                            result = upload_single_file_with_progress(
+                                file_path, upload_path, task_id
+                            )
+
+                            # Mark task as complete
+                            if progress_display:
+                                progress_display.update(
+                                    task_id,
+                                    description="[dim]Worker: Waiting...",
+                                    completed=0,
+                                    total=100,
+                                )
+                            return result
+                        finally:
+                            # Return task ID to pool
+                            available_tasks_queue.put(task_id)
+
+                    upload_with_task_pool = upload_with_task_pool_impl
+
                 with ThreadPoolExecutor(max_workers=workers) as executor:
                     futures = {}
 
                     for file_path, upload_path, rel_path in files_to_process:
-                        file_size = file_path.stat().st_size
-                        task_id = (
-                            progress_display.add_task(
-                                f"[cyan]{file_path.name}", total=file_size
+                        if upload_with_task_pool:
+                            future = executor.submit(
+                                upload_with_task_pool, file_path, upload_path
                             )
-                            if progress_display
-                            else None
-                        )
-
-                        future = executor.submit(
-                            upload_single_file_with_progress,
-                            file_path,
-                            upload_path,
-                            task_id,
-                        )
-                        futures[future] = (file_path, upload_path, rel_path, task_id)
+                        else:
+                            future = executor.submit(
+                                upload_single_file_with_progress,
+                                file_path,
+                                upload_path,
+                                None,
+                            )
+                        futures[future] = (file_path, upload_path, rel_path)
 
                     for future in as_completed(futures):
-                        file_path, upload_path, rel_path, task_id = futures[future]
+                        file_path, upload_path, rel_path = futures[future]
                         try:
                             result = future.result()
                             success_count += 1
@@ -441,13 +498,6 @@ def upload(  # noqa: C901
                             if progress_display:
                                 progress_tracker.rollback_file_progress(
                                     file_path, progress_display
-                                )
-
-                            # Mark individual file task as failed
-                            if progress_display and task_id is not None:
-                                progress_display.update(
-                                    task_id,
-                                    description=f"[red]✗ {file_path.name}",
                                 )
 
                             if not out.quiet:
