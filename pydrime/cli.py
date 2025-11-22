@@ -478,64 +478,71 @@ def upload(  # noqa: C901
                             )
                         futures[future] = (file_path, upload_path, rel_path)
 
-                    for future in as_completed(futures):
-                        file_path, upload_path, rel_path = futures[future]
-                        try:
-                            result = future.result()
-                            success_count += 1
+                    try:
+                        for future in as_completed(futures):
+                            file_path, upload_path, rel_path = futures[future]
+                            try:
+                                result = future.result()
+                                success_count += 1
 
-                            # Update overall progress description with file count
-                            if progress_display and overall_task_id is not None:
-                                completed = success_count + error_count
-                                desc = (
-                                    f"[green]Overall Progress "
-                                    f"({completed}/{total_files} files)"
-                                )
-                                progress_display.update(
-                                    overall_task_id,
-                                    description=desc,
-                                )
+                                # Update overall progress description with file count
+                                if progress_display and overall_task_id is not None:
+                                    completed = success_count + error_count
+                                    desc = (
+                                        f"[green]Overall Progress "
+                                        f"({completed}/{total_files} files)"
+                                    )
+                                    progress_display.update(
+                                        overall_task_id,
+                                        description=desc,
+                                    )
 
-                            # Extract file entry info if available
-                            if isinstance(result, dict) and "fileEntry" in result:
-                                entry = result["fileEntry"]
-                                uploaded_files.append(
-                                    {
-                                        "path": upload_path,
-                                        "id": entry.get("id"),
-                                        "hash": entry.get("hash"),
-                                    }
-                                )
-                        except (DrimeAPIError, Exception) as e:
-                            error_count += 1
+                                # Extract file entry info if available
+                                if isinstance(result, dict) and "fileEntry" in result:
+                                    entry = result["fileEntry"]
+                                    uploaded_files.append(
+                                        {
+                                            "path": upload_path,
+                                            "id": entry.get("id"),
+                                            "hash": entry.get("hash"),
+                                        }
+                                    )
+                            except (DrimeAPIError, Exception) as e:
+                                error_count += 1
 
-                            # Update overall progress description with file count
-                            if progress_display and overall_task_id is not None:
-                                completed = success_count + error_count
-                                desc = (
-                                    f"[green]Overall Progress "
-                                    f"({completed}/{total_files} files)"
-                                )
-                                progress_display.update(
-                                    overall_task_id,
-                                    description=desc,
-                                )
+                                # Update overall progress description with file count
+                                if progress_display and overall_task_id is not None:
+                                    completed = success_count + error_count
+                                    desc = (
+                                        f"[green]Overall Progress "
+                                        f"({completed}/{total_files} files)"
+                                    )
+                                    progress_display.update(
+                                        overall_task_id,
+                                        description=desc,
+                                    )
 
-                            # Rollback progress for failed file
-                            if progress_display:
-                                progress_tracker.rollback_file_progress(
-                                    file_path, progress_display
-                                )
+                                # Rollback progress for failed file
+                                if progress_display:
+                                    progress_tracker.rollback_file_progress(
+                                        file_path, progress_display
+                                    )
 
-                            if not out.quiet:
-                                error_type = (
-                                    "API error"
-                                    if isinstance(e, DrimeAPIError)
-                                    else "Unexpected error"
-                                )
-                                out.error(
-                                    f"{error_type} uploading {file_path.name}: {e}"
-                                )
+                                if not out.quiet:
+                                    error_type = (
+                                        "API error"
+                                        if isinstance(e, DrimeAPIError)
+                                        else "Unexpected error"
+                                    )
+                                    out.error(
+                                        f"{error_type} uploading {file_path.name}: {e}"
+                                    )
+                    except KeyboardInterrupt:
+                        out.warning("\nUpload interrupted by user. Cancelling...")
+                        # Cancel all pending futures
+                        for future in futures:
+                            future.cancel()
+                        raise
             else:
                 # Sequential upload
                 total_size = sum(f[0].stat().st_size for f in files_to_process)
@@ -618,6 +625,9 @@ def upload(  # noqa: C901
         if error_count > 0:
             ctx.exit(1)
 
+    except KeyboardInterrupt:
+        out.warning("\nUpload cancelled by user")
+        ctx.exit(130)  # Standard exit code for SIGINT
     except DrimeAPIError as e:
         out.error(f"API error: {e}")
         ctx.exit(1)
@@ -1551,12 +1561,22 @@ def download(
                             )
                             futures[future] = identifier
 
-                        for future in as_completed(futures):
-                            identifier = futures[future]
-                            try:
-                                future.result()
-                            except Exception as e:
-                                out.error(f"Error downloading {identifier}: {e}")
+                        try:
+                            for future in as_completed(futures):
+                                identifier = futures[future]
+                                try:
+                                    future.result()
+                                except Exception as e:
+                                    out.error(f"Error downloading {identifier}: {e}")
+                        except KeyboardInterrupt:
+                            out.warning(
+                                "\nDownload interrupted by user. "
+                                "Cancelling pending downloads..."
+                            )
+                            # Cancel all pending futures
+                            for future in futures:
+                                future.cancel()
+                            raise
                 finally:
                     shared_progress_display.stop()
                     # Reset shared variables
@@ -1572,12 +1592,22 @@ def download(
                         )
                         futures[future] = identifier
 
-                    for future in as_completed(futures):
-                        identifier = futures[future]
-                        try:
-                            future.result()
-                        except Exception as e:
-                            out.error(f"Error downloading {identifier}: {e}")
+                    try:
+                        for future in as_completed(futures):
+                            identifier = futures[future]
+                            try:
+                                future.result()
+                            except Exception as e:
+                                out.error(f"Error downloading {identifier}: {e}")
+                    except KeyboardInterrupt:
+                        out.warning(
+                            "\nDownload interrupted by user. "
+                            "Cancelling pending downloads..."
+                        )
+                        # Cancel all pending futures
+                        for future in futures:
+                            future.cancel()
+                        raise
         else:
             # Sequential download
             for identifier in entry_identifiers:
@@ -1586,6 +1616,9 @@ def download(
         if out.json_output:
             out.output_json({"files": downloaded_files})
 
+    except KeyboardInterrupt:
+        out.warning("\nDownload cancelled by user")
+        ctx.exit(130)  # Standard exit code for SIGINT
     except DrimeAPIError as e:
         out.error(str(e))
         ctx.exit(1)

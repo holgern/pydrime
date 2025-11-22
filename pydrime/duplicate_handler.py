@@ -489,17 +489,25 @@ class DuplicateHandler:
             return True
 
         try:
+            total_entries = len(self.entries_to_delete)
             if not self.out.quiet:
-                self.out.info(
-                    f"Moving {len(self.entries_to_delete)} existing entries to trash..."
-                )
-            self.client.delete_file_entries(
-                self.entries_to_delete, delete_forever=False
-            )
+                self.out.info(f"Moving {total_entries} existing entries to trash...")
+
+            # Batch delete operations to avoid API limits
+            # Use smaller batches (10) to be safe
+            batch_size = 10
+            deleted_count = 0
+
+            for i in range(0, total_entries, batch_size):
+                batch = self.entries_to_delete[i : i + batch_size]
+                self.client.delete_file_entries(batch, delete_forever=False)
+                deleted_count += len(batch)
+
+                if not self.out.quiet and total_entries > batch_size:
+                    self.out.info(f"  Deleted {deleted_count}/{total_entries}...")
+
             if not self.out.quiet:
-                self.out.success(
-                    f"✓ Moved {len(self.entries_to_delete)} entries to trash"
-                )
+                self.out.success(f"✓ Moved {total_entries} entries to trash")
             return True
         except DrimeAPIError as e:
             self.out.error(f"Failed to delete existing entries: {e}")
