@@ -1834,8 +1834,87 @@ def sync(  # noqa: C901
         # without the folder name
         local_files = scan_directory(local_path, local_path, out)
 
-        # Apply remote path prefix if specified
+        # Step 2: Get remote files
+        if not out.quiet:
+            out.info("Fetching remote files...")
+
+        # Use FileEntriesManager to fetch all remote files
+        file_manager = FileEntriesManager(client, workspace)
+
+        # Determine the remote folder to sync with
+        # If remote_path is specified, use it
+        # Otherwise, look for a folder with the same name as local_path
+        # in current_folder_id
+        remote_sync_folder_id = current_folder_id
+        remote_base_path = ""
+        skip_remote_fetch = False
+        remote_folder_found = False
+
         if remote_path:
+            # Try to find a folder matching the remote_path
+            folder_entry = file_manager.find_folder_by_name(
+                remote_path, current_folder_id
+            )
+            if folder_entry:
+                # Found matching folder - sync into it
+                remote_sync_folder_id = folder_entry.id
+                remote_base_path = ""  # We're already inside the folder
+                remote_folder_found = True
+                if not out.quiet:
+                    out.info(
+                        f"Found remote folder '{folder_entry.name}' "
+                        f"(ID: {folder_entry.id})"
+                    )
+            else:
+                # Folder doesn't exist yet - will be created during upload
+                # Skip fetching remote files since the folder doesn't exist
+                skip_remote_fetch = True
+                remote_base_path = (
+                    remote_path or ""
+                )  # Keep for upload path construction
+                if not out.quiet:
+                    out.info(
+                        f"Remote folder '{remote_path}' not found - "
+                        f"will be created during sync"
+                    )
+        else:
+            # No remote_path specified - try to find a matching folder
+            folder_entry = file_manager.find_folder_by_name(
+                local_path.name, current_folder_id
+            )
+            if folder_entry:
+                # Found matching folder - sync into it
+                remote_sync_folder_id = folder_entry.id
+                remote_base_path = ""  # We're already inside the folder
+                remote_folder_found = True
+                if not out.quiet:
+                    out.info(
+                        f"Found remote folder '{folder_entry.name}' "
+                        f"(ID: {folder_entry.id})"
+                    )
+            else:
+                # Folder doesn't exist - skip remote fetch
+                skip_remote_fetch = True
+                remote_base_path = (
+                    ""  # Files will be uploaded with their relative paths
+                )
+                if not out.quiet:
+                    out.info(
+                        f"Remote folder '{local_path.name}' not found - "
+                        f"will be created during sync"
+                    )
+
+        # Get all remote files recursively with their paths
+        if skip_remote_fetch:
+            remote_entries_with_paths = []
+        else:
+            remote_entries_with_paths = file_manager.get_all_recursive(
+                folder_id=remote_sync_folder_id, path_prefix=remote_base_path
+            )
+
+        # Apply remote path prefix to local files if specified AND folder not found
+        # If folder was found, we sync contents directly without prefix
+        if remote_path and not remote_folder_found:
             local_files = [
                 (file_path, f"{remote_path}/{rel_path}")
                 for file_path, rel_path in local_files
@@ -1849,23 +1928,27 @@ def sync(  # noqa: C901
 
         if not out.quiet:
             out.info(f"Found {len(local_file_map)} local file(s)")
-
-        # Step 2: Get remote files
-        if not out.quiet:
-            out.info("Fetching remote files...")
-
-        # Use FileEntriesManager to fetch all remote files
-        file_manager = FileEntriesManager(client, workspace)
-
-        # Determine the remote folder to sync with
-        # If remote_path is specified, use it
-        # Otherwise, look for a folder with the same name as local_path
-        # in current_folder_id
-        remote_sync_folder_id = current_folder_id
-        remote_base_path = remote_path if remote_path else local_path.name
-
-        if not remote_path:
-            # Try to find a matching folder in the current directory
+            if folder_entry:
+                # Found matching folder - sync into it
+                remote_sync_folder_id = folder_entry.id
+                remote_base_path = ""  # We're already inside the folder
+                if not out.quiet:
+                    out.info(
+                        f"Found remote folder '{folder_entry.name}' "
+                        f"(ID: {folder_entry.id})"
+                    )
+            else:
+                # Folder doesn't exist yet - will be created during upload
+                # Skip fetching remote files since the folder doesn't exist
+                skip_remote_fetch = True
+                remote_base_path = remote_path  # Keep for upload path construction
+                if not out.quiet:
+                    out.info(
+                        f"Remote folder '{remote_path}' not found - "
+                        f"will be created during sync"
+                    )
+        else:
+            # No remote_path specified - try to find a matching folder
             folder_entry = file_manager.find_folder_by_name(
                 local_path.name, current_folder_id
             )
@@ -1878,11 +1961,27 @@ def sync(  # noqa: C901
                         f"Found remote folder '{folder_entry.name}' "
                         f"(ID: {folder_entry.id})"
                     )
+            else:
+                # Folder doesn't exist - skip remote fetch
+                skip_remote_fetch = True
+                remote_base_path = (
+                    ""  # Files will be uploaded with their relative paths
+                )
+                if not out.quiet:
+                    out.info(
+                        f"Remote folder '{local_path.name}' not found - "
+                        f"will be created during sync"
+                    )
 
         # Get all remote files recursively with their paths
-        remote_entries_with_paths = file_manager.get_all_recursive(
-            folder_id=remote_sync_folder_id, path_prefix=remote_base_path
-        )
+        if skip_remote_fetch:
+            remote_entries_with_paths = []
+        else:
+            # Ensure remote_base_path is not None (should always be a string)
+            assert remote_base_path is not None, "remote_base_path should be a string"
+            remote_entries_with_paths = file_manager.get_all_recursive(
+                folder_id=remote_sync_folder_id, path_prefix=remote_base_path
+            )
 
         # Build remote file mapping: {relative_path: FileEntry}
         remote_file_map: dict[str, FileEntry] = {}
