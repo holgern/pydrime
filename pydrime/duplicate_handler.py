@@ -321,15 +321,13 @@ class DuplicateHandler:
             for name in names_to_check:
                 try:
                     cache_key = f"is_folder:{name}"
-                    entries = self.entries_manager.search_by_name(
-                        name, exact_match=True
+                    # Use find_folder_by_name with parent_id for scoped search
+                    folder = self.entries_manager.find_folder_by_name(
+                        name, parent_id=self.parent_id
                     )
-                    # Check if any exact match is a folder
-                    for entry in entries:
-                        if entry.is_folder:
-                            folder_names.add(name)
-                            self._folder_id_cache[cache_key] = entry.id
-                            break
+                    if folder:
+                        folder_names.add(name)
+                        self._folder_id_cache[cache_key] = folder.id
                     else:
                         self._folder_id_cache[cache_key] = None
                 except DrimeAPIError:
