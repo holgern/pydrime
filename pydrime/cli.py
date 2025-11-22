@@ -392,14 +392,17 @@ def upload(  # noqa: C901
             if workers > 1:
                 # Parallel upload with overall progress
                 total_size = sum(f[0].stat().st_size for f in files_to_process)
+                total_files = len(files_to_process)
 
                 # Define upload wrapper function (will be conditionally used)
                 upload_with_task_pool: Optional[Callable[[Path, str], Any]] = None
+                overall_task_id: Optional[Any] = None
 
                 # Add overall progress bar if progress display is enabled
                 if progress_display:
                     overall_task_id = progress_display.add_task(
-                        "[green]Overall Progress", total=total_size
+                        f"[green]Overall Progress (0/{total_files} files)",
+                        total=total_size,
                     )
                     progress_tracker.set_overall_task(overall_task_id)
 
@@ -481,6 +484,18 @@ def upload(  # noqa: C901
                             result = future.result()
                             success_count += 1
 
+                            # Update overall progress description with file count
+                            if progress_display and overall_task_id is not None:
+                                completed = success_count + error_count
+                                desc = (
+                                    f"[green]Overall Progress "
+                                    f"({completed}/{total_files} files)"
+                                )
+                                progress_display.update(
+                                    overall_task_id,
+                                    description=desc,
+                                )
+
                             # Extract file entry info if available
                             if isinstance(result, dict) and "fileEntry" in result:
                                 entry = result["fileEntry"]
@@ -493,6 +508,18 @@ def upload(  # noqa: C901
                                 )
                         except (DrimeAPIError, Exception) as e:
                             error_count += 1
+
+                            # Update overall progress description with file count
+                            if progress_display and overall_task_id is not None:
+                                completed = success_count + error_count
+                                desc = (
+                                    f"[green]Overall Progress "
+                                    f"({completed}/{total_files} files)"
+                                )
+                                progress_display.update(
+                                    overall_task_id,
+                                    description=desc,
+                                )
 
                             # Rollback progress for failed file
                             if progress_display:
@@ -1447,6 +1474,9 @@ def download(
         if workers > 1 and len(entry_identifiers) > 1:
             # Parallel download for multiple entries with progress pooling
             if not out.quiet and not no_progress:
+                total_entries = len(entry_identifiers)
+                completed_entries = 0
+
                 # Create shared progress display with task pool
                 shared_progress_display = Progress(
                     "[progress.description]{task.description}",
@@ -1462,13 +1492,14 @@ def download(
 
                 # Add overall progress bar
                 overall_task_id = shared_progress_display.add_task(
-                    "[green]Overall Download Progress",
-                    total=len(entry_identifiers),
+                    f"[green]Overall Download Progress (0/{total_entries} entries)",
+                    total=total_entries,
                     completed=0,
                 )
 
                 # Create a limited pool of progress bars (one per worker)
                 import queue
+                import threading
 
                 progress_task_pool = []
                 for i in range(workers):
@@ -1484,16 +1515,30 @@ def download(
                 for task_id in progress_task_pool:
                     shared_task_queue.put(task_id)
 
+                # Counter lock for thread-safe increment
+                counter_lock = threading.Lock()
+
                 # Wrapper to track completion for overall progress
                 def download_with_progress_tracking(
                     identifier: str, dest_path: Optional[Path]
                 ) -> None:
+                    nonlocal completed_entries
                     try:
                         download_entry(identifier, dest_path)
                     finally:
-                        # Update overall progress
-                        if shared_progress_display:
-                            shared_progress_display.update(overall_task_id, advance=1)
+                        # Update overall progress with counter
+                        with counter_lock:
+                            completed_entries += 1
+                            if shared_progress_display:
+                                desc = (
+                                    f"[green]Overall Download Progress "
+                                    f"({completed_entries}/{total_entries} entries)"
+                                )
+                                shared_progress_display.update(
+                                    overall_task_id,
+                                    advance=1,
+                                    description=desc,
+                                )
 
                 try:
                     with ThreadPoolExecutor(max_workers=workers) as executor:
