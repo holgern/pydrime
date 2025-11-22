@@ -1808,29 +1808,8 @@ def sync(  # noqa: C901
         if not out.quiet:
             out.info("Fetching remote files...")
 
-        # Get all remote files recursively with their paths
-        remote_entries_with_paths: list[tuple[FileEntry, str]] = []
-
-        def fetch_remote_recursive(parent_id: Optional[int], path_prefix: str) -> None:
-            """Recursively fetch all remote files with path tracking."""
-            try:
-                result = client.get_file_entries(
-                    parent_ids=[parent_id] if parent_id else None,
-                    workspace_id=workspace,
-                )
-                file_entries = FileEntriesResult.from_api_response(result)
-
-                for entry in file_entries.entries:
-                    entry_path = (
-                        f"{path_prefix}/{entry.name}" if path_prefix else entry.name
-                    )
-                    if entry.is_folder:
-                        # Recursively fetch folder contents
-                        fetch_remote_recursive(entry.id, entry_path)
-                    else:
-                        remote_entries_with_paths.append((entry, entry_path))
-            except DrimeAPIError:
-                pass  # Skip inaccessible folders
+        # Use FileEntriesManager to fetch all remote files
+        file_manager = FileEntriesManager(client, workspace)
 
         # Determine the remote folder to sync with
         # If remote_path is specified, use it
@@ -1841,27 +1820,23 @@ def sync(  # noqa: C901
 
         if not remote_path:
             # Try to find a matching folder in the current directory
-            try:
-                result = client.get_file_entries(
-                    parent_ids=[current_folder_id] if current_folder_id else None,
-                    workspace_id=workspace,
-                )
-                file_entries = FileEntriesResult.from_api_response(result)
+            folder_entry = file_manager.find_folder_by_name(
+                local_path.name, current_folder_id
+            )
+            if folder_entry:
+                # Found matching folder - sync into it
+                remote_sync_folder_id = folder_entry.id
+                remote_base_path = ""  # We're already inside the folder
+                if not out.quiet:
+                    out.info(
+                        f"Found remote folder '{folder_entry.name}' "
+                        f"(ID: {folder_entry.id})"
+                    )
 
-                for entry in file_entries.entries:
-                    if entry.is_folder and entry.name == local_path.name:
-                        # Found matching folder - sync into it
-                        remote_sync_folder_id = entry.id
-                        remote_base_path = ""  # We're already inside the folder
-                        if not out.quiet:
-                            out.info(
-                                f"Found remote folder '{entry.name}' (ID: {entry.id})"
-                            )
-                        break
-            except DrimeAPIError:
-                pass
-
-        fetch_remote_recursive(remote_sync_folder_id, remote_base_path)
+        # Get all remote files recursively with their paths
+        remote_entries_with_paths = file_manager.get_all_recursive(
+            folder_id=remote_sync_folder_id, path_prefix=remote_base_path
+        )
 
         # Build remote file mapping: {relative_path: FileEntry}
         remote_file_map: dict[str, FileEntry] = {}
