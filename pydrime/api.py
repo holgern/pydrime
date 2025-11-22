@@ -480,6 +480,7 @@ class DrimeClient:
     def get_file_entries(
         self,
         per_page: int = 50,
+        page: Optional[int] = None,
         deleted_only: Optional[bool] = None,
         starred_only: Optional[bool] = None,
         recent_only: Optional[bool] = None,
@@ -496,6 +497,7 @@ class DrimeClient:
 
         Args:
             per_page: How many entries to return per page (default: 50)
+            page: Page number to retrieve (1-based, default: None for page 1)
             deleted_only: Whether only trashed entries should be returned
             starred_only: Whether only starred entries should be returned
             recent_only: Whether only recent entries should be returned
@@ -514,6 +516,8 @@ class DrimeClient:
         endpoint = "/drive/file-entries"
         params: dict[str, Any] = {"perPage": per_page, "workspaceId": workspace_id}
 
+        if page is not None:
+            params["page"] = page
         if deleted_only is not None:
             params["deletedOnly"] = deleted_only
         if starred_only is not None:
