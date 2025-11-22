@@ -146,7 +146,7 @@ class TestDuplicateFileFinder:
         assert len(duplicates) == 0
 
     def test_find_duplicates_different_parent_ids(self):
-        """Test that files with same name/size but different parents are not duplicates."""
+        """Test files with same name/size but different parents aren't duplicates."""
         mock_entries_manager = MagicMock()
         mock_entries_manager.get_all_in_folder.return_value = [
             FileEntry(
