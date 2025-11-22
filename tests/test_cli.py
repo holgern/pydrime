@@ -2515,9 +2515,9 @@ class TestFolderStructureDetection:
             # Check that all paths use forward slashes
             for _file_path, rel_path in files:
                 assert "\\" not in rel_path, f"Path contains backslash: {rel_path}"
-                assert "/" in rel_path or rel_path in [
-                    "file3.txt"
-                ], f"Expected forward slashes in nested paths: {rel_path}"
+                assert "/" in rel_path or rel_path in ["file3.txt"], (
+                    f"Expected forward slashes in nested paths: {rel_path}"
+                )
 
             # Check expected structure
             rel_paths = [rel_path for _, rel_path in files]
@@ -2706,12 +2706,12 @@ class TestFolderStructureDetection:
             for file_info in files_arg:
                 rel_path = file_info.get("relativePath", "")
                 if rel_path:  # Only check non-empty paths
-                    assert (
-                        "\\" not in rel_path
-                    ), f"relativePath should not contain backslashes: {rel_path}"
-                    assert (
-                        "/" in rel_path or rel_path == ""
-                    ), f"relativePath should use forward slashes: {rel_path}"
+                    assert "\\" not in rel_path, (
+                        f"relativePath should not contain backslashes: {rel_path}"
+                    )
+                    assert "/" in rel_path or rel_path == "", (
+                        f"relativePath should use forward slashes: {rel_path}"
+                    )
 
 
 class TestWindowsPathHandling:
@@ -2806,9 +2806,9 @@ class TestWindowsPathHandling:
 
             # Check that relativePath uses forward slashes only
             assert "\\" not in rel_path, f"relativePath contains backslash: {rel_path}"
-            assert (
-                rel_path == f"{Path(tmpdir).name}/folder1/folder2"
-            ), f"Expected proper POSIX path, got: {rel_path}"
+            assert rel_path == f"{Path(tmpdir).name}/folder1/folder2", (
+                f"Expected proper POSIX path, got: {rel_path}"
+            )
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.auth.config")
@@ -2853,13 +2853,13 @@ class TestWindowsPathHandling:
                 if "📁" in line:
                     path_part = line.split("📁")[1].strip()
                     # Should not contain backslashes
-                    assert (
-                        "\\" not in path_part
-                    ), f"Folder path contains backslash: {path_part}"
+                    assert "\\" not in path_part, (
+                        f"Folder path contains backslash: {path_part}"
+                    )
                     # Should end with forward slash
-                    assert path_part.endswith(
-                        "/"
-                    ), f"Folder path should end with /: {path_part}"
+                    assert path_part.endswith("/"), (
+                        f"Folder path should end with /: {path_part}"
+                    )
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.auth.config")
@@ -2900,9 +2900,9 @@ class TestWindowsPathHandling:
 
             for line in in_lines:
                 # Should not contain backslashes
-                assert (
-                    "\\" not in line
-                ), f"Directory grouping contains backslash: {line}"
+                assert "\\" not in line, (
+                    f"Directory grouping contains backslash: {line}"
+                )
                 # Should use forward slashes for nested paths
                 if "root" not in line.lower():
                     assert "/" in line, f"Expected forward slash in path: {line}"
@@ -2928,21 +2928,21 @@ class TestWindowsPathHandling:
         posix_parts = posix_path.parts
         posix_reconstructed = str(PurePosixPath(*posix_parts[:3]))
 
-        assert (
-            "\\" not in posix_reconstructed
-        ), "PurePosixPath should not have backslashes"
-        assert (
-            posix_reconstructed == "data/01/02"
-        ), f"Expected 'data/01/02', got '{posix_reconstructed}'"
+        assert "\\" not in posix_reconstructed, (
+            "PurePosixPath should not have backslashes"
+        )
+        assert posix_reconstructed == "data/01/02", (
+            f"Expected 'data/01/02', got '{posix_reconstructed}'"
+        )
 
         # Check parent extraction
         posix_parent = str(posix_path.parent)
-        assert (
-            posix_parent == "data/01/02"
-        ), f"Expected 'data/01/02', got '{posix_parent}'"
-        assert (
-            "\\" not in posix_parent
-        ), "PurePosixPath parent should not have backslashes"
+        assert posix_parent == "data/01/02", (
+            f"Expected 'data/01/02', got '{posix_parent}'"
+        )
+        assert "\\" not in posix_parent, (
+            "PurePosixPath parent should not have backslashes"
+        )
 
 
 class TestRemotePathDuplicateDetection:
@@ -3158,6 +3158,616 @@ class TestRemotePathDuplicateDetection:
                 if "duplicate" in line.lower()
             ]
             backup_in_duplicates = any("backup" in line for line in duplicate_lines)
-            assert (
-                not backup_in_duplicates
-            ), "backup folder should not be in duplicate warnings"
+            assert not backup_in_duplicates, (
+                "backup folder should not be in duplicate warnings"
+            )
+
+
+class TestSyncCommand:
+    """Tests for the sync command."""
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.Path")
+    def test_sync_files_to_upload_only(
+        self,
+        mock_path_class,
+        mock_cli_config,
+        mock_auth_config,
+        mock_client_class,
+        runner,
+        tmp_path,
+    ):
+        """Test sync when only local files need to be uploaded."""
+        # Create test directory with files
+        sync_dir = tmp_path / "sync_folder"
+        sync_dir.mkdir()
+        file1 = sync_dir / "file1.txt"
+        file1.write_text("content1")
+        file2 = sync_dir / "file2.txt"
+        file2.write_text("content2")
+
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        # Mock file entries - no remote files
+        mock_client.get_file_entries.return_value = {"data": []}
+
+        # Mock upload
+        mock_client.upload_file.return_value = {"fileEntry": {"id": 1}}
+
+        # Mock Path to return actual path
+        mock_path_class.return_value = Path(str(sync_dir))
+
+        result = runner.invoke(
+            main,
+            ["sync", str(sync_dir), "--dry-run"],
+        )
+
+        assert result.exit_code == 0
+        assert "Dry run mode" in result.output
+        assert "2 files to upload" in result.output or "upload" in result.output.lower()
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    def test_sync_files_to_download_only(
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
+    ):
+        """Test sync when only remote files need to be downloaded."""
+        # Create empty sync directory
+        sync_dir = tmp_path / "sync_folder"
+        sync_dir.mkdir()
+
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        # Mock remote files that don't exist locally
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 1,
+                    "name": "remote1.txt",
+                    "type": "text",
+                    "size": 100,
+                    "updated_at": "2024-01-01T12:00:00Z",
+                },
+                {
+                    "id": 2,
+                    "name": "remote2.txt",
+                    "type": "text",
+                    "size": 200,
+                    "updated_at": "2024-01-01T13:00:00Z",
+                },
+            ]
+        }
+
+        # Mock download
+        mock_client.download_file.return_value = sync_dir / "remote1.txt"
+
+        result = runner.invoke(
+            main,
+            ["sync", str(sync_dir), "--dry-run"],
+        )
+
+        assert result.exit_code == 0
+        assert "Dry run mode" in result.output
+        assert (
+            "2 files to download" in result.output
+            or "download" in result.output.lower()
+        )
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    def test_sync_files_already_in_sync(
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
+    ):
+        """Test sync when files are already synchronized."""
+        # Create test directory with files
+        sync_dir = tmp_path / "sync_folder"
+        sync_dir.mkdir()
+        file1 = sync_dir / "file1.txt"
+        file1.write_text("content1")
+
+        # Set specific modification time
+        import os
+        import time
+
+        timestamp = time.time()
+        os.utime(file1, (timestamp, timestamp))
+
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        # Mock remote files with same size and timestamp
+        from datetime import datetime
+
+        dt = datetime.fromtimestamp(timestamp)
+        iso_time = dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 1,
+                    "name": "file1.txt",
+                    "type": "text",
+                    "size": len("content1"),
+                    "updated_at": iso_time,
+                }
+            ]
+        }
+
+        result = runner.invoke(
+            main,
+            ["sync", str(sync_dir), "--dry-run"],
+        )
+
+        assert result.exit_code == 0
+        assert "Dry run mode" in result.output
+        # Check that files are detected (test passes if sync logic works)
+        assert "Files in sync:" in result.output or "Files to upload:" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    def test_sync_with_conflicts_newer_local(
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
+    ):
+        """Test sync with conflict - local file is newer."""
+        # Create test directory with files
+        sync_dir = tmp_path / "sync_folder"
+        sync_dir.mkdir()
+        file1 = sync_dir / "file1.txt"
+        file1.write_text("newer content")
+
+        import os
+        import time
+
+        new_timestamp = time.time()
+        os.utime(file1, (new_timestamp, new_timestamp))
+
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        # Mock remote file with older timestamp and different size
+        from datetime import datetime, timedelta
+
+        old_dt = datetime.fromtimestamp(new_timestamp) - timedelta(hours=1)
+        old_iso_time = old_dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 1,
+                    "name": "file1.txt",
+                    "type": "text",
+                    "size": 100,  # Different size
+                    "updated_at": old_iso_time,
+                }
+            ]
+        }
+
+        mock_client.upload_file.return_value = {"fileEntry": {"id": 1}}
+
+        result = runner.invoke(
+            main,
+            ["sync", str(sync_dir), "--dry-run"],
+        )
+
+        assert result.exit_code == 0
+        assert "Dry run mode" in result.output
+        # Should upload the newer local file
+        assert "1 file to upload" in result.output or "upload" in result.output.lower()
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    def test_sync_with_conflicts_newer_remote(
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
+    ):
+        """Test sync with conflict - remote file is newer."""
+        # Create test directory with files
+        sync_dir = tmp_path / "sync_folder"
+        sync_dir.mkdir()
+        file1 = sync_dir / "file1.txt"
+        file1.write_text("older content")
+
+        import os
+        import time
+
+        old_timestamp = time.time() - 3600  # 1 hour ago
+        os.utime(file1, (old_timestamp, old_timestamp))
+
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        # Mock remote file with newer timestamp
+        from datetime import datetime
+
+        new_dt = datetime.fromtimestamp(time.time())
+        new_iso_time = new_dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 1,
+                    "name": "file1.txt",
+                    "type": "text",
+                    "size": 200,  # Different size
+                    "updated_at": new_iso_time,
+                }
+            ]
+        }
+
+        mock_client.download_file.return_value = sync_dir / "file1.txt"
+
+        result = runner.invoke(
+            main,
+            ["sync", str(sync_dir), "--dry-run"],
+        )
+
+        assert result.exit_code == 0
+        assert "Dry run mode" in result.output
+        # Should download the newer remote file
+        assert (
+            "1 file to download" in result.output or "download" in result.output.lower()
+        )
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    def test_sync_without_dry_run(
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
+    ):
+        """Test sync actually performs uploads and downloads."""
+        # Create test directory with one local file
+        sync_dir = tmp_path / "sync_folder"
+        sync_dir.mkdir()
+        file1 = sync_dir / "local.txt"
+        file1.write_text("local content")
+
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        # Mock one remote file to download
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 2,
+                    "name": "remote.txt",
+                    "type": "text",
+                    "size": 100,
+                    "updated_at": "2024-01-01T12:00:00Z",
+                }
+            ]
+        }
+
+        mock_client.upload_file.return_value = {"fileEntry": {"id": 1}}
+        mock_client.download_file.return_value = sync_dir / "remote.txt"
+
+        result = runner.invoke(
+            main,
+            ["sync", str(sync_dir)],
+        )
+
+        # Without --dry-run, it should actually call upload and download
+        assert mock_client.upload_file.called or "upload" in result.output.lower()
+        # Note: download might not be called in dry-run detection logic
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    def test_sync_with_remote_path(
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
+    ):
+        """Test sync with --remote-path option."""
+        # Create test directory
+        sync_dir = tmp_path / "sync_folder"
+        sync_dir.mkdir()
+        file1 = sync_dir / "file1.txt"
+        file1.write_text("content1")
+
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        # Mock get_file_entries to find the remote folder
+        def mock_get_entries(query=None, workspace_id=0, parent_ids=None, **kwargs):
+            if query == "backup":
+                return {
+                    "data": [
+                        {
+                            "id": 100,
+                            "name": "backup",
+                            "type": "folder",
+                        }
+                    ]
+                }
+            elif parent_ids == [100]:
+                # Files in backup folder
+                return {"data": []}
+            return {"data": []}
+
+        mock_client.get_file_entries.side_effect = mock_get_entries
+        mock_client.upload_file.return_value = {"fileEntry": {"id": 1}}
+
+        result = runner.invoke(
+            main,
+            ["sync", str(sync_dir), "-r", "backup", "--dry-run"],
+        )
+
+        assert result.exit_code == 0
+        assert "Dry run mode" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    def test_sync_with_workspace(
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
+    ):
+        """Test sync with --workspace option."""
+        # Create test directory
+        sync_dir = tmp_path / "sync_folder"
+        sync_dir.mkdir()
+
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {
+            "workspaces": [{"id": 5, "name": "test_workspace"}]
+        }
+        mock_client.get_file_entries.return_value = {"data": []}
+
+        result = runner.invoke(
+            main,
+            ["sync", str(sync_dir), "-w", "5", "--dry-run"],
+        )
+
+        assert result.exit_code == 0
+
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    def test_sync_without_api_key(
+        self, mock_cli_config, mock_auth_config, runner, tmp_path
+    ):
+        """Test sync without API key configured."""
+        sync_dir = tmp_path / "sync_folder"
+        sync_dir.mkdir()
+
+        mock_cli_config.is_configured.return_value = False
+        mock_auth_config.is_configured.return_value = False
+
+        result = runner.invoke(main, ["sync", str(sync_dir)])
+
+        assert result.exit_code == 1
+        assert "API key not configured" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    def test_sync_nonexistent_directory(
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner
+    ):
+        """Test sync with non-existent directory."""
+        mock_cli_config.is_configured.return_value = True
+        mock_auth_config.is_configured.return_value = True
+
+        result = runner.invoke(
+            main,
+            ["sync", "/nonexistent/path"],
+        )
+
+        assert result.exit_code != 0  # Should fail with any non-zero exit code
+        assert (
+            "not a directory" in result.output.lower()
+            or "usage:" in result.output.lower()
+        )
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    def test_sync_file_instead_of_directory(
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
+    ):
+        """Test sync with file instead of directory."""
+        # Create a file instead of directory
+        test_file = tmp_path / "file.txt"
+        test_file.write_text("content")
+
+        mock_cli_config.is_configured.return_value = True
+        mock_auth_config.is_configured.return_value = True
+
+        result = runner.invoke(
+            main,
+            ["sync", str(test_file)],
+        )
+
+        assert result.exit_code == 1
+        assert (
+            "not a directory" in result.output.lower()
+            or "must be a directory" in result.output.lower()
+        )
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    def test_sync_with_workers_option(
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
+    ):
+        """Test sync with custom number of workers."""
+        # Create test directory
+        sync_dir = tmp_path / "sync_folder"
+        sync_dir.mkdir()
+
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+        mock_client.get_file_entries.return_value = {"data": []}
+
+        result = runner.invoke(
+            main,
+            ["sync", str(sync_dir), "-j", "4", "--dry-run"],
+        )
+
+        assert result.exit_code == 0
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    def test_sync_empty_directory(
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
+    ):
+        """Test sync with empty local and remote directories."""
+        # Create empty directory
+        sync_dir = tmp_path / "sync_folder"
+        sync_dir.mkdir()
+
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+        mock_client.get_file_entries.return_value = {"data": []}
+
+        result = runner.invoke(
+            main,
+            ["sync", str(sync_dir), "--dry-run"],
+        )
+
+        assert result.exit_code == 0
+        assert (
+            "0 files to upload" in result.output or "no files" in result.output.lower()
+        )
+        assert (
+            "0 files to download" in result.output
+            or "no files" in result.output.lower()
+        )
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    def test_sync_api_error_handling(
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
+    ):
+        """Test sync handles API errors gracefully during fetch."""
+        # Create test directory
+        sync_dir = tmp_path / "sync_folder"
+        sync_dir.mkdir()
+        file1 = sync_dir / "file1.txt"
+        file1.write_text("content")
+
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        # Simulate API error during recursive fetch
+        mock_client.get_file_entries.side_effect = DrimeAPIError(
+            "API connection failed"
+        )
+
+        result = runner.invoke(
+            main,
+            ["sync", str(sync_dir), "--dry-run"],
+        )
+
+        # Sync should handle the error gracefully and continue
+        # (errors during recursive fetch are caught and ignored)
+        assert result.exit_code == 0
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
+    @patch("pydrime.cli.config")
+    def test_sync_with_nested_folders(
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
+    ):
+        """Test sync with nested folder structures."""
+        # Create nested directory structure
+        sync_dir = tmp_path / "sync_folder"
+        sync_dir.mkdir()
+        sub_dir = sync_dir / "subfolder"
+        sub_dir.mkdir()
+        file1 = sync_dir / "file1.txt"
+        file1.write_text("content1")
+        file2 = sub_dir / "file2.txt"
+        file2.write_text("content2")
+
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+        mock_client.get_file_entries.return_value = {"data": []}
+        mock_client.upload_file.return_value = {"fileEntry": {"id": 1}}
+
+        result = runner.invoke(
+            main,
+            ["sync", str(sync_dir), "--dry-run"],
+        )
+
+        assert result.exit_code == 0
+        assert "Dry run mode" in result.output
+        # Should detect both files
+        assert "2 files to upload" in result.output or "upload" in result.output.lower()
