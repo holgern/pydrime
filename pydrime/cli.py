@@ -2908,7 +2908,7 @@ def validate(
     "--folder",
     "-f",
     type=str,
-    help="Folder ID to scan (omit for root folder)",
+    help="Folder ID or name to scan (omit for root folder)",
 )
 @click.option(
     "--recursive",
@@ -2951,8 +2951,11 @@ def find_duplicates(
         # Dry run (show duplicates without deleting)
         pydrime find-duplicates
 
-        # Find duplicates in a specific folder
+        # Find duplicates in a specific folder by ID
         pydrime find-duplicates --folder 12345
+
+        # Find duplicates in a specific folder by name
+        pydrime find-duplicates --folder "My Documents"
 
         # Find duplicates recursively
         pydrime find-duplicates --recursive
@@ -2963,13 +2966,17 @@ def find_duplicates(
         # Keep newest file instead of oldest
         pydrime find-duplicates --delete --keep-newest
     """
-    client: DrimeClient = ctx.obj["client"]
+    api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
 
-    # Check API key
-    require_api_key(ctx, out)
+    if not config.is_configured() and not api_key:
+        out.error("API key not configured.")
+        out.info("Run 'pydrime init' to configure your API key")
+        ctx.exit(1)
 
     try:
+        client = DrimeClient(api_key=api_key)
+
         # Get workspace ID
         workspace_id = (
             workspace
@@ -2977,14 +2984,28 @@ def find_duplicates(
             else (config.get_default_workspace() or 0)
         )
 
-        # Parse folder ID
+        # Get current folder context
+        current_folder = config.get_current_folder()
+
+        # Parse folder ID or name
         folder_id: Optional[int] = None
         if folder:
-            if is_file_id(folder):
-                folder_id = int(folder)
+            # Handle special cases for root
+            if folder in ("0", "/"):
+                folder_id = None
             else:
-                out.error(f"Invalid folder ID: {folder}")
-                ctx.exit(1)
+                # Resolve folder identifier (ID or name) to folder ID
+                try:
+                    folder_id = client.resolve_folder_identifier(
+                        identifier=folder,
+                        parent_id=current_folder,
+                        workspace_id=workspace_id,
+                    )
+                    if not out.quiet and not folder.isdigit():
+                        out.info(f"Resolved '{folder}' to folder ID: {folder_id}")
+                except DrimeNotFoundError:
+                    out.error(f"Folder not found: {folder}")
+                    ctx.exit(1)
 
         # Show configuration
         if not out.quiet:
