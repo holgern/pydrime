@@ -311,8 +311,18 @@ class DuplicateHandler:
 
         # Check each name individually using scoped searches
         # This is more efficient than fetching all entries when parent has many files
-        for name in names_to_check:
+        if not self.out.quiet and names_to_check:
+            self.out.progress_message(
+                f"  Checking {len(names_to_check)} items to determine "
+                f"if they are folders..."
+            )
+
+        for idx, name in enumerate(names_to_check, 1):
             try:
+                if not self.out.quiet:
+                    self.out.progress_message(
+                        f"    Checking '{name}' ({idx}/{len(names_to_check)})..."
+                    )
                 cache_key = f"is_folder:{name}"
                 # Use find_folder_by_name with parent_id for scoped search
                 folder = self.entries_manager.find_folder_by_name(
@@ -321,9 +331,17 @@ class DuplicateHandler:
                 if folder:
                     folder_names.add(name)
                     self._folder_id_cache[cache_key] = folder.id
+                    if not self.out.quiet:
+                        self.out.progress_message(f"      → '{name}' is a folder")
                 else:
                     self._folder_id_cache[cache_key] = None
+                    if not self.out.quiet:
+                        self.out.progress_message(f"      → '{name}' is not a folder")
             except DrimeAPIError:
+                if not self.out.quiet:
+                    self.out.progress_message(
+                        f"      → Error checking '{name}', skipping"
+                    )
                 pass
 
         return folder_names
@@ -363,9 +381,9 @@ class DuplicateHandler:
         for idx, (folder_name, files) in enumerate(files_by_folder.items(), 1):
             try:
                 if not self.out.quiet:
-                    total = len(files_by_folder)
+                    total_folders = len(files_by_folder)
                     self.out.progress_message(
-                        f"  Scanning folder '{folder_name}' ({idx}/{total})..."
+                        f"  Scanning folder '{folder_name}' ({idx}/{total_folders})..."
                     )
 
                 # Get the folder ID
@@ -375,26 +393,105 @@ class DuplicateHandler:
                 if not folder_entry:
                     continue
 
-                # Check each file we're uploading individually
-                # Instead of fetching all existing files, only check specific paths
-                for _file_path, rel_path in files:
+                # Build a cache of all files in this folder tree (fetch once)
+                if not self.out.quiet:
+                    self.out.progress_message(
+                        f"    Building file index for '{folder_name}'..."
+                    )
+                file_path_cache = self._build_file_path_cache(folder_entry.id)
+
+                if not self.out.quiet:
+                    self.out.progress_message(
+                        f"    Found {len(file_path_cache)} existing files in cache"
+                    )
+
+                # Check each file we're uploading against the cache
+                total_files = len(files)
+                for file_idx, (_file_path, rel_path) in enumerate(files, 1):
+                    # Show progress for each file being checked
+                    if not self.out.quiet and file_idx % 50 == 0:
+                        # Show progress every 50 files to avoid spam
+                        file_name = PurePosixPath(rel_path).name
+                        self.out.progress_message(
+                            f"    Checked {file_idx}/{total_files} files..."
+                        )
+
                     # Get the path relative to the top folder
                     rel_to_folder = str(
                         PurePosixPath(rel_path).relative_to(folder_name)
                     )
 
-                    # Check if this specific file exists
-                    if self._file_exists_at_path(folder_entry.id, rel_to_folder):
+                    # Check if this specific file exists in cache
+                    if rel_to_folder in file_path_cache:
                         # Just add the filename, not the full path
                         file_name = PurePosixPath(rel_path).name
                         if file_name not in file_duplicates:
                             file_duplicates.append(file_name)
+
+                if not self.out.quiet:
+                    self.out.progress_message(
+                        f"    Completed checking {total_files} files"
+                    )
 
             except (DrimeAPIError, ValueError):
                 # If we can't check, skip it
                 pass
 
         return file_duplicates
+
+    def _build_file_path_cache(self, base_folder_id: int) -> set[str]:
+        """Build a cache of all file paths in a folder tree.
+
+        Recursively fetches all files and builds a set of relative paths.
+        This is done ONCE per folder to avoid repeated API calls.
+
+        Args:
+            base_folder_id: Base folder ID to start from
+
+        Returns:
+            Set of relative file paths (e.g., {"file.txt", "subdir/file2.txt"})
+        """
+        file_paths = set()
+        visited_folders = set()
+
+        def _scan_folder(folder_id: int, current_path: str = "") -> None:
+            """Recursively scan a folder and add file paths to the cache."""
+            # Prevent infinite loops
+            if folder_id in visited_folders:
+                return
+            visited_folders.add(folder_id)
+
+            try:
+                # Fetch all entries in this folder
+                entries = self.entries_manager.get_all_in_folder(
+                    folder_id=folder_id, use_cache=False
+                )
+
+                for entry in entries:
+                    if entry.is_folder:
+                        # Recursively scan subfolders
+                        subfolder_path = (
+                            f"{current_path}/{entry.name}"
+                            if current_path
+                            else entry.name
+                        )
+                        _scan_folder(entry.id, subfolder_path)
+                    else:
+                        # Add file path to cache
+                        file_path = (
+                            f"{current_path}/{entry.name}"
+                            if current_path
+                            else entry.name
+                        )
+                        file_paths.add(file_path)
+
+            except (DrimeAPIError, ValueError):
+                # If we can't fetch, skip this folder
+                pass
+
+        # Start scanning from the base folder
+        _scan_folder(base_folder_id)
+        return file_paths
 
     def _file_exists_at_path(self, base_folder_id: int, rel_path: str) -> bool:
         """Check if a specific file exists at a relative path within a folder.
@@ -413,29 +510,58 @@ class DuplicateHandler:
 
             # Navigate through folders to get to the parent folder
             current_folder_id = base_folder_id
-            for part in path_parts[:-1]:  # All parts except the filename
+            for idx, part in enumerate(path_parts[:-1]):  # All except filename
+                if not self.out.quiet:
+                    self.out.progress_message(
+                        f"      Navigating to subfolder '{part}' "
+                        f"({idx + 1}/{len(path_parts) - 1})..."
+                    )
                 # Find the subfolder
                 folder = self.entries_manager.find_folder_by_name(
                     part, parent_id=current_folder_id
                 )
                 if not folder:
+                    if not self.out.quiet:
+                        self.out.progress_message(
+                            f"      Subfolder '{part}' not found, file doesn't exist"
+                        )
                     return False  # Folder doesn't exist, so file can't exist
                 current_folder_id = folder.id
 
             # Now check if the file exists in the final parent folder
             filename = path_parts[-1]
+            if not self.out.quiet:
+                self.out.progress_message(
+                    f"      Fetching entries in final folder to check for "
+                    f"'{filename}'..."
+                )
             entries = self.entries_manager.get_all_in_folder(
                 folder_id=current_folder_id, use_cache=False
             )
 
+            if not self.out.quiet:
+                self.out.progress_message(
+                    f"      Checking {len(entries)} entries for match..."
+                )
+
             # Check if any entry matches the filename (and is not a folder)
             for entry in entries:
                 if entry.name == filename and not entry.is_folder:
+                    if not self.out.quiet:
+                        self.out.progress_message(
+                            f"      Found duplicate: '{filename}'"
+                        )
                     return True
 
+            if not self.out.quiet:
+                self.out.progress_message(f"      No match found for '{filename}'")
             return False
         except (DrimeAPIError, ValueError, IndexError):
             # If we can't determine, assume it doesn't exist
+            if not self.out.quiet:
+                self.out.progress_message(
+                    f"      Error checking path '{rel_path}', skipping..."
+                )
             return False
 
     def _get_files_in_folder_recursive(
