@@ -63,6 +63,21 @@ class DuplicateHandler:
         Args:
             files_to_upload: List of (file_path, relative_path) tuples
         """
+        # Early optimization: If all files share a common root folder,
+        # check if that folder exists with a single API call
+        # Avoids expensive duplicate checking when uploading to non-existent folders
+        common_root = self._get_common_root_folder(files_to_upload)
+        if common_root and self.parent_id is not None:
+            # Check if the common root folder exists in the parent
+            folder_exists = self._quick_folder_check(common_root)
+            if not folder_exists:
+                # Folder doesn't exist - no duplicates possible!
+                if not self.out.quiet:
+                    self.out.success(
+                        "✓ No duplicates found (target folder doesn't exist)"
+                    )
+                return
+
         # Prepare validation files
         if not self.out.quiet:
             self.out.info("Checking for duplicates...")
@@ -817,3 +832,50 @@ class DuplicateHandler:
             upload_path = str(PurePosixPath(*renamed_parts))
 
         return upload_path
+
+    def _get_common_root_folder(
+        self, files_to_upload: list[tuple[Path, str]]
+    ) -> Optional[str]:
+        """Get the common root folder if all files share one.
+
+        Args:
+            files_to_upload: List of (file_path, relative_path) tuples
+
+        Returns:
+            Common root folder name, or None if files don't share a common root
+        """
+        if not files_to_upload:
+            return None
+
+        # Get the first part of each relative path
+        root_folders = set()
+        for _, rel_path in files_to_upload:
+            parts = PurePosixPath(rel_path).parts
+            if len(parts) > 0:
+                root_folders.add(parts[0])
+
+        # If all files share the same root folder, return it
+        if len(root_folders) == 1:
+            return root_folders.pop()
+
+        return None
+
+    def _quick_folder_check(self, folder_name: str) -> bool:
+        """Quick check if a folder exists in the parent folder.
+
+        Single API call to check if folder exists.
+
+        Args:
+            folder_name: Folder name to check
+
+        Returns:
+            True if folder exists, False otherwise
+        """
+        try:
+            folder = self.entries_manager.find_folder_by_name(
+                folder_name, parent_id=self.parent_id
+            )
+            return folder is not None
+        except DrimeAPIError:
+            # If API call fails, assume folder exists to be safe
+            return True
