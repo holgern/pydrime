@@ -2515,9 +2515,9 @@ class TestFolderStructureDetection:
             # Check that all paths use forward slashes
             for _file_path, rel_path in files:
                 assert "\\" not in rel_path, f"Path contains backslash: {rel_path}"
-                assert "/" in rel_path or rel_path in ["file3.txt"], (
-                    f"Expected forward slashes in nested paths: {rel_path}"
-                )
+                assert "/" in rel_path or rel_path in [
+                    "file3.txt"
+                ], f"Expected forward slashes in nested paths: {rel_path}"
 
             # Check expected structure
             rel_paths = [rel_path for _, rel_path in files]
@@ -2666,16 +2666,18 @@ class TestFolderStructureDetection:
             assert "root.txt" in output
 
     @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
     @patch("pydrime.cli.config")
     def test_relativepath_validation_uses_posix(
-        self, mock_config, mock_client_class, runner
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner
     ):
         """Test that relativePath in validation uses forward slashes."""
         import tempfile
 
-        mock_config.is_configured.return_value = True
-        mock_config.get_default_workspace.return_value = 0
-        mock_config.get_current_folder.return_value = None
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
 
         mock_client = Mock()
         mock_client_class.return_value = mock_client
@@ -2704,28 +2706,30 @@ class TestFolderStructureDetection:
             for file_info in files_arg:
                 rel_path = file_info.get("relativePath", "")
                 if rel_path:  # Only check non-empty paths
-                    assert "\\" not in rel_path, (
-                        f"relativePath should not contain backslashes: {rel_path}"
-                    )
-                    assert "/" in rel_path or rel_path == "", (
-                        f"relativePath should use forward slashes: {rel_path}"
-                    )
+                    assert (
+                        "\\" not in rel_path
+                    ), f"relativePath should not contain backslashes: {rel_path}"
+                    assert (
+                        "/" in rel_path or rel_path == ""
+                    ), f"relativePath should use forward slashes: {rel_path}"
 
 
 class TestWindowsPathHandling:
     """Tests for Windows path handling in upload and validation."""
 
     @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
     @patch("pydrime.cli.config")
     def test_windows_nested_folders_parsed_correctly(
-        self, mock_config, mock_client_class, runner
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner
     ):
         """Test that Windows-style nested paths like data\\01\\ are parsed correctly."""
         import tempfile
 
-        mock_config.is_configured.return_value = True
-        mock_config.get_default_workspace.return_value = 0
-        mock_config.get_current_folder.return_value = None
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
 
         mock_client = Mock()
         mock_client_class.return_value = mock_client
@@ -2760,16 +2764,18 @@ class TestWindowsPathHandling:
             assert "file.txt" in output
 
     @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
     @patch("pydrime.cli.config")
     def test_validation_files_use_pure_posix_paths(
-        self, mock_config, mock_client_class, runner
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner
     ):
         """Test that validation_files construction uses PurePosixPath."""
         import tempfile
 
-        mock_config.is_configured.return_value = True
-        mock_config.get_default_workspace.return_value = 0
-        mock_config.get_current_folder.return_value = None
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
 
         mock_client = Mock()
         mock_client_class.return_value = mock_client
@@ -2800,21 +2806,23 @@ class TestWindowsPathHandling:
 
             # Check that relativePath uses forward slashes only
             assert "\\" not in rel_path, f"relativePath contains backslash: {rel_path}"
-            assert rel_path == f"{Path(tmpdir).name}/folder1/folder2", (
-                f"Expected proper POSIX path, got: {rel_path}"
-            )
+            assert (
+                rel_path == f"{Path(tmpdir).name}/folder1/folder2"
+            ), f"Expected proper POSIX path, got: {rel_path}"
 
     @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
     @patch("pydrime.cli.config")
     def test_dry_run_folder_extraction_pure_posix(
-        self, mock_config, mock_client_class, runner
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner
     ):
         """Test that folder extraction in dry-run uses PurePosixPath."""
         import tempfile
 
-        mock_config.is_configured.return_value = True
-        mock_config.get_default_workspace.return_value = 0
-        mock_config.get_current_folder.return_value = None
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
 
         mock_client = Mock()
         mock_client_class.return_value = mock_client
@@ -2845,25 +2853,27 @@ class TestWindowsPathHandling:
                 if "📁" in line:
                     path_part = line.split("📁")[1].strip()
                     # Should not contain backslashes
-                    assert "\\" not in path_part, (
-                        f"Folder path contains backslash: {path_part}"
-                    )
+                    assert (
+                        "\\" not in path_part
+                    ), f"Folder path contains backslash: {path_part}"
                     # Should end with forward slash
-                    assert path_part.endswith("/"), (
-                        f"Folder path should end with /: {path_part}"
-                    )
+                    assert path_part.endswith(
+                        "/"
+                    ), f"Folder path should end with /: {path_part}"
 
     @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
     @patch("pydrime.cli.config")
     def test_file_grouping_uses_pure_posix_paths(
-        self, mock_config, mock_client_class, runner
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner
     ):
         """Test that file grouping by directory uses PurePosixPath."""
         import tempfile
 
-        mock_config.is_configured.return_value = True
-        mock_config.get_default_workspace.return_value = 0
-        mock_config.get_current_folder.return_value = None
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
 
         mock_client = Mock()
         mock_client_class.return_value = mock_client
@@ -2890,9 +2900,9 @@ class TestWindowsPathHandling:
 
             for line in in_lines:
                 # Should not contain backslashes
-                assert "\\" not in line, (
-                    f"Directory grouping contains backslash: {line}"
-                )
+                assert (
+                    "\\" not in line
+                ), f"Directory grouping contains backslash: {line}"
                 # Should use forward slashes for nested paths
                 if "root" not in line.lower():
                     assert "/" in line, f"Expected forward slash in path: {line}"
@@ -2918,39 +2928,41 @@ class TestWindowsPathHandling:
         posix_parts = posix_path.parts
         posix_reconstructed = str(PurePosixPath(*posix_parts[:3]))
 
-        assert "\\" not in posix_reconstructed, (
-            "PurePosixPath should not have backslashes"
-        )
-        assert posix_reconstructed == "data/01/02", (
-            f"Expected 'data/01/02', got '{posix_reconstructed}'"
-        )
+        assert (
+            "\\" not in posix_reconstructed
+        ), "PurePosixPath should not have backslashes"
+        assert (
+            posix_reconstructed == "data/01/02"
+        ), f"Expected 'data/01/02', got '{posix_reconstructed}'"
 
         # Check parent extraction
         posix_parent = str(posix_path.parent)
-        assert posix_parent == "data/01/02", (
-            f"Expected 'data/01/02', got '{posix_parent}'"
-        )
-        assert "\\" not in posix_parent, (
-            "PurePosixPath parent should not have backslashes"
-        )
+        assert (
+            posix_parent == "data/01/02"
+        ), f"Expected 'data/01/02', got '{posix_parent}'"
+        assert (
+            "\\" not in posix_parent
+        ), "PurePosixPath parent should not have backslashes"
 
 
 class TestRemotePathDuplicateDetection:
     """Tests for duplicate detection when using remote-path parameter."""
 
     @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
     @patch("pydrime.cli.config")
     def test_remote_path_folder_not_flagged_as_duplicate(
-        self, mock_config, mock_client_class, runner, tmp_path
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
         """Test that the remote-path folder itself is not flagged as duplicate."""
         # Create test file
         test_file = tmp_path / "file.txt"
         test_file.write_text("content")
 
-        mock_config.is_configured.return_value = True
-        mock_config.get_default_workspace.return_value = 0
-        mock_config.get_current_folder.return_value = None
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
 
         mock_client = Mock()
         mock_client_class.return_value = mock_client
@@ -2986,9 +2998,10 @@ class TestRemotePathDuplicateDetection:
         assert "Action" not in result.output  # No prompt shown
 
     @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
     @patch("pydrime.cli.config")
     def test_remote_path_file_duplicates_still_detected(
-        self, mock_config, mock_client_class, runner, tmp_path
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
         """Test that file duplicates are still detected when using remote-path."""
         # Create test files
@@ -2998,9 +3011,10 @@ class TestRemotePathDuplicateDetection:
         file1.write_text("content1")
         file2.write_text("content2")
 
-        mock_config.is_configured.return_value = True
-        mock_config.get_default_workspace.return_value = 0
-        mock_config.get_current_folder.return_value = None
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
 
         mock_client = Mock()
         mock_client_class.return_value = mock_client
@@ -3066,9 +3080,10 @@ class TestRemotePathDuplicateDetection:
         ]
 
     @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.auth.config")
     @patch("pydrime.cli.config")
     def test_remote_path_nested_folder_only_top_level_filtered(
-        self, mock_config, mock_client_class, runner, tmp_path
+        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
         """Test that only the top-level remote-path folder is
         filtered from duplicates."""
@@ -3076,9 +3091,10 @@ class TestRemotePathDuplicateDetection:
         test_file = tmp_path / "file.txt"
         test_file.write_text("content")
 
-        mock_config.is_configured.return_value = True
-        mock_config.get_default_workspace.return_value = 0
-        mock_config.get_current_folder.return_value = None
+        mock_cli_config.is_configured.return_value = True
+        mock_cli_config.get_default_workspace.return_value = 0
+        mock_cli_config.get_current_folder.return_value = None
+        mock_auth_config.is_configured.return_value = True
 
         mock_client = Mock()
         mock_client_class.return_value = mock_client
@@ -3144,6 +3160,6 @@ class TestRemotePathDuplicateDetection:
                 if "duplicate" in line.lower()
             ]
             backup_in_duplicates = any("backup" in line for line in duplicate_lines)
-            assert not backup_in_duplicates, (
-                "backup folder should not be in duplicate warnings"
-            )
+            assert (
+                not backup_in_duplicates
+            ), "backup folder should not be in duplicate warnings"
