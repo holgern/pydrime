@@ -473,6 +473,7 @@ def upload(  # noqa: C901
                                     description=f"[cyan]{file_path.name}",
                                     completed=0,
                                     total=file_size,
+                                    visible=True,
                                 )
 
                             # Upload the file
