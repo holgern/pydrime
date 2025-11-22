@@ -367,28 +367,43 @@ class TestParentFolderContext:
         assert folder_id == 100
 
     def test_resolve_parent_folder_id_nested_path(self):
-        """Test resolving a nested folder path to ID."""
+        """Test resolving a nested folder path to ID with proper parent context."""
         mock_client = MagicMock()
 
-        def mock_get_entries(query=None, workspace_id=0, **kwargs):
-            if query == "backup":
-                return {
-                    "data": [
-                        {
-                            "id": 100,
-                            "name": "backup",
-                            "type": "folder",
-                            "hash": "hash1",
-                            "mime": None,
-                            "file_size": 0,
-                            "parent_id": 0,
-                            "created_at": "2023-01-01",
-                            "updated_at": "2023-01-01",
-                            "owner": {"email": "test@example.com"},
-                        }
-                    ]
-                }
-            elif query == "data":
+        # Mock get_file_entries to return data for searching within specific parents
+        def mock_get_entries(
+            query=None,
+            workspace_id=0,
+            parent_ids=None,
+            per_page=100,
+            page=None,
+            **kwargs,
+        ):
+            # When parent_ids=None or [None], return "backup" folder at root
+            if parent_ids is None or (
+                isinstance(parent_ids, list)
+                and (len(parent_ids) == 0 or None in parent_ids)
+            ):
+                if query == "backup":
+                    return {
+                        "data": [
+                            {
+                                "id": 100,
+                                "name": "backup",
+                                "type": "folder",
+                                "hash": "hash1",
+                                "mime": None,
+                                "file_size": 0,
+                                "parent_id": 0,
+                                "created_at": "2023-01-01",
+                                "updated_at": "2023-01-01",
+                                "owner": {"email": "test@example.com"},
+                            }
+                        ],
+                        "pagination": {"current_page": 1, "last_page": 1},
+                    }
+            # When parent_ids=[100], getting all entries in folder 100
+            elif parent_ids == [100]:
                 return {
                     "data": [
                         {
@@ -403,9 +418,10 @@ class TestParentFolderContext:
                             "updated_at": "2023-01-01",
                             "owner": {"email": "test@example.com"},
                         }
-                    ]
+                    ],
+                    "pagination": {"current_page": 1, "last_page": 1},
                 }
-            return {"data": []}
+            return {"data": [], "pagination": {"current_page": 1, "last_page": 1}}
 
         mock_client.get_file_entries.side_effect = mock_get_entries
 
@@ -672,3 +688,181 @@ class TestParentFolderContext:
         assert "test.txt" in result
         assert len(result["test.txt"]) == 1
         assert result["test.txt"][0][0] == 777
+
+
+class TestDisplayDuplicates:
+    """Tests for _display_duplicate_summary method."""
+
+    def test_display_duplicates_with_multiple_ids(self, tmp_path):
+        """Test displaying duplicates with multiple IDs."""
+        from typing import Optional
+
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        file_duplicates = ["test.txt"]
+        duplicate_info: dict[str, list[tuple[int, Optional[str]]]] = {
+            "test.txt": [(123, "/path1/test.txt"), (456, "/path2/test.txt")]
+        }
+
+        # This should exercise lines 165-166 (multiple IDs display)
+        handler._display_duplicate_summary(
+            file_duplicates, duplicate_info, files_to_upload
+        )
+
+    def test_display_duplicates_with_single_id(self, tmp_path):
+        """Test displaying duplicates with single ID."""
+        from typing import Optional
+
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        file_duplicates = ["test.txt"]
+        duplicate_info: dict[str, list[tuple[int, Optional[str]]]] = {
+            "test.txt": [(789, "/path/test.txt")]
+        }
+
+        # This should exercise line 163 (single ID display)
+        handler._display_duplicate_summary(
+            file_duplicates, duplicate_info, files_to_upload
+        )
+
+    def test_display_duplicates_without_ids(self, tmp_path):
+        """Test displaying duplicates without ID info."""
+        from typing import Optional
+
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        file_duplicates = ["test.txt"]
+        duplicate_info: dict[str, list[tuple[int, Optional[str]]]] = {}
+
+        # This should exercise line 168 (no ID display)
+        handler._display_duplicate_summary(
+            file_duplicates, duplicate_info, files_to_upload
+        )
+
+
+class TestFolderResolution:
+    """Tests for folder resolution caching and edge cases."""
+
+    def test_resolve_parent_folder_id_with_cache_hit(self):
+        """Test folder resolution uses cache when available."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        # Pre-populate cache
+        handler._folder_id_cache["backup"] = 100
+
+        folder_id = handler._resolve_parent_folder_id("backup")
+
+        assert folder_id == 100
+        # Should not call API if cache hit
+        mock_client.get_file_entries.assert_not_called()
+
+    def test_resolve_parent_folder_id_cached_none(self):
+        """Test folder resolution returns None from cache."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        # Cache shows folder doesn't exist
+        handler._folder_id_cache["nonexistent"] = None
+
+        folder_id = handler._resolve_parent_folder_id("nonexistent")
+
+        assert folder_id is None
+        mock_client.get_file_entries.assert_not_called()
+
+    def test_resolve_parent_folder_id_partial_cache_miss(self):
+        """Test nested folder resolution with partial cache."""
+        mock_client = MagicMock()
+
+        def mock_get_entries(
+            query=None,
+            workspace_id=0,
+            parent_ids=None,
+            per_page=100,
+            page=None,
+            **kwargs,
+        ):
+            # Return "subfolder" when searching in parent 100
+            if parent_ids == [100]:
+                return {
+                    "data": [
+                        {
+                            "id": 200,
+                            "name": "subfolder",
+                            "type": "folder",
+                            "hash": "hash2",
+                            "mime": None,
+                            "file_size": 0,
+                            "parent_id": 100,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                        }
+                    ],
+                    "pagination": {"current_page": 1, "last_page": 1},
+                }
+            return {"data": [], "pagination": {"current_page": 1, "last_page": 1}}
+
+        mock_client.get_file_entries.side_effect = mock_get_entries
+
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        # Pre-cache the "backup" folder (lines 440-445 tested)
+        handler._folder_id_cache["backup"] = 100
+
+        folder_id = handler._resolve_parent_folder_id("backup/subfolder")
+
+        assert folder_id == 200
+        # Should use cached "backup" and only query for "subfolder"
+        assert handler._folder_id_cache["backup/subfolder"] == 200
+
+    def test_resolve_parent_folder_id_partial_cache_none(self):
+        """Test nested path resolution when intermediate folder is cached as None."""
+        mock_client = MagicMock()
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        # Cache shows "backup" doesn't exist (lines 442-444)
+        handler._folder_id_cache["backup"] = None
+
+        folder_id = handler._resolve_parent_folder_id("backup/subfolder")
+
+        # Should return None without further API calls
+        assert folder_id is None
+        assert handler._folder_id_cache["backup/subfolder"] is None
+        mock_client.get_file_entries.assert_not_called()
+
+    def test_resolve_parent_folder_id_api_error_during_resolution(self):
+        """Test folder resolution handles API error gracefully (lines 460-463)."""
+        mock_client = MagicMock()
+        mock_client.get_file_entries.side_effect = DrimeAPIError("API Error")
+
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        folder_id = handler._resolve_parent_folder_id("backup")
+
+        # Should cache None and return None on API error
+        assert folder_id is None
+        assert handler._folder_id_cache["backup"] is None

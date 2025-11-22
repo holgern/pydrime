@@ -447,7 +447,7 @@ class DuplicateHandler:
             try:
                 # Search for folder in current parent
                 folder_entry = self.entries_manager.find_folder_by_name(
-                    folder_name, parent_id=None
+                    folder_name, parent_id=current_parent_id
                 )
 
                 if not folder_entry:

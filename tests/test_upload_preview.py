@@ -206,3 +206,34 @@ class TestDisplayUploadPreview:
         assert "In dir1/:" in captured.out
         assert "file1.txt" in captured.out
         assert "file2.txt" in captured.out
+
+    @patch("pydrime.upload_preview.format_workspace_display")
+    def test_shows_nested_upload_location_with_parent_folder(
+        self, mock_format_ws, tmp_path, capsys
+    ):
+        """Test shows correct upload location for nested files with parent folder."""
+        mock_format_ws.return_value = ("Personal (0)", None)
+        out = OutputFormatter(json_output=False, quiet=False)
+        mock_client = MagicMock()
+        # Mock get_folder_info to return folder name
+        mock_client.get_folder_info.return_value = {"name": "projects"}
+
+        file1 = tmp_path / "file.txt"
+        file1.write_text("content")
+
+        # File in nested folder with parent folder specified
+        files = [(file1, "myproject/file.txt")]
+
+        display_upload_preview(
+            out,
+            mock_client,
+            files,
+            0,
+            current_folder_id=123,
+            current_folder_name="projects",
+            is_dry_run=False,
+        )
+
+        captured = capsys.readouterr()
+        # Should show "projects/myproject/..." format
+        assert "myproject" in captured.out
