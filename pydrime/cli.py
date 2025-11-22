@@ -18,6 +18,7 @@ from rich.progress import (
 from .api import DrimeClient
 from .auth import require_api_key
 from .config import config
+from .duplicate_finder import DuplicateFileFinder
 from .duplicate_handler import DuplicateHandler
 from .exceptions import DrimeAPIError, DrimeNotFoundError
 from .file_entries_manager import FileEntriesManager
@@ -2889,6 +2890,178 @@ def validate(
         # Exit with error code if there are issues
         if missing_files or size_mismatch_files:
             ctx.exit(1)
+
+    except DrimeAPIError as e:
+        out.error(f"API error: {e}")
+        ctx.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    "-w",
+    type=int,
+    help="Workspace ID (0 for personal workspace)",
+)
+@click.option(
+    "--folder",
+    "-f",
+    type=str,
+    help="Folder ID to scan (omit for root folder)",
+)
+@click.option(
+    "--recursive",
+    "-r",
+    is_flag=True,
+    help="Scan recursively into subfolders",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show duplicates without deleting (default)",
+)
+@click.option(
+    "--delete",
+    is_flag=True,
+    help="Actually delete duplicate files (moves to trash)",
+)
+@click.option(
+    "--keep-newest",
+    is_flag=True,
+    help="Keep newest file instead of oldest (default: keep oldest)",
+)
+@click.pass_context
+def find_duplicates(
+    ctx: Any,
+    workspace: Optional[int],
+    folder: Optional[str],
+    recursive: bool,
+    dry_run: bool,
+    delete: bool,
+    keep_newest: bool,
+) -> None:
+    """Find and optionally delete duplicate files.
+
+    Duplicates are identified by having identical filename, size, and parent folder.
+    By default, the oldest file (lowest ID) is kept and newer duplicates are deleted.
+
+    Examples:
+
+        # Dry run (show duplicates without deleting)
+        pydrime find-duplicates
+
+        # Find duplicates in a specific folder
+        pydrime find-duplicates --folder 12345
+
+        # Find duplicates recursively
+        pydrime find-duplicates --recursive
+
+        # Actually delete duplicates (moves to trash)
+        pydrime find-duplicates --delete
+
+        # Keep newest file instead of oldest
+        pydrime find-duplicates --delete --keep-newest
+    """
+    client: DrimeClient = ctx.obj["client"]
+    out: OutputFormatter = ctx.obj["out"]
+
+    # Check API key
+    require_api_key(ctx, out)
+
+    try:
+        # Get workspace ID
+        workspace_id = (
+            workspace
+            if workspace is not None
+            else (config.get_default_workspace() or 0)
+        )
+
+        # Parse folder ID
+        folder_id: Optional[int] = None
+        if folder:
+            if is_file_id(folder):
+                folder_id = int(folder)
+            else:
+                out.error(f"Invalid folder ID: {folder}")
+                ctx.exit(1)
+
+        # Show configuration
+        if not out.quiet:
+            out.info("=" * 60)
+            out.info("Duplicate File Finder")
+            out.info("=" * 60)
+            workspace_display, _ = format_workspace_display(client, workspace_id)
+            out.info(f"Workspace: {workspace_display}")
+
+            if folder_id is not None:
+                folder_display, _ = get_folder_display_name(client, folder_id)
+                out.info(f"Folder: {folder_display}")
+            else:
+                out.info("Folder: Root")
+
+            out.info(f"Recursive: {'Yes' if recursive else 'No'}")
+            out.info(f"Mode: {'DELETE' if delete else 'DRY RUN'}")
+            out.info(f"Keep: {'Newest' if keep_newest else 'Oldest'}")
+            out.info("=" * 60)
+            out.info("")
+
+        # Create entries manager and duplicate finder
+        entries_manager = FileEntriesManager(client, workspace_id)
+        finder = DuplicateFileFinder(entries_manager, out)
+
+        # Find duplicates
+        duplicates = finder.find_duplicates(folder_id=folder_id, recursive=recursive)
+
+        # Display duplicates
+        finder.display_duplicates(duplicates)
+
+        # Get entries to delete
+        entries_to_delete = finder.get_entries_to_delete(
+            duplicates, keep_oldest=not keep_newest
+        )
+
+        if not entries_to_delete:
+            out.info("No duplicate files to delete.")
+            return
+
+        # Show summary
+        out.info("=" * 60)
+        out.info(f"Total duplicate files to delete: {len(entries_to_delete)}")
+        out.info("=" * 60)
+
+        # Delete or dry run
+        if delete:
+            # Confirm deletion
+            if not out.quiet:
+                out.warning(
+                    f"\nAbout to delete {len(entries_to_delete)} duplicate file(s)."
+                )
+                out.warning("Files will be moved to trash (can be restored).")
+                if not click.confirm("Continue?", default=False):
+                    out.info("Cancelled.")
+                    return
+
+            # Delete files
+            out.info("Deleting duplicate files...")
+            entry_ids = [entry.id for entry in entries_to_delete]
+
+            # Delete in batches of 100 (API limit)
+            batch_size = 100
+            for i in range(0, len(entry_ids), batch_size):
+                batch = entry_ids[i : i + batch_size]
+                client.delete_file_entries(batch, delete_forever=False)
+
+                if not out.quiet:
+                    out.info(f"Deleted {i + len(batch)}/{len(entry_ids)} files...")
+
+            out.success(
+                f"Successfully deleted {len(entries_to_delete)} duplicate files."
+            )
+            out.info("Files have been moved to trash and can be restored if needed.")
+        else:
+            # Dry run
+            out.info("\nDRY RUN MODE - No files were deleted.")
+            out.info("To actually delete duplicates, use: --delete")
 
     except DrimeAPIError as e:
         out.error(f"API error: {e}")
