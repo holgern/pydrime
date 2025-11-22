@@ -158,7 +158,7 @@ class TestRetryMechanism:
                 mock_response = Mock()
                 mock_response.status_code = 500
                 mock_response.headers = {}
-                mock_response.content = b''
+                mock_response.content = b""
                 error = requests.exceptions.HTTPError()
                 error.response = mock_response
                 raise error
@@ -193,7 +193,7 @@ class TestRetryMechanism:
                 mock_response = Mock()
                 mock_response.status_code = 503
                 mock_response.headers = {}
-                mock_response.content = b''
+                mock_response.content = b""
                 error = requests.exceptions.HTTPError()
                 error.response = mock_response
                 raise error
