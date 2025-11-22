@@ -7,7 +7,8 @@ import click
 
 from .api import DrimeClient
 from .exceptions import DrimeAPIError
-from .models import FileEntriesResult, _format_size
+from .file_entries_manager import FileEntriesManager
+from .models import _format_size
 from .output import OutputFormatter
 
 
@@ -50,6 +51,9 @@ class DuplicateHandler:
 
         # Performance optimization: cache for folder ID lookups
         self._folder_id_cache: dict[str, Optional[int]] = {}
+
+        # File entries manager for pagination and search
+        self.entries_manager = FileEntriesManager(client, workspace_id)
 
     def validate_and_handle_duplicates(
         self, files_to_upload: list[tuple[Path, str]]
@@ -288,19 +292,15 @@ class DuplicateHandler:
                         folder_names.add(name)
                     continue
 
-                search_result = self.client.get_file_entries(
-                    query=name, workspace_id=self.workspace_id
-                )
-                if search_result and search_result.get("data"):
-                    file_entries = FileEntriesResult.from_api_response(search_result)
-                    # Check if any exact match is a folder
-                    for entry in file_entries.entries:
-                        if entry.name == name and entry.is_folder:
-                            folder_names.add(name)
-                            self._folder_id_cache[cache_key] = entry.id
-                            break
-                    else:
-                        self._folder_id_cache[cache_key] = None
+                entries = self.entries_manager.search_by_name(name, exact_match=True)
+                # Check if any exact match is a folder
+                for entry in entries:
+                    if entry.is_folder:
+                        folder_names.add(name)
+                        self._folder_id_cache[cache_key] = entry.id
+                        break
+                else:
+                    self._folder_id_cache[cache_key] = None
             except DrimeAPIError:
                 pass
 
@@ -347,19 +347,9 @@ class DuplicateHandler:
                     )
 
                 # Get the folder ID
-                search_result = self.client.get_file_entries(
-                    query=folder_name, workspace_id=self.workspace_id
+                folder_entry = self.entries_manager.find_folder_by_name(
+                    folder_name, parent_id=None
                 )
-                if not search_result or not search_result.get("data"):
-                    continue
-
-                folder_entries = FileEntriesResult.from_api_response(search_result)
-                folder_entry = None
-                for entry in folder_entries.entries:
-                    if entry.name == folder_name and entry.is_folder:
-                        folder_entry = entry
-                        break
-
                 if not folder_entry:
                     continue
 
@@ -397,55 +387,14 @@ class DuplicateHandler:
         Returns:
             Set of relative file paths within the folder
         """
-        if visited is None:
-            visited = set()
+        # Use FileEntriesManager for pagination handling
+        manager = FileEntriesManager(self.client, self.workspace_id)
+        entries_with_paths = manager.get_all_recursive(
+            folder_id=folder_id, visited=visited
+        )
 
-        # Prevent infinite recursion
-        if folder_id in visited:
-            return set()
-        visited.add(folder_id)
-
-        files = set()
-
-        try:
-            # Handle pagination - fetch all pages
-            current_page = 1
-            per_page = 100  # Use larger page size for efficiency
-
-            while True:
-                result = self.client.get_file_entries(
-                    parent_ids=[folder_id],
-                    workspace_id=self.workspace_id,
-                    per_page=per_page,
-                    page=current_page,
-                )
-                entries = FileEntriesResult.from_api_response(result)
-
-                for entry in entries.entries:
-                    if entry.is_folder:
-                        # Recursively get files in subfolder
-                        subfolder_files = self._get_files_in_folder_recursive(
-                            entry.id, visited
-                        )
-                        # Prefix with folder name
-                        for f in subfolder_files:
-                            files.add(f"{entry.name}/{f}")
-                    else:
-                        files.add(entry.name)
-
-                # Check if there are more pages
-                if entries.pagination:
-                    current = entries.pagination.get("current_page")
-                    last = entries.pagination.get("last_page")
-                    if current is not None and last is not None and current < last:
-                        current_page += 1
-                        continue  # Fetch next page
-                break  # No more pages
-
-        except DrimeAPIError:
-            pass
-
-        return files
+        # Convert to set of paths (files only, folders already filtered)
+        return {path for _, path in entries_with_paths}
 
     def _is_existing_folder(self, name: str) -> bool:
         """Check if name is an existing folder on server.
@@ -457,15 +406,8 @@ class DuplicateHandler:
             True if name is an existing folder
         """
         try:
-            search_result = self.client.get_file_entries(
-                query=name, workspace_id=self.workspace_id
-            )
-            if search_result and search_result.get("data"):
-                file_entries = FileEntriesResult.from_api_response(search_result)
-                # Check if any exact match is a folder
-                for entry in file_entries.entries:
-                    if entry.name == name and entry.is_folder:
-                        return True
+            folder = self.entries_manager.find_folder_by_name(name, parent_id=None)
+            return folder is not None
         except DrimeAPIError:
             pass
         return False
@@ -504,23 +446,9 @@ class DuplicateHandler:
 
             try:
                 # Search for folder in current parent
-                search_result = self.client.get_file_entries(
-                    query=folder_name,
-                    workspace_id=self.workspace_id,
+                folder_entry = self.entries_manager.find_folder_by_name(
+                    folder_name, parent_id=None
                 )
-                if not search_result or not search_result.get("data"):
-                    self._folder_id_cache[current_path] = None
-                    self._folder_id_cache[folder_path] = None
-                    return None
-
-                file_entries = FileEntriesResult.from_api_response(search_result)
-
-                # Find exact folder match
-                folder_entry = None
-                for entry in file_entries.entries:
-                    if entry.name == folder_name and entry.is_folder:
-                        folder_entry = entry
-                        break
 
                 if not folder_entry:
                     self._folder_id_cache[current_path] = None
@@ -591,58 +519,42 @@ class DuplicateHandler:
                     # Fallback to global search for each
                     for dup_name in dup_names:
                         try:
-                            search_result = self.client.get_file_entries(
-                                query=dup_name,
-                                workspace_id=self.workspace_id,
+                            matching_entries = self.entries_manager.search_by_name(
+                                dup_name, exact_match=True
                             )
-                            if search_result and search_result.get("data"):
-                                file_entries = FileEntriesResult.from_api_response(
-                                    search_result
-                                )
-                                matching_entries = [
-                                    e
-                                    for e in file_entries.entries
-                                    if e.name == dup_name
-                                ]
-                                if matching_entries:
-                                    duplicate_info[dup_name] = [
-                                        (
-                                            e.id,
-                                            e.path if hasattr(e, "path") else None,
-                                        )
-                                        for e in matching_entries
-                                    ]
-                        except DrimeAPIError:
-                            pass
-                else:
-                    # Batch: Get all entries in this parent folder at once
-                    search_result = self.client.get_file_entries(
-                        parent_ids=[parent_id],
-                        workspace_id=self.workspace_id,
-                    )
-
-                    if search_result and search_result.get("data"):
-                        file_entries = FileEntriesResult.from_api_response(
-                            search_result
-                        )
-
-                        # Build a map for quick lookup
-                        entries_by_name: dict[str, list] = {}
-                        for entry in file_entries.entries:
-                            if entry.name not in entries_by_name:
-                                entries_by_name[entry.name] = []
-                            entries_by_name[entry.name].append(entry)
-
-                        # Match duplicates with entries
-                        for dup_name in dup_names:
-                            if dup_name in entries_by_name:
+                            if matching_entries:
                                 duplicate_info[dup_name] = [
                                     (
                                         e.id,
                                         e.path if hasattr(e, "path") else None,
                                     )
-                                    for e in entries_by_name[dup_name]
+                                    for e in matching_entries
                                 ]
+                        except DrimeAPIError:
+                            pass
+                else:
+                    # Batch: Get all entries in this parent folder at once
+                    file_entries_list = self.entries_manager.get_all_in_folder(
+                        parent_id
+                    )
+
+                    # Build a map for quick lookup
+                    entries_by_name: dict[str, list] = {}
+                    for entry in file_entries_list:
+                        if entry.name not in entries_by_name:
+                            entries_by_name[entry.name] = []
+                        entries_by_name[entry.name].append(entry)
+
+                    # Match duplicates with entries
+                    for dup_name in dup_names:
+                        if dup_name in entries_by_name:
+                            duplicate_info[dup_name] = [
+                                (
+                                    e.id,
+                                    e.path if hasattr(e, "path") else None,
+                                )
+                                for e in entries_by_name[dup_name]
+                            ]
             except DrimeAPIError:
                 # If batch fails, continue without these duplicates
                 pass
@@ -766,42 +678,30 @@ class DuplicateHandler:
             duplicate_name: Name of duplicate file
         """
         try:
-            search_result = self.client.get_file_entries(
-                query=duplicate_name,
-                workspace_id=self.workspace_id,
+            matching_entries = self.entries_manager.search_by_name(
+                duplicate_name, exact_match=True
             )
 
-            if search_result and search_result.get("data"):
-                file_entries = FileEntriesResult.from_api_response(search_result)
-
-                # Find exact matches (case-sensitive)
-                matching_entries = [
-                    e for e in file_entries.entries if e.name == duplicate_name
-                ]
-
-                if matching_entries:
-                    for entry in matching_entries:
-                        self.entries_to_delete.append(entry.id)
-                        if not self.out.quiet:
-                            self.out.info(
-                                f"Will delete existing '{duplicate_name}' "
-                                f"(ID: {entry.id}) before upload"
-                            )
-                else:
+            if matching_entries:
+                for entry in matching_entries:
+                    self.entries_to_delete.append(entry.id)
                     if not self.out.quiet:
-                        self.out.warning(
-                            f"Could not find exact match for '{duplicate_name}' "
-                            "to delete - will attempt upload anyway"
+                        self.out.info(
+                            f"Will delete existing '{duplicate_name}' "
+                            f"(ID: {entry.id}) before upload"
                         )
             else:
                 if not self.out.quiet:
                     self.out.warning(
-                        f"Could not search for existing '{duplicate_name}' "
-                        "- will attempt upload anyway"
+                        f"Could not find exact match for '{duplicate_name}' "
+                        "to delete - will attempt upload anyway"
                     )
         except DrimeAPIError as e:
-            self.out.warning(f"Could not search for existing '{duplicate_name}': {e}")
-            self.out.warning("Will attempt upload anyway")
+            if not self.out.quiet:
+                self.out.warning(
+                    f"Could not search for existing '{duplicate_name}': {e}"
+                )
+                self.out.warning("Will attempt upload anyway")
 
     def delete_marked_entries(self) -> bool:
         """Delete entries marked for replacement.
