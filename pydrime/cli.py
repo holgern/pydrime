@@ -303,7 +303,9 @@ def upload(  # noqa: C901
     # Validate uploads and handle duplicates
     try:
         # Use DuplicateHandler class
-        dup_handler = DuplicateHandler(client, out, workspace, on_duplicate)
+        dup_handler = DuplicateHandler(
+            client, out, workspace, on_duplicate, current_folder_id
+        )
         dup_handler.validate_and_handle_duplicates(files_to_upload)
 
         # Delete entries marked for replacement
