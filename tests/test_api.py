@@ -6,7 +6,7 @@ import pytest
 import requests
 
 from pydrime.api import DrimeClient
-from pydrime.exceptions import DrimeAPIError
+from pydrime.exceptions import DrimeAPIError, DrimeFileNotFoundError
 
 
 class TestDrimeClient:
@@ -138,6 +138,100 @@ class TestAPIRequest:
 
         client = DrimeClient(api_key="test_key")
         with pytest.raises(DrimeAPIError, match="Network error"):
+            client._request("GET", "/test")
+
+    @patch("pydrime.api.requests.Session.request")
+    def test_non_json_response_unexpected_type(self, mock_request):
+        """Test handling of unexpected content type (not HTML, not JSON)."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.content = b"some text data"
+        mock_response.headers = {"Content-Type": "text/plain"}
+        mock_request.return_value = mock_response
+
+        client = DrimeClient(api_key="test_key")
+        with pytest.raises(DrimeAPIError, match="Unexpected response type: text/plain"):
+            client._request("GET", "/test")
+
+    @patch("pydrime.api.requests.Session.request")
+    def test_invalid_json_response(self, mock_request):
+        """Test handling of invalid JSON in response."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.content = b"{invalid json}"
+        mock_response.headers = {"Content-Type": "application/json"}
+        mock_response.json.side_effect = ValueError("Invalid JSON")
+        mock_request.return_value = mock_response
+
+        client = DrimeClient(api_key="test_key")
+        with pytest.raises(DrimeAPIError, match="Invalid JSON response from server"):
+            client._request("GET", "/test")
+
+    @patch("pydrime.api.requests.Session.request")
+    def test_http_429_rate_limit_error(self, mock_request):
+        """Test handling of 429 Rate Limit error."""
+        mock_response = Mock()
+        mock_response.status_code = 429
+        mock_request.return_value = mock_response
+        mock_request.return_value.raise_for_status.side_effect = (
+            requests.exceptions.HTTPError(response=mock_response)
+        )
+
+        client = DrimeClient(api_key="test_key")
+        with pytest.raises(DrimeAPIError, match="Rate limit exceeded"):
+            client._request("GET", "/test")
+
+    @patch("pydrime.api.requests.Session.request")
+    def test_http_error_with_json_error_message(self, mock_request):
+        """Test handling of HTTP error with JSON error message in response."""
+        mock_response = Mock()
+        mock_response.status_code = 500
+        mock_response.content = b'{"message": "Internal server error occurred"}'
+        mock_response.json.return_value = {"message": "Internal server error occurred"}
+        mock_request.return_value = mock_response
+        mock_request.return_value.raise_for_status.side_effect = (
+            requests.exceptions.HTTPError(response=mock_response)
+        )
+
+        client = DrimeClient(api_key="test_key")
+        with pytest.raises(
+            DrimeAPIError,
+            match="API request failed with status 500: Internal server error occurred",
+        ):
+            client._request("GET", "/test")
+
+    @patch("pydrime.api.requests.Session.request")
+    def test_http_error_with_error_field(self, mock_request):
+        """Test handling of HTTP error with 'error' field in response."""
+        mock_response = Mock()
+        mock_response.status_code = 400
+        mock_response.content = b'{"error": "Bad request"}'
+        mock_response.json.return_value = {"error": "Bad request"}
+        mock_request.return_value = mock_response
+        mock_request.return_value.raise_for_status.side_effect = (
+            requests.exceptions.HTTPError(response=mock_response)
+        )
+
+        client = DrimeClient(api_key="test_key")
+        with pytest.raises(
+            DrimeAPIError, match="API request failed with status 400: Bad request"
+        ):
+            client._request("GET", "/test")
+
+    @patch("pydrime.api.requests.Session.request")
+    def test_http_error_with_unparseable_response(self, mock_request):
+        """Test handling of HTTP error with unparseable response."""
+        mock_response = Mock()
+        mock_response.status_code = 500
+        mock_response.content = b"<html>Error</html>"
+        mock_response.json.side_effect = ValueError("Not JSON")
+        mock_request.return_value = mock_response
+        mock_request.return_value.raise_for_status.side_effect = (
+            requests.exceptions.HTTPError(response=mock_response)
+        )
+
+        client = DrimeClient(api_key="test_key")
+        with pytest.raises(DrimeAPIError, match="API request failed with status 500"):
             client._request("GET", "/test")
 
 
@@ -698,3 +792,15 @@ class TestUploadValidation:
             "/entry/getAvailableName",
             json={"name": "Documents", "workspaceId": 0},
         )
+
+
+class TestExceptions:
+    """Tests for exception classes."""
+
+    def test_drime_file_not_found_error(self):
+        """Test DrimeFileNotFoundError with file path."""
+        file_path = "/tmp/test.txt"
+        error = DrimeFileNotFoundError(file_path)
+
+        assert str(error) == "File not found: /tmp/test.txt"
+        assert error.file_path == file_path

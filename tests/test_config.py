@@ -361,3 +361,77 @@ class TestConfigDefaultWorkspace:
 
                 content = config_file.read_text()
                 assert "DEFAULT_WORKSPACE_ID=" in content
+
+
+class TestConfigFileLoading:
+    """Tests for config file loading and error handling."""
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_load_dotenv_file_exists(self, tmp_path):
+        """Test loading from .env file in current directory."""
+        import os
+
+        # Create a .env file in current directory
+        env_file = tmp_path / ".env"
+        env_file.write_text("DRIME_API_KEY=dotenv_key\n")
+
+        # Change to tmp_path directory
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            config_dir = tmp_path / ".config" / "drime"
+
+            with patch.object(Config, "CONFIG_DIR", config_dir):
+                with patch.object(Config, "CONFIG_FILE", config_dir / "config"):
+                    config = Config()
+                    # .env should be loaded and key should be available
+                    assert config.api_key == "dotenv_key"
+        finally:
+            os.chdir(original_cwd)
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_load_config_with_invalid_folder_id(self, tmp_path):
+        """Test loading config with invalid folder ID (non-numeric)."""
+        config_dir = tmp_path / ".config" / "drime"
+        config_file = config_dir / "config"
+        config_dir.mkdir(parents=True)
+
+        # Write config file with invalid folder ID
+        config_file.write_text("CURRENT_FOLDER_ID=not_a_number\n")
+
+        with patch.object(Config, "CONFIG_DIR", config_dir):
+            with patch.object(Config, "CONFIG_FILE", config_file):
+                config = Config()
+                # Should silently ignore the invalid value
+                assert config.get_current_folder() is None
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_load_config_with_invalid_workspace_id(self, tmp_path):
+        """Test loading config with invalid workspace ID (non-numeric)."""
+        config_dir = tmp_path / ".config" / "drime"
+        config_file = config_dir / "config"
+        config_dir.mkdir(parents=True)
+
+        # Write config file with invalid workspace ID
+        config_file.write_text("DEFAULT_WORKSPACE_ID=not_a_number\n")
+
+        with patch.object(Config, "CONFIG_DIR", config_dir):
+            with patch.object(Config, "CONFIG_FILE", config_file):
+                config = Config()
+                # Should silently ignore the invalid value
+                assert config.get_default_workspace() is None
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_load_config_with_corrupted_file(self, tmp_path):
+        """Test loading config with file that can't be read."""
+        config_dir = tmp_path / ".config" / "drime"
+        config_file = config_dir / "config"
+        config_dir.mkdir(parents=True)
+
+        with patch.object(Config, "CONFIG_DIR", config_dir):
+            with patch.object(Config, "CONFIG_FILE", config_file):
+                # Mock file opening to raise an exception
+                with patch("builtins.open", side_effect=PermissionError("No access")):
+                    config = Config()
+                    # Should silently ignore the error and continue
+                    assert config.api_key is None

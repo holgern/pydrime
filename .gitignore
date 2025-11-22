@@ -208,5 +208,6 @@ __marimo__/
 
 #version
 pydrime/_version.py
-
+coverage.json
 .serena/
+test_folder/
