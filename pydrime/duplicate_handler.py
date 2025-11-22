@@ -280,29 +280,60 @@ class DuplicateHandler:
             Set of names that are folders
         """
         folder_names = set()
+        names_to_check = []
 
-        # Try to get all entries in one or few API calls
-        # We check a reasonable batch at a time to avoid overwhelming the API
+        # First pass: check cache
         for name in names:
-            try:
-                # Check cache first
-                cache_key = f"is_folder:{name}"
-                if cache_key in self._folder_id_cache:
-                    if self._folder_id_cache[cache_key]:
-                        folder_names.add(name)
-                    continue
+            cache_key = f"is_folder:{name}"
+            if cache_key in self._folder_id_cache:
+                if self._folder_id_cache[cache_key]:
+                    folder_names.add(name)
+            else:
+                names_to_check.append(name)
 
-                entries = self.entries_manager.search_by_name(name, exact_match=True)
-                # Check if any exact match is a folder
-                for entry in entries:
-                    if entry.is_folder:
-                        folder_names.add(name)
-                        self._folder_id_cache[cache_key] = entry.id
-                        break
+        if not names_to_check:
+            return folder_names
+
+        # Batch check all uncached names with pagination
+        # Get all folders in the current parent context to check against
+        try:
+            # Get all entries in the parent folder to check against
+            all_entries = self.entries_manager.get_all_in_folder(
+                folder_id=self.parent_id, use_cache=False, per_page=100
+            )
+
+            # Build a map of folder names in parent
+            folder_map = {
+                entry.name: entry.id for entry in all_entries if entry.is_folder
+            }
+
+            # Check each name against the folder map
+            for name in names_to_check:
+                cache_key = f"is_folder:{name}"
+                if name in folder_map:
+                    folder_names.add(name)
+                    self._folder_id_cache[cache_key] = folder_map[name]
                 else:
                     self._folder_id_cache[cache_key] = None
-            except DrimeAPIError:
-                pass
+
+        except DrimeAPIError:
+            # Fallback to individual searches if batch fails
+            for name in names_to_check:
+                try:
+                    cache_key = f"is_folder:{name}"
+                    entries = self.entries_manager.search_by_name(
+                        name, exact_match=True
+                    )
+                    # Check if any exact match is a folder
+                    for entry in entries:
+                        if entry.is_folder:
+                            folder_names.add(name)
+                            self._folder_id_cache[cache_key] = entry.id
+                            break
+                    else:
+                        self._folder_id_cache[cache_key] = None
+                except DrimeAPIError:
+                    pass
 
         return folder_names
 
