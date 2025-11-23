@@ -229,10 +229,16 @@ class FileEntriesManager:
 
         # If parent_id specified, filter by parent
         if parent_id is not None:
-            folders = [f for f in folders if f.parent_id == parent_id]
+            if parent_id == 0:
+                # Root folder: parent_id can be 0 or None depending on API
+                folders = [
+                    f for f in folders if f.parent_id == 0 or f.parent_id is None
+                ]
+            else:
+                folders = [f for f in folders if f.parent_id == parent_id]
         elif search_in_root:
-            # Search in root means parent_id=0
-            folders = [f for f in folders if f.parent_id == 0]
+            # Search in root means parent_id=0 or None
+            folders = [f for f in folders if f.parent_id == 0 or f.parent_id is None]
 
         # Return first match (should only be one with exact name in same parent)
         return folders[0] if folders else None
