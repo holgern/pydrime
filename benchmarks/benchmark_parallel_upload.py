@@ -682,7 +682,10 @@ def cleanup_remote_folder(
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Benchmark parallel file uploads")
+    parser = argparse.ArgumentParser(
+        description="Benchmark parallel file uploads",
+        allow_abbrev=False,  # Disable prefix matching to catch typos like --max-worker
+    )
     parser.add_argument(
         "--num-files",
         type=int,
