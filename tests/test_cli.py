@@ -783,6 +783,58 @@ class TestRmCommand:
             [123], delete_forever=False, workspace_id=0
         )
 
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_rm_by_path(self, mock_config, mock_client_class, runner):
+        """Test deleting file by path (folder/file.txt)."""
+        mock_config.is_configured.return_value = True
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = None
+
+        mock_client = Mock()
+        # Simulate resolving path to ID
+        mock_client.resolve_path_to_id.return_value = 456
+        mock_client.delete_file_entries.return_value = {"status": "success"}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["rm", "folder/test.txt"], input="y\n")
+
+        assert result.exit_code == 0
+        assert "Resolved 'folder/test.txt' to entry ID: 456" in result.output
+        mock_client.resolve_path_to_id.assert_called_once_with(
+            path="folder/test.txt",
+            workspace_id=0,
+        )
+        mock_client.delete_file_entries.assert_called_once_with(
+            [456], delete_forever=False, workspace_id=0
+        )
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_rm_by_absolute_path(self, mock_config, mock_client_class, runner):
+        """Test deleting file by absolute path (/folder/file.txt)."""
+        mock_config.is_configured.return_value = True
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = None
+
+        mock_client = Mock()
+        # Simulate resolving path to ID
+        mock_client.resolve_path_to_id.return_value = 789
+        mock_client.delete_file_entries.return_value = {"status": "success"}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["rm", "/folder/test.txt"], input="y\n")
+
+        assert result.exit_code == 0
+        assert "Resolved '/folder/test.txt' to entry ID: 789" in result.output
+        mock_client.resolve_path_to_id.assert_called_once_with(
+            path="/folder/test.txt",
+            workspace_id=0,
+        )
+        mock_client.delete_file_entries.assert_called_once_with(
+            [789], delete_forever=False, workspace_id=0
+        )
+
 
 class TestWorkspacesCommand:
     """Tests for the workspaces command."""
@@ -4121,9 +4173,9 @@ class TestFolderStructureDetection:
             # Check that all paths use forward slashes
             for _file_path, rel_path in files:
                 assert "\\" not in rel_path, f"Path contains backslash: {rel_path}"
-                assert "/" in rel_path or rel_path in ["file3.txt"], (
-                    f"Expected forward slashes in nested paths: {rel_path}"
-                )
+                assert "/" in rel_path or rel_path in [
+                    "file3.txt"
+                ], f"Expected forward slashes in nested paths: {rel_path}"
 
             # Check expected structure
             rel_paths = [rel_path for _, rel_path in files]
@@ -4312,12 +4364,12 @@ class TestFolderStructureDetection:
             for file_info in files_arg:
                 rel_path = file_info.get("relativePath", "")
                 if rel_path:  # Only check non-empty paths
-                    assert "\\" not in rel_path, (
-                        f"relativePath should not contain backslashes: {rel_path}"
-                    )
-                    assert "/" in rel_path or rel_path == "", (
-                        f"relativePath should use forward slashes: {rel_path}"
-                    )
+                    assert (
+                        "\\" not in rel_path
+                    ), f"relativePath should not contain backslashes: {rel_path}"
+                    assert (
+                        "/" in rel_path or rel_path == ""
+                    ), f"relativePath should use forward slashes: {rel_path}"
 
 
 class TestWindowsPathHandling:
@@ -4412,9 +4464,9 @@ class TestWindowsPathHandling:
 
             # Check that relativePath uses forward slashes only
             assert "\\" not in rel_path, f"relativePath contains backslash: {rel_path}"
-            assert rel_path == f"{Path(tmpdir).name}/folder1/folder2", (
-                f"Expected proper POSIX path, got: {rel_path}"
-            )
+            assert (
+                rel_path == f"{Path(tmpdir).name}/folder1/folder2"
+            ), f"Expected proper POSIX path, got: {rel_path}"
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.auth.config")
@@ -4459,13 +4511,13 @@ class TestWindowsPathHandling:
                 if "📁" in line:
                     path_part = line.split("📁")[1].strip()
                     # Should not contain backslashes
-                    assert "\\" not in path_part, (
-                        f"Folder path contains backslash: {path_part}"
-                    )
+                    assert (
+                        "\\" not in path_part
+                    ), f"Folder path contains backslash: {path_part}"
                     # Should end with forward slash
-                    assert path_part.endswith("/"), (
-                        f"Folder path should end with /: {path_part}"
-                    )
+                    assert path_part.endswith(
+                        "/"
+                    ), f"Folder path should end with /: {path_part}"
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.auth.config")
@@ -4506,9 +4558,9 @@ class TestWindowsPathHandling:
 
             for line in in_lines:
                 # Should not contain backslashes
-                assert "\\" not in line, (
-                    f"Directory grouping contains backslash: {line}"
-                )
+                assert (
+                    "\\" not in line
+                ), f"Directory grouping contains backslash: {line}"
                 # Should use forward slashes for nested paths
                 if "root" not in line.lower():
                     assert "/" in line, f"Expected forward slash in path: {line}"
@@ -4534,21 +4586,21 @@ class TestWindowsPathHandling:
         posix_parts = posix_path.parts
         posix_reconstructed = str(PurePosixPath(*posix_parts[:3]))
 
-        assert "\\" not in posix_reconstructed, (
-            "PurePosixPath should not have backslashes"
-        )
-        assert posix_reconstructed == "data/01/02", (
-            f"Expected 'data/01/02', got '{posix_reconstructed}'"
-        )
+        assert (
+            "\\" not in posix_reconstructed
+        ), "PurePosixPath should not have backslashes"
+        assert (
+            posix_reconstructed == "data/01/02"
+        ), f"Expected 'data/01/02', got '{posix_reconstructed}'"
 
         # Check parent extraction
         posix_parent = str(posix_path.parent)
-        assert posix_parent == "data/01/02", (
-            f"Expected 'data/01/02', got '{posix_parent}'"
-        )
-        assert "\\" not in posix_parent, (
-            "PurePosixPath parent should not have backslashes"
-        )
+        assert (
+            posix_parent == "data/01/02"
+        ), f"Expected 'data/01/02', got '{posix_parent}'"
+        assert (
+            "\\" not in posix_parent
+        ), "PurePosixPath parent should not have backslashes"
 
 
 class TestRemotePathDuplicateDetection:
@@ -4764,9 +4816,9 @@ class TestRemotePathDuplicateDetection:
                 if "duplicate" in line.lower()
             ]
             backup_in_duplicates = any("backup" in line for line in duplicate_lines)
-            assert not backup_in_duplicates, (
-                "backup folder should not be in duplicate warnings"
-            )
+            assert (
+                not backup_in_duplicates
+            ), "backup folder should not be in duplicate warnings"
 
 
 class TestSyncCommand:

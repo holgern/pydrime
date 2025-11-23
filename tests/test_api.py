@@ -718,6 +718,158 @@ class TestFolderResolution:
         assert entry_id == 888
 
 
+class TestResolvePathToId:
+    """Tests for resolve_path_to_id method."""
+
+    @patch("pydrime.api.DrimeClient.get_file_entries")
+    def test_resolve_path_single_file(self, mock_get_entries):
+        """Test resolving a single-level path (file in root)."""
+
+        mock_get_entries.return_value = {
+            "data": [
+                {
+                    "id": 100,
+                    "name": "test_file.txt",
+                    "type": "text",
+                    "hash": "hash100",
+                    "file_size": 1024,
+                    "parent_id": None,
+                    "created_at": "2024-01-01",
+                    "updated_at": "2024-01-01",
+                    "public": False,
+                    "description": None,
+                    "users": [{"email": "test@example.com", "owns_entry": True}],
+                }
+            ]
+        }
+
+        client = DrimeClient(api_key="test_key")
+        entry_id = client.resolve_path_to_id("test_file.txt")
+
+        assert entry_id == 100
+
+    @patch("pydrime.api.DrimeClient.get_file_entries")
+    def test_resolve_path_nested(self, mock_get_entries):
+        """Test resolving a nested path (folder/file.txt)."""
+
+        def get_entries_side_effect(**kwargs):
+            parent_ids = kwargs.get("parent_ids")
+            if parent_ids is None:
+                # Root level - return folder
+                return {
+                    "data": [
+                        {
+                            "id": 200,
+                            "name": "my_folder",
+                            "type": "folder",
+                            "hash": "hash200",
+                            "file_size": 0,
+                            "parent_id": None,
+                            "created_at": "2024-01-01",
+                            "updated_at": "2024-01-01",
+                            "public": False,
+                            "description": None,
+                            "users": [
+                                {"email": "test@example.com", "owns_entry": True}
+                            ],
+                        }
+                    ]
+                }
+            elif parent_ids == [200]:
+                # Inside folder - return file
+                return {
+                    "data": [
+                        {
+                            "id": 300,
+                            "name": "test_file.txt",
+                            "type": "text",
+                            "hash": "hash300",
+                            "file_size": 1024,
+                            "parent_id": 200,
+                            "created_at": "2024-01-01",
+                            "updated_at": "2024-01-01",
+                            "public": False,
+                            "description": None,
+                            "users": [
+                                {"email": "test@example.com", "owns_entry": True}
+                            ],
+                        }
+                    ]
+                }
+            return {"data": []}
+
+        mock_get_entries.side_effect = get_entries_side_effect
+
+        client = DrimeClient(api_key="test_key")
+        entry_id = client.resolve_path_to_id("my_folder/test_file.txt")
+
+        assert entry_id == 300
+
+    @patch("pydrime.api.DrimeClient.get_file_entries")
+    def test_resolve_path_with_leading_slash(self, mock_get_entries):
+        """Test resolving an absolute path starting with /."""
+        mock_get_entries.return_value = {
+            "data": [
+                {
+                    "id": 100,
+                    "name": "test_file.txt",
+                    "type": "text",
+                    "hash": "hash100",
+                    "file_size": 1024,
+                    "parent_id": None,
+                    "created_at": "2024-01-01",
+                    "updated_at": "2024-01-01",
+                    "public": False,
+                    "description": None,
+                    "users": [{"email": "test@example.com", "owns_entry": True}],
+                }
+            ]
+        }
+
+        client = DrimeClient(api_key="test_key")
+        entry_id = client.resolve_path_to_id("/test_file.txt")
+
+        assert entry_id == 100
+
+    @patch("pydrime.api.DrimeClient.get_file_entries")
+    def test_resolve_path_not_found(self, mock_get_entries):
+        """Test error when path not found."""
+        from pydrime.exceptions import DrimeNotFoundError
+
+        mock_get_entries.return_value = {"data": []}
+
+        client = DrimeClient(api_key="test_key")
+        with pytest.raises(DrimeNotFoundError, match="Path not found"):
+            client.resolve_path_to_id("nonexistent/file.txt")
+
+    @patch("pydrime.api.DrimeClient.get_file_entries")
+    def test_resolve_path_intermediate_not_folder(self, mock_get_entries):
+        """Test error when intermediate path component is not a folder."""
+        from pydrime.exceptions import DrimeNotFoundError
+
+        mock_get_entries.return_value = {
+            "data": [
+                {
+                    "id": 100,
+                    "name": "not_a_folder",
+                    "type": "text",  # File, not folder
+                    "hash": "hash100",
+                    "file_size": 1024,
+                    "parent_id": None,
+                    "created_at": "2024-01-01",
+                    "updated_at": "2024-01-01",
+                    "public": False,
+                    "description": None,
+                    "users": [{"email": "test@example.com", "owns_entry": True}],
+                }
+            ]
+        }
+
+        client = DrimeClient(api_key="test_key")
+        with pytest.raises(DrimeNotFoundError, match="is not a folder"):
+            client.resolve_path_to_id("not_a_folder/file.txt")
+
+
 class TestFolderCount:
     """Tests for folder count method."""
 

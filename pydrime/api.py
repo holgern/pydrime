@@ -2054,6 +2054,89 @@ class DrimeClient:
         # Return the first match
         return matching_entries[0].id
 
+    def resolve_path_to_id(
+        self,
+        path: str,
+        workspace_id: int = 0,
+    ) -> int:
+        """Resolve a path (e.g., folder/subfolder/file.txt) to entry ID.
+
+        Supports both absolute paths (starting with /) and relative paths.
+        For absolute paths, the leading slash is stripped and resolution
+        starts from the root.
+
+        Args:
+            path: Path to resolve (e.g., "folder/file.txt" or "/folder/file.txt")
+            workspace_id: Workspace ID (default: 0 for personal)
+
+        Returns:
+            Entry ID as integer
+
+        Raises:
+            DrimeNotFoundError: If path not found
+            DrimeAPIError: If API call fails
+
+        Examples:
+            >>> client = DrimeClient(api_key="your_key")
+            >>> # Resolve by path
+            >>> entry_id = client.resolve_path_to_id("folder/file.txt")
+            >>> entry_id = client.resolve_path_to_id("/folder/file.txt")
+        """
+        from .models import FileEntriesResult
+
+        # Strip leading slash for absolute paths
+        path = path.lstrip("/")
+
+        parts = path.split("/")
+        current_parent: Optional[int] = None
+
+        # Navigate through each path component
+        for i, part in enumerate(parts):
+            if not part:
+                continue  # Skip empty parts (e.g., double slashes)
+
+            is_last = i == len(parts) - 1
+
+            # Search for the entry in the current folder
+            parent_ids: Optional[list[int]] = (
+                [current_parent] if current_parent is not None else None
+            )
+            result = self.get_file_entries(
+                workspace_id=workspace_id,
+                parent_ids=parent_ids,
+            )
+
+            if not result or not result.get("data"):
+                raise DrimeNotFoundError(f"Path not found: {'/'.join(parts[: i + 1])}")
+
+            file_entries = FileEntriesResult.from_api_response(result)
+
+            # Find the matching entry (case-sensitive first)
+            matching = [e for e in file_entries.entries if e.name == part]
+            if not matching:
+                # Try case-insensitive
+                matching = [
+                    e for e in file_entries.entries if e.name.lower() == part.lower()
+                ]
+
+            if not matching:
+                raise DrimeNotFoundError(f"Path not found: {'/'.join(parts[: i + 1])}")
+
+            entry = matching[0]
+
+            if is_last:
+                # Found the target entry
+                return entry.id
+            else:
+                # This should be a folder, continue navigating
+                if not entry.is_folder:
+                    raise DrimeNotFoundError(
+                        f"'{part}' is not a folder in path: {path}"
+                    )
+                current_parent = entry.id
+
+        raise DrimeNotFoundError(f"Path not found: {path}")
+
     def get_folder_info(
         self,
         folder_id: int,
