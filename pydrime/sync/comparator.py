@@ -51,15 +51,28 @@ class SyncDecision:
 
 
 class FileComparator:
-    """Compares local and remote files to determine sync actions."""
+    """Compares local and remote files to determine sync actions.
 
-    def __init__(self, sync_mode: SyncMode):
+    For bidirectional sync modes (TWO_WAY), the comparator can use previous
+    sync state to determine whether a file that exists only on one side is
+    a new file or was deleted from the other side.
+    """
+
+    def __init__(
+        self,
+        sync_mode: SyncMode,
+        previous_synced_files: Optional[set[str]] = None,
+    ):
         """Initialize file comparator.
 
         Args:
             sync_mode: Sync mode to use for comparison
+            previous_synced_files: Set of relative paths that were synced
+                                  in the previous sync operation. Used for
+                                  deletion detection in TWO_WAY mode.
         """
         self.sync_mode = sync_mode
+        self.previous_synced_files = previous_synced_files or set()
 
     def compare_files(
         self,
@@ -213,7 +226,26 @@ class FileComparator:
         )
 
     def _handle_local_only(self, path: str, local_file: LocalFile) -> SyncDecision:
-        """Handle file that only exists locally."""
+        """Handle file that only exists locally.
+
+        For TWO_WAY mode with previous state:
+        - If file was previously synced, it was deleted from remote -> delete local
+        - If file was NOT previously synced, it's a new file -> upload
+        """
+        # For TWO_WAY mode, use previous state to determine action
+        if self.sync_mode == SyncMode.TWO_WAY and self.previous_synced_files:
+            if path in self.previous_synced_files:
+                # File was synced before but now only exists locally
+                # This means it was deleted from remote -> delete local
+                return SyncDecision(
+                    action=SyncAction.DELETE_LOCAL,
+                    reason="File deleted from cloud (was previously synced)",
+                    local_file=local_file,
+                    remote_file=None,
+                    relative_path=path,
+                )
+            # else: File was not synced before, treat as new local file
+
         if self.sync_mode.allows_upload:
             return SyncDecision(
                 action=SyncAction.UPLOAD,
@@ -245,7 +277,26 @@ class FileComparator:
             )
 
     def _handle_remote_only(self, path: str, remote_file: RemoteFile) -> SyncDecision:
-        """Handle file that only exists remotely."""
+        """Handle file that only exists remotely.
+
+        For TWO_WAY mode with previous state:
+        - If file was previously synced, it was deleted locally -> delete remote
+        - If file was NOT previously synced, it's a new file -> download
+        """
+        # For TWO_WAY mode, use previous state to determine action
+        if self.sync_mode == SyncMode.TWO_WAY and self.previous_synced_files:
+            if path in self.previous_synced_files:
+                # File was synced before but now only exists remotely
+                # This means it was deleted locally -> delete remote
+                return SyncDecision(
+                    action=SyncAction.DELETE_REMOTE,
+                    reason="File deleted locally (was previously synced)",
+                    local_file=None,
+                    remote_file=remote_file,
+                    relative_path=path,
+                )
+            # else: File was not synced before, treat as new remote file
+
         if self.sync_mode.allows_download:
             return SyncDecision(
                 action=SyncAction.DOWNLOAD,

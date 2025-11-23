@@ -23,6 +23,7 @@ from .modes import SyncMode
 from .operations import SyncOperations
 from .pair import SyncPair
 from .scanner import DirectoryScanner, LocalFile, RemoteFile
+from .state import SyncStateManager
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +35,20 @@ class SyncEngine:
         self,
         client: DrimeClient,
         output: Optional[OutputFormatter] = None,
+        state_manager: Optional[SyncStateManager] = None,
     ):
         """Initialize sync engine.
 
         Args:
             client: Drime API client
             output: Output formatter for displaying progress/status
+            state_manager: Optional state manager for tracking sync history.
+                          If None, a default one will be created for TWO_WAY mode.
         """
         self.client = client
         self.output = output or OutputFormatter()
         self.operations = SyncOperations(client)
+        self.state_manager = state_manager or SyncStateManager()
 
     def sync_pair(
         self,
@@ -147,6 +152,16 @@ class SyncEngine:
         Returns:
             Dictionary with sync statistics
         """
+        # Load previous sync state for TWO_WAY mode (for deletion detection)
+        previous_synced_files: set[str] = set()
+        if pair.sync_mode == SyncMode.TWO_WAY:
+            state = self.state_manager.load_state(pair.local, pair.remote)
+            if state:
+                previous_synced_files = state.synced_files
+                logger.debug(
+                    f"Loaded previous sync state with "
+                    f"{len(previous_synced_files)} files"
+                )
 
         # Step 1: Scan files
         with Progress(
@@ -183,7 +198,7 @@ class SyncEngine:
         remote_file_map = {f.relative_path: f for f in remote_files}
 
         # Step 2: Compare files and determine actions
-        comparator = FileComparator(pair.sync_mode)
+        comparator = FileComparator(pair.sync_mode, previous_synced_files)
         decisions = comparator.compare_files(local_file_map, remote_file_map)
 
         # Step 3: Display plan
@@ -207,6 +222,30 @@ class SyncEngine:
                 max_workers,
                 start_delay,
             )
+
+            # Save sync state after successful sync (for TWO_WAY mode)
+            if pair.sync_mode == SyncMode.TWO_WAY:
+                # After sync, the synced files are those that exist in both
+                # locations. This includes: files that already existed, newly
+                # uploaded, newly downloaded.
+                # But excludes: deleted files (both local and remote deletions)
+                current_synced_files: set[str] = set()
+                for decision in decisions:
+                    if decision.action == SyncAction.SKIP:
+                        # Files that were already in sync
+                        current_synced_files.add(decision.relative_path)
+                    elif decision.action == SyncAction.UPLOAD:
+                        # Files uploaded to remote (now exist in both)
+                        current_synced_files.add(decision.relative_path)
+                    elif decision.action == SyncAction.DOWNLOAD:
+                        # Files downloaded to local (now exist in both)
+                        current_synced_files.add(decision.relative_path)
+                    # DELETE_LOCAL/DELETE_REMOTE are NOT added (no longer exist)
+
+                self.state_manager.save_state(
+                    pair.local, pair.remote, current_synced_files
+                )
+                logger.debug(f"Saved sync state with {len(current_synced_files)} files")
 
         # Step 6: Display summary
         if not self.output.quiet:
@@ -245,6 +284,17 @@ class SyncEngine:
         start_time = time.time()
         logger.debug(f"Starting streaming sync at {start_time:.2f}")
 
+        # Load previous sync state for TWO_WAY mode (for deletion detection)
+        previous_synced_files: set[str] = set()
+        if pair.sync_mode == SyncMode.TWO_WAY:
+            state = self.state_manager.load_state(pair.local, pair.remote)
+            if state:
+                previous_synced_files = state.synced_files
+                logger.debug(
+                    f"Loaded previous sync state with "
+                    f"{len(previous_synced_files)} files"
+                )
+
         # Step 1: Scan local files if needed
         local_files = self._scan_local_files_streaming(pair)
 
@@ -256,6 +306,9 @@ class SyncEngine:
 
         # Track which remote files we've seen (for delete detection)
         seen_remote_paths: set[str] = set()
+
+        # Track successfully synced files for state saving
+        synced_files: set[str] = set()
 
         # Step 2: Process remote files in batches
         if pair.sync_mode.requires_remote_scan:
@@ -270,6 +323,8 @@ class SyncEngine:
                 batch_size=batch_size,
                 max_workers=max_workers,
                 start_delay=start_delay,
+                previous_synced_files=previous_synced_files,
+                synced_files=synced_files,
             )
 
         # Step 3: Handle local-only files (files that don't exist remotely)
@@ -284,9 +339,16 @@ class SyncEngine:
                 progress_callback=progress_callback,
                 max_workers=max_workers,
                 start_delay=start_delay,
+                previous_synced_files=previous_synced_files,
+                synced_files=synced_files,
             )
 
-        # Step 4: Display summary
+        # Step 4: Save sync state after successful sync (for TWO_WAY mode)
+        if pair.sync_mode == SyncMode.TWO_WAY:
+            self.state_manager.save_state(pair.local, pair.remote, synced_files)
+            logger.debug(f"Saved sync state with {len(synced_files)} files")
+
+        # Step 5: Display summary
         if not self.output.quiet:
             self._display_summary(stats, dry_run=False)
 
@@ -388,6 +450,8 @@ class SyncEngine:
         batch_size: int,
         max_workers: int,
         start_delay: float = 0.0,
+        previous_synced_files: Optional[set[str]] = None,
+        synced_files: Optional[set[str]] = None,
     ) -> None:
         """Process remote files in batches for streaming sync.
 
@@ -402,6 +466,8 @@ class SyncEngine:
             batch_size: Number of files per batch
             max_workers: Number of parallel workers
             start_delay: Delay in seconds between starting each parallel operation
+            previous_synced_files: Set of previously synced files (for TWO_WAY mode)
+            synced_files: Set to track successfully synced files (modified in place)
         """
         if not self.output.quiet:
             self.output.info("Processing remote files in batches...")
@@ -436,7 +502,7 @@ class SyncEngine:
                 batch_size=batch_size,
             ):
                 batch_num += 1
-                batch_stats = self._process_single_remote_batch(
+                batch_stats, batch_synced = self._process_single_remote_batch(
                     entries_batch=entries_batch,
                     batch_num=batch_num,
                     scanner=scanner,
@@ -448,6 +514,7 @@ class SyncEngine:
                     progress_callback=progress_callback,
                     max_workers=max_workers,
                     start_delay=start_delay,
+                    previous_synced_files=previous_synced_files,
                 )
 
                 # Update stats
@@ -455,6 +522,10 @@ class SyncEngine:
                     stats[key] += batch_stats.get(key, 0)
                 stats["skips"] += batch_stats.get("skips", 0)
                 stats["conflicts"] += batch_stats.get("conflicts", 0)
+
+                # Track synced files
+                if synced_files is not None:
+                    synced_files.update(batch_synced)
 
                 if not self.output.quiet:
                     total_processed += batch_stats.get("processed", 0)
@@ -482,7 +553,8 @@ class SyncEngine:
         progress_callback: Optional[Callable[[int, int], None]],
         max_workers: int,
         start_delay: float = 0.0,
-    ) -> dict:
+        previous_synced_files: Optional[set[str]] = None,
+    ) -> tuple[dict, set[str]]:
         """Process a single batch of remote entries.
 
         Args:
@@ -497,9 +569,10 @@ class SyncEngine:
             progress_callback: Optional callback for progress updates
             max_workers: Number of parallel workers
             start_delay: Delay in seconds between starting each parallel operation
+            previous_synced_files: Set of previously synced files (for TWO_WAY mode)
 
         Returns:
-            Dictionary with batch statistics
+            Tuple of (dictionary with batch statistics, set of synced file paths)
         """
         logger.debug(
             "Received batch %d with %d entries",
@@ -517,7 +590,7 @@ class SyncEngine:
             logger.debug("Filtered out %d folders from batch", filtered)
 
         # Compare batch with local files
-        comparator = FileComparator(pair.sync_mode)
+        comparator = FileComparator(pair.sync_mode, previous_synced_files)
         batch_decisions = []
 
         for remote_file in remote_files:
@@ -543,10 +616,24 @@ class SyncEngine:
 
         batch_stats["processed"] = len(remote_files)
 
+        # Track successfully synced files
+        synced_in_batch: set[str] = set()
+        for decision in batch_decisions:
+            if decision.action == SyncAction.SKIP:
+                # Files that were already in sync
+                synced_in_batch.add(decision.relative_path)
+            elif decision.action == SyncAction.UPLOAD:
+                # Files uploaded to remote (now exist in both)
+                synced_in_batch.add(decision.relative_path)
+            elif decision.action == SyncAction.DOWNLOAD:
+                # Files downloaded to local (now exist in both)
+                synced_in_batch.add(decision.relative_path)
+            # DELETE_LOCAL and DELETE_REMOTE are NOT added (they no longer exist)
+
         # Debug: print when batch is complete
         logger.debug("Batch %d complete, waiting for next batch...", batch_num)
 
-        return batch_stats
+        return batch_stats, synced_in_batch
 
     def _execute_batch_decisions(
         self,
@@ -668,6 +755,8 @@ class SyncEngine:
         progress_callback: Optional[Callable[[int, int], None]],
         max_workers: int,
         start_delay: float = 0.0,
+        previous_synced_files: Optional[set[str]] = None,
+        synced_files: Optional[set[str]] = None,
     ) -> None:
         """Process local-only files for streaming sync.
 
@@ -681,6 +770,8 @@ class SyncEngine:
             progress_callback: Optional callback for progress updates
             max_workers: Number of parallel workers
             start_delay: Delay in seconds between starting each parallel operation
+            previous_synced_files: Set of previously synced files (for TWO_WAY mode)
+            synced_files: Set to track successfully synced files (modified in place)
         """
         local_only_files = [
             f for f in local_files if f.relative_path not in seen_remote_paths
@@ -694,7 +785,7 @@ class SyncEngine:
                 f"\nProcessing {len(local_only_files)} local-only file(s)..."
             )
 
-        comparator = FileComparator(pair.sync_mode)
+        comparator = FileComparator(pair.sync_mode, previous_synced_files)
         local_decisions = []
 
         for local_file in local_only_files:
@@ -724,6 +815,12 @@ class SyncEngine:
             # Update stats with actual successes
             stats["uploads"] += local_stats["uploads"]
             stats["deletes_local"] += local_stats["deletes_local"]
+
+            # Track synced files (uploaded files)
+            if synced_files is not None:
+                for decision in local_decisions:
+                    if decision.action == SyncAction.UPLOAD:
+                        synced_files.add(decision.relative_path)
         else:
             for decision in local_decisions:
                 self._execute_decision_with_stats(
@@ -734,6 +831,9 @@ class SyncEngine:
                     progress_callback=progress_callback,
                     stats=stats,
                 )
+                # Track synced files (uploaded files)
+                if synced_files is not None and decision.action == SyncAction.UPLOAD:
+                    synced_files.add(decision.relative_path)
 
     def _scan_remote(self, pair: SyncPair) -> list[RemoteFile]:
         """Scan remote directory for files.

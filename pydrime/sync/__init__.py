@@ -6,6 +6,7 @@ from .modes import SyncMode
 from .operations import SyncOperations
 from .pair import SyncPair
 from .scanner import DirectoryScanner, LocalFile, RemoteFile
+from .state import SyncState, SyncStateManager
 
 __all__ = [
     "SyncEngine",
@@ -17,4 +18,6 @@ __all__ = [
     "SyncDecision",
     "LocalFile",
     "RemoteFile",
+    "SyncState",
+    "SyncStateManager",
 ]
