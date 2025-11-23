@@ -72,34 +72,6 @@ def parse_iso_timestamp(timestamp_str: Optional[str]) -> Optional[datetime]:
     except (ValueError, AttributeError):
         return None
 
-    try:
-        # Handle various ISO formats
-        # The 'Z' suffix indicates UTC time
-        if timestamp_str.endswith("Z"):
-            timestamp_str = timestamp_str[:-1] + "+00:00"
-
-        # Try parsing with timezone
-        try:
-            dt = datetime.fromisoformat(timestamp_str)
-            # Convert to local time (naive datetime in local timezone)
-            if dt.tzinfo is not None:
-                # Convert to timestamp (UTC) then to local naive datetime
-
-                timestamp = dt.timestamp()
-                return datetime.fromtimestamp(timestamp)
-            return dt
-        except ValueError:
-            # Try without microseconds
-            if "." in timestamp_str:
-                timestamp_str = timestamp_str.split(".")[0]
-            dt = datetime.fromisoformat(timestamp_str)
-            if dt.tzinfo is not None:
-                timestamp = dt.timestamp()
-                return datetime.fromtimestamp(timestamp)
-            return dt
-    except (ValueError, AttributeError):
-        return None
-
 
 def scan_directory(
     path: Path, base_path: Path, out: OutputFormatter
@@ -1913,6 +1885,7 @@ def sync(
     client = DrimeClient(api_key=api_key)
 
     # Parse path and create sync pair
+    pair: SyncPair  # Type hint to satisfy type checker
     if is_literal_pair:
         # Path is a literal sync pair: /local:mode:/remote
         if remote_path is not None:
@@ -1934,6 +1907,7 @@ def sync(
         except ValueError as e:
             out.error(f"Invalid sync pair format: {e}")
             ctx.exit(1)
+            return  # Unreachable, but helps type checker
     else:
         # Path is a simple directory path
         local_path = Path(path)
@@ -2334,9 +2308,20 @@ def rename(
 @click.argument("entry_identifiers", nargs=-1, type=str, required=True)
 @click.option("--permanent", is_flag=True, help="Delete permanently (cannot be undone)")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+@click.option(
+    "--workspace",
+    "-w",
+    type=int,
+    default=None,
+    help="Workspace ID (uses default workspace if not specified)",
+)
 @click.pass_context
 def rm(
-    ctx: Any, entry_identifiers: tuple[str, ...], permanent: bool, yes: bool
+    ctx: Any,
+    entry_identifiers: tuple[str, ...],
+    permanent: bool,
+    yes: bool,
+    workspace: Optional[int],
 ) -> None:
     """Delete one or more file or folder entries.
 
@@ -2352,6 +2337,7 @@ def rm(
         pydrime rm test1.txt test2.txt          # Delete multiple files
         pydrime rm 480424796 drime_test         # Mix IDs and names
         pydrime rm --permanent test1.txt        # Permanent deletion
+        pydrime rm -w 5 test.txt                # Delete in workspace 5
     """
     api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
@@ -2361,10 +2347,13 @@ def rm(
         out.info("Run 'drime init' to configure your API key")
         ctx.exit(1)
 
+    # Use default workspace if none specified
+    if workspace is None:
+        workspace = config.get_default_workspace() or 0
+
     try:
         client = DrimeClient(api_key=api_key)
         current_folder = config.get_current_folder()
-        workspace = config.get_default_workspace() or 0
 
         # Resolve all identifiers to entry IDs
         entry_ids = []
@@ -2394,7 +2383,9 @@ def rm(
             out.warning("Deletion cancelled.")
             return
 
-        result = client.delete_file_entries(entry_ids, delete_forever=permanent)
+        result = client.delete_file_entries(
+            entry_ids, delete_forever=permanent, workspace_id=workspace
+        )
 
         if out.json_output:
             out.output_json(result)

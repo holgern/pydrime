@@ -773,9 +773,11 @@ class SyncEngine:
                     logger.debug(f"Downloading {decision.relative_path}...")
                     local_path = pair.local / decision.relative_path
 
-                    # Retry download up to 3 times for 403 errors (file not ready yet)
-                    max_retries = 3
-                    retry_delay = 2.0
+                    # Retry download up to 7 times for transient errors
+                    # This handles cases where recently uploaded files aren't
+                    # immediately available for download, or server-side issues
+                    max_retries = 7
+                    retry_delay = 5.0  # Start with 5 seconds
 
                     for attempt in range(max_retries):
                         try:
@@ -786,16 +788,25 @@ class SyncEngine:
                             )
                             break  # Success, exit retry loop
                         except Exception as e:
-                            if "403" in str(e) and attempt < max_retries - 1:
-                                # File not ready yet, wait and retry
-                                logger.debug(
-                                    f"File not ready, retrying in {retry_delay}s "
-                                    f"(attempt {attempt + 1}/{max_retries})..."
+                            error_str = str(e)
+                            # Retry on 403 (file not ready), 429 (rate limit),
+                            # 500/502/503/504 (server errors)
+                            is_retryable = any(
+                                code in error_str
+                                for code in ["403", "429", "500", "502", "503", "504"]
+                            )
+                            if is_retryable and attempt < max_retries - 1:
+                                # Transient error, wait and retry
+                                msg = (
+                                    f"Download failed "
+                                    f"(attempt {attempt + 1}/{max_retries}), "
+                                    f"retrying in {retry_delay:.1f}s: {e}"
                                 )
+                                logger.debug(msg)
                                 time.sleep(retry_delay)
-                                retry_delay *= 2  # Exponential backoff
+                                retry_delay *= 1.5  # More gradual exponential backoff
                             else:
-                                # Not a 403 or final attempt, re-raise
+                                # Not retryable or final attempt, re-raise
                                 raise
 
                     action_elapsed = time.time() - action_start

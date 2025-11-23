@@ -60,6 +60,23 @@ class DrimeClient:
             }
         )
 
+    def close(self) -> None:
+        """Close the session and release connections.
+
+        This ensures all pending requests are completed and connections are
+        properly closed. Call this after batch uploads to ensure files are
+        fully available for download.
+        """
+        if self.session:
+            self.session.close()
+            # Create a fresh session for subsequent requests
+            self.session = requests.Session()
+            self.session.headers.update(
+                {
+                    "Authorization": f"Bearer {self.api_key}",
+                }
+            )
+
     def _should_retry(self, exception: Exception, attempt: int) -> bool:
         """Determine if a request should be retried.
 
@@ -704,17 +721,19 @@ class DrimeClient:
         self,
         entry_ids: list[int],
         delete_forever: bool = False,
+        workspace_id: int = 0,
     ) -> Any:
         """Move entries to trash or delete permanently.
 
         Args:
             entry_ids: List of entry IDs to delete
             delete_forever: Whether entries should be deleted permanently
+            workspace_id: Workspace ID (default: 0 for personal)
 
         Returns:
             Response with 'status' key
         """
-        endpoint = "/file-entries/delete"
+        endpoint = f"/file-entries/delete?workspaceId={workspace_id}"
         data = {
             "entryIds": entry_ids,
             "deleteForever": delete_forever,
