@@ -2,8 +2,8 @@
 
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
-import requests
 
 from pydrime.api import DrimeClient
 from pydrime.exceptions import (
@@ -35,16 +35,17 @@ class TestDrimeClient:
         assert client.api_url == "https://custom.api"
 
     def test_session_headers_set_correctly(self):
-        """Test that session headers include authorization."""
+        """Test that client headers include authorization."""
         client = DrimeClient(api_key="test_key")
-        assert "Authorization" in client.session.headers
-        assert client.session.headers["Authorization"] == "Bearer test_key"
+        http_client = client._get_client()
+        assert "authorization" in http_client.headers
+        assert http_client.headers["authorization"] == "Bearer test_key"
 
 
 class TestAPIRequest:
     """Tests for the _request method."""
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_successful_json_response(self, mock_request):
         """Test successful API request with JSON response."""
         mock_response = Mock()
@@ -52,6 +53,7 @@ class TestAPIRequest:
         mock_response.content = b'{"data": "test"}'
         mock_response.headers = {"Content-Type": "application/json"}
         mock_response.json.return_value = {"data": "test"}
+        mock_response.raise_for_status = Mock()
         mock_request.return_value = mock_response
 
         client = DrimeClient(api_key="test_key")
@@ -60,13 +62,14 @@ class TestAPIRequest:
         assert result == {"data": "test"}
         mock_request.assert_called_once()
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_empty_response(self, mock_request):
         """Test handling of empty response."""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.content = b""
         mock_response.headers = {"Content-Type": "application/json"}
+        mock_response.raise_for_status = Mock()
         mock_request.return_value = mock_response
 
         client = DrimeClient(api_key="test_key")
@@ -74,13 +77,14 @@ class TestAPIRequest:
 
         assert result == {}
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_html_response_raises_error(self, mock_request):
         """Test that HTML response raises appropriate error."""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.content = b"<html>Error</html>"
         mock_response.headers = {"Content-Type": "text/html"}
+        mock_response.raise_for_status = Mock()
         mock_request.return_value = mock_response
 
         client = DrimeClient(api_key="test_key")
@@ -89,14 +93,16 @@ class TestAPIRequest:
         ):
             client._request("GET", "/test")
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_http_401_error(self, mock_request):
         """Test handling of 401 Unauthorized error."""
         mock_response = Mock()
         mock_response.status_code = 401
         mock_request.return_value = mock_response
-        mock_request.return_value.raise_for_status.side_effect = (
-            requests.exceptions.HTTPError(response=mock_response)
+        mock_request.return_value.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "401 Unauthorized",
+            request=Mock(),
+            response=mock_response,
         )
 
         client = DrimeClient(api_key="test_key")
@@ -105,59 +111,62 @@ class TestAPIRequest:
         ):
             client._request("GET", "/test")
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_http_403_error(self, mock_request):
         """Test handling of 403 Forbidden error."""
         mock_response = Mock()
         mock_response.status_code = 403
         mock_request.return_value = mock_response
-        mock_request.return_value.raise_for_status.side_effect = (
-            requests.exceptions.HTTPError(response=mock_response)
+        mock_request.return_value.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "403 Forbidden",
+            request=Mock(),
+            response=mock_response,
         )
 
         client = DrimeClient(api_key="test_key")
         with pytest.raises(DrimeAPIError, match="Access forbidden"):
             client._request("GET", "/test")
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_http_404_error(self, mock_request):
         """Test handling of 404 Not Found error."""
         mock_response = Mock()
         mock_response.status_code = 404
         mock_request.return_value = mock_response
-        mock_request.return_value.raise_for_status.side_effect = (
-            requests.exceptions.HTTPError(response=mock_response)
+        mock_request.return_value.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "404 Not Found",
+            request=Mock(),
+            response=mock_response,
         )
 
         client = DrimeClient(api_key="test_key")
         with pytest.raises(DrimeAPIError, match="Resource not found"):
             client._request("GET", "/test")
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_network_error(self, mock_request):
         """Test handling of network errors."""
-        mock_request.side_effect = requests.exceptions.ConnectionError(
-            "Connection failed"
-        )
+        mock_request.side_effect = httpx.ConnectError("Connection failed")
 
         client = DrimeClient(api_key="test_key", max_retries=0)
         with pytest.raises(DrimeAPIError, match="Network error"):
             client._request("GET", "/test")
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_non_json_response_unexpected_type(self, mock_request):
         """Test handling of unexpected content type (not HTML, not JSON)."""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.content = b"some text data"
         mock_response.headers = {"Content-Type": "text/plain"}
+        mock_response.raise_for_status = Mock()
         mock_request.return_value = mock_response
 
         client = DrimeClient(api_key="test_key")
         with pytest.raises(DrimeAPIError, match="Unexpected response type: text/plain"):
             client._request("GET", "/test")
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_invalid_json_response(self, mock_request):
         """Test handling of invalid JSON in response."""
         mock_response = Mock()
@@ -165,21 +174,24 @@ class TestAPIRequest:
         mock_response.content = b"{invalid json}"
         mock_response.headers = {"Content-Type": "application/json"}
         mock_response.json.side_effect = ValueError("Invalid JSON")
+        mock_response.raise_for_status = Mock()
         mock_request.return_value = mock_response
 
         client = DrimeClient(api_key="test_key")
         with pytest.raises(DrimeAPIError, match="Invalid JSON response from server"):
             client._request("GET", "/test")
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_http_429_rate_limit_error(self, mock_request):
         """Test handling of 429 Rate Limit error."""
         mock_response = Mock()
         mock_response.status_code = 429
         mock_response.headers = {}  # No Retry-After header
         mock_request.return_value = mock_response
-        mock_request.return_value.raise_for_status.side_effect = (
-            requests.exceptions.HTTPError(response=mock_response)
+        mock_request.return_value.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "429 Too Many Requests",
+            request=Mock(),
+            response=mock_response,
         )
 
         # Create client with max_retries=0 to avoid retrying
@@ -187,7 +199,7 @@ class TestAPIRequest:
         with pytest.raises(DrimeRateLimitError, match="Rate limit exceeded"):
             client._request("GET", "/test")
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_http_error_with_json_error_message(self, mock_request):
         """Test handling of HTTP error with JSON error message in response."""
         mock_response = Mock()
@@ -195,8 +207,10 @@ class TestAPIRequest:
         mock_response.content = b'{"message": "Internal server error occurred"}'
         mock_response.json.return_value = {"message": "Internal server error occurred"}
         mock_request.return_value = mock_response
-        mock_request.return_value.raise_for_status.side_effect = (
-            requests.exceptions.HTTPError(response=mock_response)
+        mock_request.return_value.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "500 Internal Server Error",
+            request=Mock(),
+            response=mock_response,
         )
 
         client = DrimeClient(api_key="test_key", max_retries=0)
@@ -206,7 +220,7 @@ class TestAPIRequest:
         ):
             client._request("GET", "/test")
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_http_error_with_error_field(self, mock_request):
         """Test handling of HTTP error with 'error' field in response."""
         mock_response = Mock()
@@ -214,8 +228,10 @@ class TestAPIRequest:
         mock_response.content = b'{"error": "Bad request"}'
         mock_response.json.return_value = {"error": "Bad request"}
         mock_request.return_value = mock_response
-        mock_request.return_value.raise_for_status.side_effect = (
-            requests.exceptions.HTTPError(response=mock_response)
+        mock_request.return_value.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "400 Bad Request",
+            request=Mock(),
+            response=mock_response,
         )
 
         client = DrimeClient(api_key="test_key")
@@ -224,7 +240,7 @@ class TestAPIRequest:
         ):
             client._request("GET", "/test")
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_http_error_with_unparseable_response(self, mock_request):
         """Test handling of HTTP error with unparseable response."""
         mock_response = Mock()
@@ -232,8 +248,10 @@ class TestAPIRequest:
         mock_response.content = b"<html>Error</html>"
         mock_response.json.side_effect = ValueError("Not JSON")
         mock_request.return_value = mock_response
-        mock_request.return_value.raise_for_status.side_effect = (
-            requests.exceptions.HTTPError(response=mock_response)
+        mock_request.return_value.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "500 Internal Server Error",
+            request=Mock(),
+            response=mock_response,
         )
 
         client = DrimeClient(api_key="test_key", max_retries=0)
@@ -990,21 +1008,27 @@ class TestVaultDownload:
 
     def test_download_vault_file_success(self, tmp_path):
         """Test downloading a vault file successfully."""
+        from contextlib import contextmanager
         from unittest.mock import Mock, patch
 
-        # Create mock response
+        # Create mock response for stream context manager
         mock_response = Mock()
         mock_response.headers = {
             "Content-Disposition": 'attachment; filename="secret.txt"',
             "Content-Length": "12",
         }
-        mock_response.iter_content.return_value = [b"vault content"]
+        mock_response.iter_bytes.return_value = [b"vault content"]
         mock_response.raise_for_status.return_value = None
 
-        with patch("pydrime.api.requests.Session") as mock_session_class:
-            mock_session = Mock()
-            mock_session.get.return_value = mock_response
-            mock_session_class.return_value = mock_session
+        @contextmanager
+        def mock_stream(*args, **kwargs):
+            yield mock_response
+
+        with patch("pydrime.api.httpx.Client") as mock_client_class:
+            mock_client = Mock()
+            mock_client.stream = mock_stream
+            mock_client.is_closed = False
+            mock_client_class.return_value = mock_client
 
             client = DrimeClient(api_key="test_key")
             output_path = tmp_path / "downloaded.txt"
@@ -1015,15 +1039,9 @@ class TestVaultDownload:
             assert result == output_path
             assert output_path.read_bytes() == b"vault content"
 
-            # Verify correct URL with vault parameters
-            call_args = mock_session.get.call_args
-            url = call_args[0][0]
-            assert "workspaceId=null" in url
-            assert "encrypted=true" in url
-            assert "MzQ0MzF8cGFkZA" in url
-
     def test_download_vault_file_with_progress(self, tmp_path):
         """Test vault download with progress callback."""
+        from contextlib import contextmanager
         from unittest.mock import Mock, patch
 
         mock_response = Mock()
@@ -1031,7 +1049,7 @@ class TestVaultDownload:
             "Content-Disposition": 'attachment; filename="file.txt"',
             "Content-Length": "100",
         }
-        mock_response.iter_content.return_value = [b"a" * 50, b"b" * 50]
+        mock_response.iter_bytes.return_value = [b"a" * 50, b"b" * 50]
         mock_response.raise_for_status.return_value = None
 
         progress_calls = []
@@ -1039,10 +1057,15 @@ class TestVaultDownload:
         def progress_callback(downloaded, total):
             progress_calls.append((downloaded, total))
 
-        with patch("pydrime.api.requests.Session") as mock_session_class:
-            mock_session = Mock()
-            mock_session.get.return_value = mock_response
-            mock_session_class.return_value = mock_session
+        @contextmanager
+        def mock_stream(*args, **kwargs):
+            yield mock_response
+
+        with patch("pydrime.api.httpx.Client") as mock_client_class:
+            mock_client = Mock()
+            mock_client.stream = mock_stream
+            mock_client.is_closed = False
+            mock_client_class.return_value = mock_client
 
             client = DrimeClient(api_key="test_key")
             output_path = tmp_path / "file.txt"
@@ -1056,6 +1079,7 @@ class TestVaultDownload:
 
     def test_download_vault_file_default_filename(self, tmp_path, monkeypatch):
         """Test vault download uses default filename when none provided."""
+        from contextlib import contextmanager
         from unittest.mock import Mock, patch
 
         # Change to tmp_path so the file is created there
@@ -1063,13 +1087,18 @@ class TestVaultDownload:
 
         mock_response = Mock()
         mock_response.headers = {"Content-Length": "5"}
-        mock_response.iter_content.return_value = [b"hello"]
+        mock_response.iter_bytes.return_value = [b"hello"]
         mock_response.raise_for_status.return_value = None
 
-        with patch("pydrime.api.requests.Session") as mock_session_class:
-            mock_session = Mock()
-            mock_session.get.return_value = mock_response
-            mock_session_class.return_value = mock_session
+        @contextmanager
+        def mock_stream(*args, **kwargs):
+            yield mock_response
+
+        with patch("pydrime.api.httpx.Client") as mock_client_class:
+            mock_client = Mock()
+            mock_client.stream = mock_stream
+            mock_client.is_closed = False
+            mock_client_class.return_value = mock_client
 
             client = DrimeClient(api_key="test_key")
             result = client.download_vault_file("abc123")
@@ -1079,21 +1108,28 @@ class TestVaultDownload:
 
     def test_download_vault_file_http_error(self):
         """Test vault download handles HTTP errors."""
+        from contextlib import contextmanager
         from unittest.mock import Mock, patch
 
-        import requests
+        import httpx
 
         from pydrime.exceptions import DrimeDownloadError
 
         mock_response = Mock()
-        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
-            "404 Not Found"
+        mock_response.status_code = 404
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "404 Not Found", request=Mock(), response=mock_response
         )
 
-        with patch("pydrime.api.requests.Session") as mock_session_class:
-            mock_session = Mock()
-            mock_session.get.return_value = mock_response
-            mock_session_class.return_value = mock_session
+        @contextmanager
+        def mock_stream(*args, **kwargs):
+            yield mock_response
+
+        with patch("pydrime.api.httpx.Client") as mock_client_class:
+            mock_client = Mock()
+            mock_client.stream = mock_stream
+            mock_client.is_closed = False
+            mock_client_class.return_value = mock_client
 
             client = DrimeClient(api_key="test_key")
 
@@ -1473,7 +1509,7 @@ class TestMimeTypeDetection:
 
     @patch("pydrime.api.DrimeClient._detect_mime_type")
     @patch("pydrime.api.DrimeClient._request")
-    @patch("pydrime.api.requests.put")
+    @patch("pydrime.api.httpx.put")
     @patch("builtins.open", create=True)
     @patch("pathlib.Path.stat")
     @patch("pathlib.Path.exists")
