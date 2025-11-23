@@ -34,6 +34,10 @@ Features
 * Rich terminal output with progress tracking
 * JSON output for programmatic processing
 * Context-aware file operations (current directory support)
+* **Sync** - Bidirectional and one-way sync between local and cloud
+* **Encrypted Vault** - Client-side encryption for sensitive files
+* **Duplicate Finder** - Find and remove duplicate files
+* **Storage Usage** - Monitor your cloud storage usage
 
 Quick Example
 -------------
@@ -55,6 +59,12 @@ Download a file:
 .. code-block:: bash
 
    pydrime download abc123hash
+
+Sync a directory:
+
+.. code-block:: bash
+
+   pydrime sync ./my_folder
 
 Using the Python API:
 

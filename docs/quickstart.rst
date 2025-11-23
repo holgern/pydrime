@@ -290,6 +290,62 @@ The validate command is particularly useful for:
 * CI/CD pipelines to ensure data integrity
 * Checking backups match local files
 
+Sync Files
+~~~~~~~~~~
+
+Synchronize local directory with Drime Cloud:
+
+.. code-block:: bash
+
+   # Default two-way sync
+   pydrime sync ./my_folder
+
+   # Sync with specific remote path
+   pydrime sync ./docs -r remote_docs
+
+   # Using sync modes explicitly
+   pydrime sync /home/user/docs:twoWay:/Documents
+   pydrime sync ./backup:localBackup:/Backup
+
+Available sync modes:
+
+* ``twoWay`` (``tw``) - Mirror changes in both directions
+* ``localToCloud`` (``ltc``) - Upload local changes only
+* ``localBackup`` (``lb``) - Upload to cloud, never delete
+* ``cloudToLocal`` (``ctl``) - Download cloud changes only
+* ``cloudBackup`` (``cb``) - Download from cloud, never delete
+
+Preview sync changes without syncing:
+
+.. code-block:: bash
+
+   pydrime sync ./data --dry-run
+
+Find Duplicates
+~~~~~~~~~~~~~~~
+
+Find and optionally delete duplicate files:
+
+.. code-block:: bash
+
+   # Show duplicates (dry run)
+   pydrime find-duplicates
+
+   # Find in specific folder
+   pydrime find-duplicates --folder "My Documents" --recursive
+
+   # Actually delete duplicates
+   pydrime find-duplicates --delete
+
+Storage Usage
+~~~~~~~~~~~~~
+
+Check your storage usage:
+
+.. code-block:: bash
+
+   pydrime usage
+
 Python API Usage
 ----------------
 
