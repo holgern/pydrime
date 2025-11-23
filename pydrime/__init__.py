@@ -15,7 +15,12 @@ from .exceptions import (
     DrimeUploadError,
 )
 from .file_entries_manager import FileEntriesManager
-from .utils import calculate_drime_hash, decode_drime_hash
+from .utils import (
+    calculate_drime_hash,
+    decode_drime_hash,
+    format_size,
+    parse_iso_timestamp,
+)
 
 __all__ = [
     "DrimeClient",
@@ -33,4 +38,6 @@ __all__ = [
     "FileEntriesManager",
     "calculate_drime_hash",
     "decode_drime_hash",
+    "format_size",
+    "parse_iso_timestamp",
 ]

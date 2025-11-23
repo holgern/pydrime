@@ -9,6 +9,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
+from .utils import format_size as _format_size
+
 
 class OutputFormatter:
     """Handle different output formats for CLI commands."""
@@ -227,14 +229,7 @@ class OutputFormatter:
         Returns:
             Formatted size string
         """
-        if size_bytes < 1024:
-            return f"{size_bytes} B"
-        elif size_bytes < 1024 * 1024:
-            return f"{size_bytes / 1024:.1f} KB"
-        elif size_bytes < 1024 * 1024 * 1024:
-            return f"{size_bytes / 1024 / 1024:.1f} MB"
-        else:
-            return f"{size_bytes / 1024 / 1024 / 1024:.1f} GB"
+        return _format_size(size_bytes)
 
     def progress_message(self, message: str) -> None:
         """Print a progress message to stderr.

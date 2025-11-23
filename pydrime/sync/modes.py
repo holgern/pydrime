@@ -113,13 +113,21 @@ class SyncMode(str, Enum):
 
     @property
     def requires_local_scan(self) -> bool:
-        """Check if this mode requires scanning local files."""
-        return self.allows_upload or self.allows_local_delete
+        """Check if this mode requires scanning local files.
+
+        We need to scan local files if we might upload, delete locally,
+        or download (to compare against existing local files for idempotency).
+        """
+        return self.allows_upload or self.allows_local_delete or self.allows_download
 
     @property
     def requires_remote_scan(self) -> bool:
-        """Check if this mode requires scanning remote files."""
-        return self.allows_download or self.allows_remote_delete
+        """Check if this mode requires scanning remote files.
+
+        We need to scan remote files if we might download, delete remotely,
+        or upload (to compare against existing remote files for idempotency).
+        """
+        return self.allows_download or self.allows_remote_delete or self.allows_upload
 
     def __str__(self) -> str:
         """Return string representation."""

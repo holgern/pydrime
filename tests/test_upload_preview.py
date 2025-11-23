@@ -149,8 +149,8 @@ class TestDisplayUploadPreview:
 
         captured = capsys.readouterr()
         assert "Folders to create: 2" in captured.out
-        assert "📁 folder1/" in captured.out
-        assert "📁 folder1/folder2/" in captured.out
+        assert "📁 /folder1/" in captured.out
+        assert "📁 /folder1/folder2/" in captured.out
 
     @patch("pydrime.upload_preview.format_workspace_display")
     def test_displays_file_with_size(self, mock_format_ws, tmp_path, capsys):
@@ -237,3 +237,56 @@ class TestDisplayUploadPreview:
         captured = capsys.readouterr()
         # Should show "projects/myproject/..." format
         assert "myproject" in captured.out
+
+    @patch("pydrime.upload_preview.format_workspace_display")
+    def test_folders_with_leading_slash_no_root_folder(
+        self, mock_format_ws, tmp_path, capsys
+    ):
+        """Test that paths with leading slash don't create a root '/' folder entry.
+
+        When uploading with paths like '/folder/file.txt', we should not display
+        '/' or '//' as a folder to create - only '/folder/' should be shown.
+        """
+        mock_format_ws.return_value = ("Personal (0)", None)
+        out = OutputFormatter(json_output=False, quiet=False)
+        mock_client = MagicMock()
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+
+        # Path with leading slash (common when using -r /folder/filename)
+        files = [(test_file, "/benchmark_folder/test.txt")]
+
+        display_upload_preview(out, mock_client, files, 0, None, None, is_dry_run=False)
+
+        captured = capsys.readouterr()
+
+        # Should show exactly 1 folder to create
+        assert "Folders to create: 1" in captured.out
+        # Should show the correct folder path
+        assert "📁 /benchmark_folder/" in captured.out
+        # Should NOT contain '//' (which would indicate root '/' was added)
+        assert "📁 //" not in captured.out
+
+    @patch("pydrime.upload_preview.format_workspace_display")
+    def test_folders_with_leading_slash_nested(self, mock_format_ws, tmp_path, capsys):
+        """Test nested paths with leading slash create correct folder structure."""
+        mock_format_ws.return_value = ("Personal (0)", None)
+        out = OutputFormatter(json_output=False, quiet=False)
+        mock_client = MagicMock()
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+
+        # Nested path with leading slash
+        files = [(test_file, "/a/b/c/test.txt")]
+
+        display_upload_preview(out, mock_client, files, 0, None, None, is_dry_run=False)
+
+        captured = capsys.readouterr()
+
+        # Should show 3 folders to create
+        assert "Folders to create: 3" in captured.out
+        assert "📁 /a/" in captured.out
+        assert "📁 /a/b/" in captured.out
+        assert "📁 /a/b/c/" in captured.out
+        # Should NOT contain '//'
+        assert "📁 //" not in captured.out

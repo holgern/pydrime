@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..api import DrimeClient
+from ..utils import DEFAULT_CHUNK_SIZE, DEFAULT_MULTIPART_THRESHOLD
 from .scanner import LocalFile, RemoteFile
 
 
@@ -23,8 +24,8 @@ class SyncOperations:
         local_file: LocalFile,
         remote_path: str,
         workspace_id: int = 0,
-        chunk_size: int = 25 * 1024 * 1024,
-        multipart_threshold: int = 30 * 1024 * 1024,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        multipart_threshold: int = DEFAULT_MULTIPART_THRESHOLD,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> Any:
         """Upload a local file to remote storage.

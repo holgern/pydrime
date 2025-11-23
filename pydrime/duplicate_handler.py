@@ -8,8 +8,8 @@ import click
 from .api import DrimeClient
 from .exceptions import DrimeAPIError
 from .file_entries_manager import FileEntriesManager
-from .models import _format_size
 from .output import OutputFormatter
+from .utils import format_size as _format_size
 
 
 class DuplicateHandler:
@@ -563,30 +563,6 @@ class DuplicateHandler:
                     f"      Error checking path '{rel_path}', skipping..."
                 )
             return False
-
-    def _get_files_in_folder_recursive(
-        self, folder_id: int, visited: Optional[set[int]] = None
-    ) -> set[str]:
-        """Get all file paths in a folder recursively.
-
-        DEPRECATED: This method is slow for large folders.
-        Use _file_exists_at_path instead.
-
-        Args:
-            folder_id: Folder ID to search
-            visited: Set of visited folder IDs to prevent infinite recursion
-
-        Returns:
-            Set of relative file paths within the folder
-        """
-        # Use FileEntriesManager for pagination handling
-        manager = FileEntriesManager(self.client, self.workspace_id)
-        entries_with_paths = manager.get_all_recursive(
-            folder_id=folder_id, visited=visited
-        )
-
-        # Convert to set of paths (files only, folders already filtered)
-        return {path for _, path in entries_with_paths}
 
     def _is_existing_folder(self, name: str) -> bool:
         """Check if name is an existing folder on server.

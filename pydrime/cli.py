@@ -2,7 +2,6 @@
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, cast
 
@@ -26,50 +25,10 @@ from .file_entries_manager import FileEntriesManager
 from .models import FileEntriesResult, FileEntry, SchemaValidationWarning, UserStatus
 from .output import OutputFormatter
 from .upload_preview import display_upload_preview
-from .utils import calculate_drime_hash
+from .utils import calculate_drime_hash, parse_iso_timestamp
 from .workspace_utils import format_workspace_display, get_folder_display_name
 
 logger = logging.getLogger(__name__)
-
-
-def parse_iso_timestamp(timestamp_str: Optional[str]) -> Optional[datetime]:
-    """Parse ISO format timestamp from Drime API.
-
-    Args:
-        timestamp_str: ISO format timestamp string (e.g., "2025-01-15T10:30:00.000000Z")
-
-    Returns:
-        datetime object in local timezone or None if parsing fails
-    """
-    if not timestamp_str:
-        return None
-
-    try:
-        # Handle various ISO formats
-        # The 'Z' suffix indicates UTC time
-        if timestamp_str.endswith("Z"):
-            timestamp_str = timestamp_str[:-1] + "+00:00"
-
-        # Try parsing with timezone
-        try:
-            dt = datetime.fromisoformat(timestamp_str)
-            # Convert to local time (naive datetime in local timezone)
-            if dt.tzinfo is not None:
-                # Convert to timestamp (UTC) then to local naive datetime
-                timestamp = dt.timestamp()
-                return datetime.fromtimestamp(timestamp)
-            return dt
-        except ValueError:
-            # Try without microseconds
-            if "." in timestamp_str:
-                timestamp_str = timestamp_str.split(".")[0] + "+00:00"
-            dt = datetime.fromisoformat(timestamp_str)
-            if dt.tzinfo is not None:
-                timestamp = dt.timestamp()
-                return datetime.fromtimestamp(timestamp)
-            return dt
-    except (ValueError, AttributeError):
-        return None
 
 
 def scan_directory(

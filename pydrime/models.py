@@ -2,8 +2,10 @@
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Optional
+
+from .utils import format_size as _format_size
+from .utils import parse_iso_timestamp as _parse_iso_timestamp
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -55,46 +57,6 @@ class SchemaValidationWarning:
     def has_warnings(cls) -> bool:
         """Check if there are any warnings."""
         return len(cls.warnings) > 0
-
-
-def _parse_iso_timestamp(timestamp_str: Optional[str]) -> Optional[datetime]:
-    """Parse ISO format timestamp from Drime API.
-
-    Args:
-        timestamp_str: ISO format timestamp string (e.g., "2025-01-15T10:30:00.000000Z")
-
-    Returns:
-        datetime object in local timezone or None if parsing fails
-    """
-    if not timestamp_str:
-        return None
-
-    try:
-        # Handle various ISO formats
-        # The 'Z' suffix indicates UTC time
-        if timestamp_str.endswith("Z"):
-            timestamp_str = timestamp_str[:-1] + "+00:00"
-
-        # Try parsing with timezone
-        try:
-            dt = datetime.fromisoformat(timestamp_str)
-            # Convert to local time (naive datetime in local timezone)
-            if dt.tzinfo is not None:
-                # Convert to timestamp (UTC) then to local naive datetime
-                timestamp = dt.timestamp()
-                return datetime.fromtimestamp(timestamp)
-            return dt
-        except ValueError:
-            # Try without microseconds
-            if "." in timestamp_str:
-                timestamp_str = timestamp_str.split(".")[0] + "+00:00"
-            dt = datetime.fromisoformat(timestamp_str)
-            if dt.tzinfo is not None:
-                timestamp = dt.timestamp()
-                return datetime.fromtimestamp(timestamp)
-            return dt
-    except (ValueError, AttributeError):
-        return None
 
 
 def _format_timestamp(timestamp_str: Optional[str]) -> str:
@@ -175,25 +137,6 @@ def _check_unexpected_fields(
             "unexpected_fields",
             f"New fields detected: {', '.join(sorted(unexpected))}",
         )
-
-
-def _format_size(size_bytes: int) -> str:
-    """Format file size in human-readable format.
-
-    Args:
-        size_bytes: Size in bytes
-
-    Returns:
-        Formatted size string
-    """
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    elif size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    elif size_bytes < 1024 * 1024 * 1024:
-        return f"{size_bytes / 1024 / 1024:.1f} MB"
-    else:
-        return f"{size_bytes / 1024 / 1024 / 1024:.1f} GB"
 
 
 @dataclass
