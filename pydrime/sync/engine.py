@@ -1179,6 +1179,155 @@ class SyncEngine:
 
         return stats
 
+    def _execute_upload_decisions(
+        self,
+        decisions: list[SyncDecision],
+        pair: SyncPair,
+        chunk_size: int,
+        multipart_threshold: int,
+        progress_callback: Optional[Callable[[int, int], None]],
+        max_workers: int = 1,
+        start_delay: float = 0.0,
+    ) -> dict:
+        """Execute upload decisions with parallel or sequential processing.
+
+        Args:
+            decisions: List of upload decisions to execute
+            pair: Sync pair configuration
+            chunk_size: Chunk size for multipart uploads
+            multipart_threshold: Threshold for multipart uploads
+            progress_callback: Optional progress callback
+            max_workers: Number of parallel workers (1 = sequential)
+            start_delay: Delay between starting parallel workers
+
+        Returns:
+            Dictionary with 'uploads' and 'errors' counts
+        """
+        stats = {"uploads": 0, "errors": 0}
+
+        if max_workers > 1 and len(decisions) > 1:
+            # Parallel execution
+            upload_stats = self._execute_decisions_parallel(
+                decisions,
+                pair,
+                chunk_size=chunk_size,
+                multipart_threshold=multipart_threshold,
+                progress_callback=progress_callback,
+                max_workers=max_workers,
+                start_delay=start_delay,
+            )
+            stats["uploads"] = upload_stats["uploads"]
+            stats["errors"] = len(decisions) - upload_stats["uploads"]
+        elif not self.output.quiet:
+            # Sequential with progress bar
+            with Progress() as progress:
+                task = progress.add_task("Uploading files...", total=len(decisions))
+                for decision in decisions:
+                    try:
+                        self._execute_single_decision(
+                            decision,
+                            pair,
+                            chunk_size,
+                            multipart_threshold,
+                            progress_callback,
+                        )
+                        stats["uploads"] += 1
+                    except Exception as e:
+                        stats["errors"] += 1
+                        self.output.error(
+                            f"Failed to upload {decision.relative_path}: {e}"
+                        )
+                    progress.update(task, advance=1)
+        else:
+            # Sequential without progress bar (quiet mode)
+            for decision in decisions:
+                try:
+                    self._execute_single_decision(
+                        decision,
+                        pair,
+                        chunk_size,
+                        multipart_threshold,
+                        progress_callback,
+                    )
+                    stats["uploads"] += 1
+                except Exception:
+                    stats["errors"] += 1
+
+        return stats
+
+    def _execute_download_decisions(
+        self,
+        decisions: list[SyncDecision],
+        pair: SyncPair,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        max_workers: int = 1,
+    ) -> dict:
+        """Execute download decisions with parallel or sequential processing.
+
+        Args:
+            decisions: List of download decisions to execute
+            pair: Sync pair configuration
+            progress_callback: Optional progress callback
+            max_workers: Number of parallel workers (1 = sequential)
+
+        Returns:
+            Dictionary with 'downloads' and 'errors' counts
+        """
+        stats = {"downloads": 0, "errors": 0}
+        # Standard chunk sizes for downloads
+        chunk_size = 25 * 1024 * 1024
+        multipart_threshold = 30 * 1024 * 1024
+
+        if max_workers > 1 and len(decisions) > 1:
+            # Parallel execution
+            download_stats = self._execute_decisions_parallel(
+                decisions,
+                pair,
+                chunk_size=chunk_size,
+                multipart_threshold=multipart_threshold,
+                progress_callback=progress_callback,
+                max_workers=max_workers,
+                start_delay=0.0,
+            )
+            stats["downloads"] = download_stats["downloads"]
+            stats["errors"] = len(decisions) - download_stats["downloads"]
+        elif not self.output.quiet:
+            # Sequential with progress bar
+            with Progress() as progress:
+                task = progress.add_task("Downloading files...", total=len(decisions))
+                for decision in decisions:
+                    try:
+                        self._execute_single_decision(
+                            decision,
+                            pair,
+                            chunk_size,
+                            multipart_threshold,
+                            progress_callback,
+                        )
+                        stats["downloads"] += 1
+                    except Exception as e:
+                        stats["errors"] += 1
+                        self.output.error(
+                            f"Failed to download {decision.relative_path}: {e}"
+                        )
+                    progress.update(task, advance=1)
+        else:
+            # Sequential without progress bar (quiet mode)
+            for decision in decisions:
+                try:
+                    self._execute_single_decision(
+                        decision,
+                        pair,
+                        chunk_size,
+                        multipart_threshold,
+                        progress_callback,
+                    )
+                    stats["downloads"] += 1
+                except Exception:
+                    stats["errors"] += 1
+
+        return stats
+
     def _display_summary(self, stats: dict, dry_run: bool) -> None:
         """Display sync summary.
 
@@ -1344,61 +1493,175 @@ class SyncEngine:
             workspace_id=workspace_id,
         )
 
-        # Execute downloads
-        if max_workers > 1 and len(download_decisions) > 1:
-            download_stats = self._execute_decisions_parallel(
-                download_decisions,
-                temp_pair,
-                chunk_size=25 * 1024 * 1024,
-                multipart_threshold=30 * 1024 * 1024,
-                progress_callback=progress_callback,
-                max_workers=max_workers,
-            )
-            stats["downloads"] = download_stats["downloads"]
-            stats["errors"] = len(download_decisions) - download_stats["downloads"]
-        else:
-            # Sequential execution with progress
-            if not self.output.quiet:
-                with Progress() as progress:
-                    task = progress.add_task(
-                        "Downloading files...", total=len(download_decisions)
-                    )
-                    for decision in download_decisions:
-                        try:
-                            self._execute_single_decision(
-                                decision,
-                                temp_pair,
-                                chunk_size=25 * 1024 * 1024,
-                                multipart_threshold=30 * 1024 * 1024,
-                                progress_callback=progress_callback,
-                            )
-                            stats["downloads"] += 1
-                        except Exception as e:
-                            stats["errors"] += 1
-                            if not self.output.quiet:
-                                self.output.error(
-                                    f"Failed to download {decision.relative_path}: {e}"
-                                )
-                        progress.update(task, advance=1)
-            else:
-                for decision in download_decisions:
-                    try:
-                        self._execute_single_decision(
-                            decision,
-                            temp_pair,
-                            chunk_size=25 * 1024 * 1024,
-                            multipart_threshold=30 * 1024 * 1024,
-                            progress_callback=progress_callback,
-                        )
-                        stats["downloads"] += 1
-                    except Exception:
-                        stats["errors"] += 1
+        # Execute downloads using the same pattern as upload_folder
+        download_stats = self._execute_download_decisions(
+            download_decisions,
+            temp_pair,
+            progress_callback=progress_callback,
+            max_workers=max_workers,
+        )
+        stats["downloads"] = download_stats["downloads"]
+        stats["errors"] = download_stats["errors"]
 
         # Display summary
         if not self.output.quiet:
             self.output.print("")
             self.output.success("Download complete!")
             self.output.info(f"  Downloaded: {stats['downloads']} file(s)")
+            if stats["skips"] > 0:
+                self.output.info(f"  Skipped: {stats['skips']} file(s)")
+            if stats["errors"] > 0:
+                self.output.warning(f"  Failed: {stats['errors']} file(s)")
+
+        return stats
+
+    def upload_folder(
+        self,
+        local_path: Path,
+        remote_path: str,
+        workspace_id: int = 0,
+        parent_id: Optional[int] = None,
+        max_workers: int = 1,
+        start_delay: float = 0.0,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        chunk_size: int = 25 * 1024 * 1024,
+        multipart_threshold: int = 30 * 1024 * 1024,
+        files_to_skip: Optional[set[str]] = None,
+        file_renames: Optional[dict[str, str]] = None,
+    ) -> dict:
+        """Upload a local folder using sync infrastructure.
+
+        This method provides a sync-based approach to folder uploads,
+        reusing the tested SyncEngine infrastructure for better reliability.
+
+        Args:
+            local_path: Local directory path to upload
+            remote_path: Remote path prefix for uploads (e.g., "folder/subfolder")
+            workspace_id: Workspace ID (0 for personal workspace)
+            parent_id: Optional parent folder ID in remote storage
+            max_workers: Number of parallel upload workers
+            start_delay: Delay in seconds between starting each parallel upload
+            progress_callback: Optional callback for progress updates
+            chunk_size: Chunk size for multipart uploads (bytes)
+            multipart_threshold: Threshold for using multipart upload (bytes)
+            files_to_skip: Set of relative paths to skip (for duplicate handling)
+            file_renames: Dict mapping original paths to renamed paths
+
+        Returns:
+            Dictionary with upload statistics:
+            - uploads: Number of files uploaded
+            - skips: Number of files skipped
+            - errors: Number of failed uploads
+
+        Examples:
+            >>> engine = SyncEngine(client)
+            >>> stats = engine.upload_folder(
+            ...     Path("/local/folder"),
+            ...     "remote_folder",
+            ...     max_workers=4
+            ... )
+            >>> print(f"Uploaded {stats['uploads']} files")
+        """
+        # Validate local path
+        if not local_path.exists():
+            raise ValueError(f"Local path does not exist: {local_path}")
+        if not local_path.is_dir():
+            raise ValueError(f"Local path is not a directory: {local_path}")
+
+        files_to_skip = files_to_skip or set()
+        file_renames = file_renames or {}
+
+        if not self.output.quiet:
+            self.output.info(f"Uploading folder: {local_path}")
+            self.output.info(f"Remote path: {remote_path}")
+            if max_workers > 1:
+                self.output.info(f"Parallel workers: {max_workers}")
+            self.output.print("")
+
+        # Scan local files
+        scanner = DirectoryScanner()
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Scanning local directory...", total=None)
+            local_files = scanner.scan_local(local_path)
+            progress.update(task, description=f"Found {len(local_files)} local file(s)")
+
+        if not local_files:
+            if not self.output.quiet:
+                self.output.info("No files found in local folder")
+            return {"uploads": 0, "skips": 0, "errors": 0}
+
+        # Filter skipped files and apply renames
+        upload_decisions: list[SyncDecision] = []
+        skipped_count = 0
+
+        for local_file in local_files:
+            rel_path = local_file.relative_path
+
+            # Check if file should be skipped
+            if rel_path in files_to_skip:
+                skipped_count += 1
+                if not self.output.quiet:
+                    self.output.info(f"Skipping: {rel_path}")
+                continue
+
+            # Apply rename if specified
+            upload_path = file_renames.get(rel_path, rel_path)
+
+            # Create upload decision
+            decision = SyncDecision(
+                action=SyncAction.UPLOAD,
+                reason="New local file",
+                local_file=local_file,
+                remote_file=None,
+                relative_path=upload_path,
+            )
+            upload_decisions.append(decision)
+
+        if not self.output.quiet:
+            self.output.info(f"Files to upload: {len(upload_decisions)}")
+            if skipped_count > 0:
+                self.output.info(f"Files to skip: {skipped_count}")
+            self.output.print("")
+
+        # Track statistics
+        stats = {"uploads": 0, "skips": skipped_count, "errors": 0}
+
+        if not upload_decisions:
+            if not self.output.quiet:
+                self.output.info("No files to upload")
+            return stats
+
+        # Create a temporary pair for execution
+        temp_pair = SyncPair(
+            local=local_path,
+            remote=remote_path,
+            sync_mode=SyncMode.LOCAL_BACKUP,
+            workspace_id=workspace_id,
+        )
+
+        # Execute uploads
+        upload_stats = self._execute_upload_decisions(
+            upload_decisions,
+            temp_pair,
+            chunk_size=chunk_size,
+            multipart_threshold=multipart_threshold,
+            progress_callback=progress_callback,
+            max_workers=max_workers,
+            start_delay=start_delay,
+        )
+        stats["uploads"] = upload_stats["uploads"]
+        stats["errors"] = upload_stats["errors"]
+
+        # Display summary
+        if not self.output.quiet:
+            self.output.print("")
+            self.output.success("Upload complete!")
+            self.output.info(f"  Uploaded: {stats['uploads']} file(s)")
             if stats["skips"] > 0:
                 self.output.info(f"  Skipped: {stats['skips']} file(s)")
             if stats["errors"] > 0:
