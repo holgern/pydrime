@@ -2,6 +2,7 @@
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Optional
 
 # Set up logging
@@ -54,6 +55,63 @@ class SchemaValidationWarning:
     def has_warnings(cls) -> bool:
         """Check if there are any warnings."""
         return len(cls.warnings) > 0
+
+
+def _parse_iso_timestamp(timestamp_str: Optional[str]) -> Optional[datetime]:
+    """Parse ISO format timestamp from Drime API.
+
+    Args:
+        timestamp_str: ISO format timestamp string (e.g., "2025-01-15T10:30:00.000000Z")
+
+    Returns:
+        datetime object in local timezone or None if parsing fails
+    """
+    if not timestamp_str:
+        return None
+
+    try:
+        # Handle various ISO formats
+        # The 'Z' suffix indicates UTC time
+        if timestamp_str.endswith("Z"):
+            timestamp_str = timestamp_str[:-1] + "+00:00"
+
+        # Try parsing with timezone
+        try:
+            dt = datetime.fromisoformat(timestamp_str)
+            # Convert to local time (naive datetime in local timezone)
+            if dt.tzinfo is not None:
+                # Convert to timestamp (UTC) then to local naive datetime
+                timestamp = dt.timestamp()
+                return datetime.fromtimestamp(timestamp)
+            return dt
+        except ValueError:
+            # Try without microseconds
+            if "." in timestamp_str:
+                timestamp_str = timestamp_str.split(".")[0] + "+00:00"
+            dt = datetime.fromisoformat(timestamp_str)
+            if dt.tzinfo is not None:
+                timestamp = dt.timestamp()
+                return datetime.fromtimestamp(timestamp)
+            return dt
+    except (ValueError, AttributeError):
+        return None
+
+
+def _format_timestamp(timestamp_str: Optional[str]) -> str:
+    """Format a timestamp string for display without trailing zeros.
+
+    Args:
+        timestamp_str: ISO format timestamp string
+
+    Returns:
+        Formatted timestamp string without microseconds or "-" if parsing fails
+    """
+    dt = _parse_iso_timestamp(timestamp_str)
+    if dt is None:
+        return "-"
+
+    # Format as YYYY-MM-DD HH:MM:SS without microseconds
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _validate_field(
@@ -970,9 +1028,7 @@ class FileEntriesResult:
                     "parent_id": str(entry.parent_id)
                     if entry.parent_id is not None
                     else "-",
-                    "created": entry.created_at.split("T")[0]
-                    if entry.created_at
-                    else "-",
+                    "created": _format_timestamp(entry.created_at),
                 }
             )
         return table_data
@@ -991,7 +1047,7 @@ class FileEntriesResult:
                 "hash": entry.hash,
                 "size": entry.format_size(),
                 "parent_id": entry.parent_id,
-                "created": entry.created_at,
+                "created": _format_timestamp(entry.created_at),
                 "owner": entry.owner.email if entry.owner else None,
                 "public": entry.is_public,
                 "deleted": entry.is_deleted,

@@ -47,8 +47,9 @@ class FileEntriesManager:
 
         try:
             while True:
+                # Note: parent_ids=[None] should list root, parent_ids=None lists all
                 result = self.client.get_file_entries(
-                    parent_ids=[folder_id] if folder_id is not None else None,
+                    parent_ids=[folder_id] if folder_id is not None else [None],
                     workspace_id=self.workspace_id,
                     per_page=per_page,
                     page=current_page,
@@ -199,17 +200,10 @@ class FileEntriesManager:
             FileEntry if found, None otherwise
         """
         if parent_id is not None:
-            # Use API search with parent_ids filter for efficiency
-            # This avoids fetching all entries in the parent folder
-            result = self.client.get_file_entries(
-                query=folder_name,
-                entry_type="folder",
-                parent_ids=[parent_id],
-                workspace_id=self.workspace_id,
-            )
-            entries_result = FileEntriesResult.from_api_response(result)
-            # Find exact match (API search may return partial matches)
-            for entry in entries_result.entries:
+            # Get all entries in the parent folder and search for exact name match
+            # This is more reliable than using the query API which may have issues
+            entries = self.get_all_in_folder(folder_id=parent_id, use_cache=False)
+            for entry in entries:
                 if entry.name == folder_name and entry.is_folder:
                     return entry
         else:
