@@ -260,6 +260,41 @@ class DrimeClient:
     # Upload Operations
     # =========================
 
+    def _detect_mime_type(self, file_path: Path) -> str:
+        """Detect MIME type of a file.
+
+        Args:
+            file_path: Path to the file
+
+        Returns:
+            MIME type string (defaults to 'application/octet-stream' if detection fails)
+        """
+        import mimetypes
+
+        mime_type = None
+
+        # Try python-magic first for more accurate detection
+        try:
+            import magic  # type: ignore
+
+            try:
+                mime_type = magic.from_file(str(file_path), mime=True)
+            except Exception:
+                mime_type = None
+        except ImportError:
+            # python-magic not installed, skip
+            pass
+
+        # Fall back to mimetypes module if magic didn't work
+        if not mime_type:
+            mime_type, _ = mimetypes.guess_type(str(file_path))
+
+        # Default to octet-stream if still no MIME type
+        if not mime_type:
+            mime_type = "application/octet-stream"
+
+        return mime_type
+
     def validate_uploads(
         self,
         files: list[dict[str, Any]],
@@ -360,7 +395,6 @@ class DrimeClient:
             DrimeAPIError: If upload fails
         """
         import math
-        import mimetypes
 
         if not file_path.exists():
             raise DrimeFileNotFoundError(str(file_path))
@@ -370,26 +404,8 @@ class DrimeClient:
         extension = file_path.suffix.lstrip(".")
         num_parts = math.ceil(file_size / chunk_size)
 
-        # Detect MIME type - try python-magic first, then fall back to mimetypes
-        mime_type = None
-        try:
-            import magic  # type: ignore
-
-            try:
-                mime_type = magic.from_file(str(file_path), mime=True)
-            except Exception:
-                mime_type = None
-        except ImportError:
-            # python-magic not installed, skip
-            pass
-
-        # Fall back to mimetypes module if magic didn't work
-        if not mime_type:
-            mime_type, _ = mimetypes.guess_type(str(file_path))
-
-        # Default to octet-stream if still no MIME type
-        if not mime_type:
-            mime_type = "application/octet-stream"
+        # Detect MIME type
+        mime_type = self._detect_mime_type(file_path)
 
         # Initialize multipart upload
         init_data = {
@@ -557,11 +573,14 @@ class DrimeClient:
         # Simple upload for smaller files
         endpoint = "/uploads"
 
+        # Detect MIME type
+        mime_type = self._detect_mime_type(file_path)
+
         # For small files, progress tracking doesn't work well with requests library
         # as it reads the entire file at once. Progress is only tracked for large files
         # using multipart upload.
         with open(file_path, "rb") as f:
-            files = {"file": (file_path.name, f)}
+            files = {"file": (file_path.name, f, mime_type)}
             data: dict[str, Any] = {}
 
             if parent_id is not None:

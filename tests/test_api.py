@@ -800,6 +800,169 @@ class TestUploadValidation:
         )
 
 
+class TestMimeTypeDetection:
+    """Tests for MIME type detection."""
+
+    def test_detect_mime_type_text_file(self):
+        """Test MIME type detection for text file."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("test content")
+            test_file = Path(f.name)
+
+        try:
+            client = DrimeClient(api_key="test_key")
+            mime_type = client._detect_mime_type(test_file)
+
+            # Should detect text/plain
+            assert mime_type == "text/plain"
+        finally:
+            test_file.unlink()
+
+    def test_detect_mime_type_json_file(self):
+        """Test MIME type detection for JSON file."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write('{"test": "data"}')
+            test_file = Path(f.name)
+
+        try:
+            client = DrimeClient(api_key="test_key")
+            mime_type = client._detect_mime_type(test_file)
+
+            # Should detect application/json
+            assert mime_type == "application/json"
+        finally:
+            test_file.unlink()
+
+    def test_detect_mime_type_binary_file(self):
+        """Test MIME type detection for binary file."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".bin", delete=False) as f:
+            f.write(b"\x00\x01\x02\x03")
+            test_file = Path(f.name)
+
+        try:
+            client = DrimeClient(api_key="test_key")
+            mime_type = client._detect_mime_type(test_file)
+
+            # Should detect application/octet-stream as fallback
+            assert mime_type == "application/octet-stream"
+        finally:
+            test_file.unlink()
+
+    def test_detect_mime_type_unknown_extension(self):
+        """Test MIME type detection for file with unknown extension."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".unknownext", delete=False
+        ) as f:
+            f.write("test content")
+            test_file = Path(f.name)
+
+        try:
+            client = DrimeClient(api_key="test_key")
+            mime_type = client._detect_mime_type(test_file)
+
+            # Should fall back to application/octet-stream
+            assert mime_type == "application/octet-stream"
+        finally:
+            test_file.unlink()
+
+    def test_detect_mime_type_no_extension(self):
+        """Test MIME type detection for file without extension."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix="", delete=False) as f:
+            f.write("test content")
+            test_file = Path(f.name)
+
+        try:
+            client = DrimeClient(api_key="test_key")
+            mime_type = client._detect_mime_type(test_file)
+
+            # Should return some mime type or fallback
+            assert mime_type is not None
+            assert isinstance(mime_type, str)
+        finally:
+            test_file.unlink()
+
+    @patch("pydrime.api.DrimeClient._detect_mime_type")
+    @patch("pydrime.api.DrimeClient._request")
+    def test_upload_file_uses_mime_detection_small_file(
+        self, mock_request, mock_detect_mime
+    ):
+        """Test that upload_file uses MIME detection for small files."""
+        import tempfile
+        from pathlib import Path
+
+        mock_detect_mime.return_value = "text/plain"
+        mock_request.return_value = {"status": "success", "fileEntry": {"id": 123}}
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("small file")
+            test_file = Path(f.name)
+
+        try:
+            client = DrimeClient(api_key="test_key")
+            # Upload small file (below multipart threshold)
+            client.upload_file(test_file, use_multipart_threshold=1024 * 1024)
+
+            # Verify MIME detection was called
+            mock_detect_mime.assert_called_once_with(test_file)
+        finally:
+            test_file.unlink()
+
+    @patch("pydrime.api.DrimeClient._detect_mime_type")
+    @patch("pydrime.api.DrimeClient._request")
+    def test_upload_file_multipart_uses_mime_detection(
+        self, mock_request, mock_detect_mime
+    ):
+        """Test that upload_file_multipart uses MIME detection."""
+        import tempfile
+        from pathlib import Path
+
+        mock_detect_mime.return_value = "application/octet-stream"
+        mock_request.side_effect = [
+            {"uploadId": "test-upload-id", "key": "test-key"},
+            {"urls": [{"partNumber": 1, "url": "https://s3.example.com/upload"}]},
+            {},  # complete response
+            {"status": "success", "fileEntry": {"id": 123}},  # entry creation
+        ]
+
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".bin", delete=False) as f:
+            # Create a file larger than 1MB to trigger multipart
+            f.write(b"x" * (2 * 1024 * 1024))
+            test_file = Path(f.name)
+
+        try:
+            with patch("pydrime.api.requests.put") as mock_put:
+                mock_put_response = Mock()
+                mock_put_response.headers = {"ETag": "test-etag"}
+                mock_put.return_value = mock_put_response
+
+                client = DrimeClient(api_key="test_key")
+                # Upload with low threshold to trigger multipart
+                client.upload_file(
+                    test_file,
+                    use_multipart_threshold=1 * 1024 * 1024,  # 1MB
+                )
+
+                # Verify MIME detection was called
+                mock_detect_mime.assert_called_once_with(test_file)
+        finally:
+            test_file.unlink()
+
+
 class TestExceptions:
     """Tests for exception classes."""
 
