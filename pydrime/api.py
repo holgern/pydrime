@@ -1,5 +1,6 @@
 """API client for Drime Cloud."""
 
+import time
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional
 
@@ -27,15 +28,25 @@ Permission = Literal["view", "edit", "download"]
 class DrimeClient:
     """Client for interacting with Drime Cloud API."""
 
-    def __init__(self, api_key: Optional[str] = None, api_url: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        api_url: Optional[str] = None,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
+    ):
         """Initialize Drime API client.
 
         Args:
             api_key: Optional API key (uses config if not provided)
             api_url: Optional API URL (uses config if not provided)
+            max_retries: Maximum number of retry attempts (default: 3)
+            retry_delay: Initial delay between retries in seconds (default: 1.0)
         """
         self.api_key = api_key or config.api_key
         self.api_url = api_url or config.api_url
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
 
         if not self.api_key:
             raise DrimeConfigError(
@@ -49,8 +60,119 @@ class DrimeClient:
             }
         )
 
+    def _should_retry(self, exception: Exception, attempt: int) -> bool:
+        """Determine if a request should be retried.
+
+        Args:
+            exception: The exception that occurred
+            attempt: Current attempt number (0-based)
+
+        Returns:
+            True if the request should be retried, False otherwise
+        """
+        # Don't retry if we've exhausted our attempts
+        if attempt >= self.max_retries:
+            return False
+
+        # Retry on network errors (transient failures)
+        if isinstance(exception, DrimeNetworkError):
+            return True
+
+        # Retry on rate limit errors
+        if isinstance(exception, DrimeRateLimitError):
+            return True
+
+        # Retry on server errors (5xx status codes)
+        if isinstance(exception, requests.exceptions.HTTPError):
+            if exception.response is not None:
+                status_code = exception.response.status_code
+                # Retry on server errors (500-599)
+                if 500 <= status_code < 600:
+                    return True
+
+        # Don't retry on client errors (authentication, permission, etc.)
+        return False
+
+    def _calculate_retry_delay(self, attempt: int) -> float:
+        """Calculate delay before next retry using exponential backoff.
+
+        Args:
+            attempt: Current attempt number (0-based)
+
+        Returns:
+            Delay in seconds
+        """
+        # Exponential backoff: retry_delay * (2 ** attempt)
+        # With jitter to avoid thundering herd
+        import random
+
+        base_delay = self.retry_delay * (2**attempt)
+        # Add jitter: +/- 25% of base delay
+        jitter = base_delay * 0.25 * (2 * random.random() - 1)
+        return base_delay + jitter
+
+    def _handle_http_error(
+        self, e: requests.exceptions.HTTPError, attempt: int
+    ) -> tuple[Exception, bool]:
+        """Handle HTTP errors and determine if retry should occur.
+
+        Args:
+            e: The HTTP error exception
+            attempt: Current attempt number
+
+        Returns:
+            Tuple of (exception to raise, should_retry)
+        """
+        status_code = e.response.status_code if e.response is not None else None
+
+        # Handle common HTTP status codes with user-friendly messages
+        if status_code == 401:
+            raise DrimeAuthenticationError(
+                "Invalid API key or unauthorized access"
+            ) from e
+        elif status_code == 403:
+            raise DrimePermissionError(
+                "Access forbidden - check your permissions"
+            ) from e
+        elif status_code == 404:
+            raise DrimeNotFoundError("Resource not found") from e
+        elif status_code == 429:
+            error = DrimeRateLimitError("Rate limit exceeded - please try again later")
+            # Always retry rate limits if we haven't exhausted retries
+            should_retry = attempt < self.max_retries
+            return (error, should_retry)
+        else:
+            error_msg = f"API request failed with status {status_code}"
+
+            # Try to extract more details from response body
+            try:
+                if e.response is not None and e.response.content:
+                    error_data = e.response.json()
+                    if isinstance(error_data, dict):
+                        # Try to extract error message from common fields
+                        msg = (
+                            error_data.get("message")
+                            or error_data.get("error")
+                            or error_data.get("detail")
+                        )
+                        if msg:
+                            error_msg = f"{error_msg}: {msg}"
+            except Exception:
+                # If we can't parse the error response, use the
+                # status-based message
+                pass
+
+            error = DrimeAPIError(error_msg)
+            # Retry on 5xx server errors
+            should_retry = (
+                status_code is not None
+                and 500 <= status_code < 600
+                and attempt < self.max_retries
+            )
+            return (error, should_retry)
+
     def _request(self, method: str, endpoint: str, **kwargs: Any) -> Any:
-        """Make an API request.
+        """Make an API request with retry logic.
 
         Args:
             method: HTTP method
@@ -61,86 +183,78 @@ class DrimeClient:
             Response JSON data
 
         Raises:
-            DrimeAPIError: If the request fails
+            DrimeAPIError: If the request fails after all retries
         """
         url = f"{self.api_url}/{endpoint.lstrip('/')}"
+        last_exception: Optional[Exception] = None
 
-        try:
-            response = self.session.request(method, url, **kwargs)
-            response.raise_for_status()
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.session.request(method, url, **kwargs)
+                response.raise_for_status()
 
-            # Check if response is JSON
-            content_type = response.headers.get("Content-Type", "")
-            if response.content and "application/json" not in content_type:
-                # Server returned non-JSON response (likely HTML error page)
-                # This often means authentication failed
-                if "text/html" in content_type:
-                    raise DrimeAuthenticationError(
-                        "Invalid API key - server returned HTML instead of JSON"
-                    )
-                raise DrimeInvalidResponseError(
-                    f"Unexpected response type: {content_type}"
-                )
-
-            # Try to parse JSON response
-            if response.content:
-                try:
-                    return response.json()
-                except ValueError as e:
-                    # Response is not valid JSON
+                # Check if response is JSON
+                content_type = response.headers.get("Content-Type", "")
+                if response.content and "application/json" not in content_type:
+                    # Server returned non-JSON response (likely HTML error page)
+                    # This often means authentication failed
+                    if "text/html" in content_type:
+                        raise DrimeAuthenticationError(
+                            "Invalid API key - server returned HTML instead of JSON"
+                        )
                     raise DrimeInvalidResponseError(
-                        "Invalid JSON response from server - "
-                        "check your API key and network connection"
-                    ) from e
-            return {}
+                        f"Unexpected response type: {content_type}"
+                    )
 
-        except requests.exceptions.HTTPError as e:
-            # Try to get error message from response
-            # Note: e.response can be a Response object that evaluates to False
-            # if the status code indicates an error, so we must check "is not None"
-            status_code = e.response.status_code if e.response is not None else None
+                # Try to parse JSON response
+                if response.content:
+                    try:
+                        return response.json()
+                    except ValueError as e:
+                        # Response is not valid JSON
+                        raise DrimeInvalidResponseError(
+                            "Invalid JSON response from server - "
+                            "check your API key and network connection"
+                        ) from e
+                return {}
 
-            # Handle common HTTP status codes with user-friendly messages
-            if status_code == 401:
-                raise DrimeAuthenticationError(
-                    "Invalid API key or unauthorized access"
-                ) from e
-            elif status_code == 403:
-                raise DrimePermissionError(
-                    "Access forbidden - check your permissions"
-                ) from e
-            elif status_code == 404:
-                raise DrimeNotFoundError("Resource not found") from e
-            elif status_code == 429:
-                raise DrimeRateLimitError(
-                    "Rate limit exceeded - please try again later"
-                ) from e
-            else:
-                error_msg = f"API request failed with status {status_code}"
+            except requests.exceptions.HTTPError as e:
+                error, should_retry = self._handle_http_error(e, attempt)
+                last_exception = error
 
-                # Try to extract more details from response body
-                try:
-                    if e.response is not None and e.response.content:
-                        error_data = e.response.json()
-                        if isinstance(error_data, dict):
-                            # Try to extract error message from common fields
-                            msg = (
-                                error_data.get("message")
-                                or error_data.get("error")
-                                or error_data.get("detail")
-                            )
-                            if msg:
-                                error_msg = f"{error_msg}: {msg}"
-                except Exception:
-                    # If we can't parse the error response, use the status-based message
-                    pass
+                if should_retry:
+                    # Special handling for rate limits: use Retry-After header
+                    if isinstance(error, DrimeRateLimitError):
+                        if e.response is not None:
+                            retry_after = e.response.headers.get("Retry-After")
+                            if retry_after and retry_after.isdigit():
+                                delay = float(retry_after)
+                            else:
+                                delay = self._calculate_retry_delay(attempt)
+                        else:
+                            delay = self._calculate_retry_delay(attempt)
+                    else:
+                        delay = self._calculate_retry_delay(attempt)
+                    time.sleep(delay)
+                    continue
+                raise error from e
+            except DrimeAPIError:
+                # Re-raise our own exceptions
+                # (don't retry authentication/permission errors)
+                raise
+            except requests.exceptions.RequestException as e:
+                error = DrimeNetworkError(f"Network error: {e}")
+                last_exception = error
+                if self._should_retry(error, attempt):
+                    delay = self._calculate_retry_delay(attempt)
+                    time.sleep(delay)
+                    continue
+                raise error from e
 
-                raise DrimeAPIError(error_msg) from e
-        except DrimeAPIError:
-            # Re-raise our own exceptions
-            raise
-        except requests.exceptions.RequestException as e:
-            raise DrimeNetworkError(f"Network error: {e}") from e
+        # If we get here, we've exhausted all retries
+        if last_exception:
+            raise last_exception
+        raise DrimeAPIError("Request failed after all retry attempts")
 
     # =========================
     # Upload Operations
