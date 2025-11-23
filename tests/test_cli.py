@@ -3662,6 +3662,7 @@ class TestSyncCommand:
         assert result.exit_code != 0  # Should fail with any non-zero exit code
         assert (
             "not a directory" in result.output.lower()
+            or "does not exist" in result.output.lower()
             or "usage:" in result.output.lower()
         )
 

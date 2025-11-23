@@ -1743,7 +1743,7 @@ def download(
 
 
 @main.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=str)
 @click.option("--remote-path", "-r", help="Remote destination path")
 @click.option(
     "--workspace",
@@ -1795,32 +1795,47 @@ def sync(
 ) -> None:
     """Sync files between local directory and Drime Cloud.
 
-    PATH: Local directory to sync
+    PATH: Local directory to sync OR literal sync pair in format:
+          /local/path:syncMode:/remote/path
 
-    Automatically syncs files based on modification time and size:
-    - Uploads new local files
-    - Downloads new cloud files
-    - For existing files: newer file wins (based on modification time)
-    - Files with same timestamp but different size are flagged as conflicts
-
-    No user interaction required - all decisions are made automatically.
+    Sync Modes:
+      - twoWay (tw): Mirror every action in both directions
+      - localToCloud (ltc): Mirror local actions to cloud only
+      - localBackup (lb): Upload to cloud, never delete
+      - cloudToLocal (ctl): Mirror cloud actions to local only
+      - cloudBackup (cb): Download from cloud, never delete
 
     Examples:
-        pydrime sync ./my_folder                    # Sync folder bidirectionally
-        pydrime sync ./docs -r remote_docs          # Sync with remote path
+        # Directory path with default two-way sync
+        pydrime sync ./my_folder
+        pydrime sync ./docs -r remote_docs
+
+        # Literal sync pairs with explicit modes
+        pydrime sync /home/user/docs:twoWay:/Documents
+        pydrime sync /home/user/pics:localToCloud:/Pictures
+        pydrime sync ./local:localBackup:/Backup
+        pydrime sync ./data:cloudToLocal:/CloudData
+        pydrime sync ./archive:cloudBackup:/Archive
+
+        # With abbreviations
+        pydrime sync /home/user/pics:tw:/Pictures
+        pydrime sync ./backup:ltc:/CloudBackup
+        pydrime sync ./local:lb:/Backup
+
+        # Other options
         pydrime sync . -w 5                         # Sync in workspace 5
         pydrime sync ./data --dry-run               # Preview sync changes
-        pydrime sync ./large_folder -j 4            # Parallel sync with 4 workers
+        pydrime sync /local:tw:/remote -j 4         # Parallel with 4 workers
     """
     from .sync import SyncEngine, SyncMode, SyncPair
 
     out: OutputFormatter = ctx.obj["out"]
-    local_path = Path(path)
 
-    # Validate path is a directory
-    if not local_path.is_dir():
-        out.error("PATH must be a directory for syncing")
-        ctx.exit(1)
+    # Detect if path is a literal sync pair format
+    # Format: /local:mode:/remote (3 parts) or /local:/remote (2 parts)
+    # A path is a literal pair if it has at least 1 colon and splits into 2 or 3 parts
+    parts = path.split(":")
+    is_literal_pair = len(parts) >= 2 and len(parts) <= 3
 
     # Validate and convert MB to bytes
     if chunk_size < 5:
@@ -1849,21 +1864,47 @@ def sync(
     # Initialize client
     client = DrimeClient(api_key=api_key)
 
-    # Determine remote path
-    if remote_path is None:
-        # Use folder name as remote path
-        remote_path = local_path.name
+    # Parse path and create sync pair
+    if is_literal_pair:
+        # Path is a literal sync pair: /local:mode:/remote
+        if remote_path is not None:
+            out.error(
+                "Cannot use --remote-path with literal sync pair format. "
+                "Use '/local:mode:/remote' format instead."
+            )
+            ctx.exit(1)
 
-    if not out.quiet:
-        # Show workspace information
-        workspace_display, _ = format_workspace_display(client, workspace)
-        out.info(f"Workspace: {workspace_display}")
-        if remote_path:
-            out.info(f"Remote path: {remote_path}")
-        out.info("")  # Empty line for readability
+        try:
+            pair = SyncPair.parse_literal(path)
+            pair.workspace_id = workspace
+            local_path = pair.local
 
-    try:
-        # Create sync pair
+            if not out.quiet:
+                out.info(f"Parsed sync pair: {pair.sync_mode.value}")
+                out.info(f"  Local:  {pair.local}")
+                out.info(f"  Remote: {pair.remote}")
+        except ValueError as e:
+            out.error(f"Invalid sync pair format: {e}")
+            ctx.exit(1)
+    else:
+        # Path is a simple directory path
+        local_path = Path(path)
+
+        # Validate path exists and is a directory
+        if not local_path.exists():
+            out.error(f"Path does not exist: {path}")
+            ctx.exit(1)
+
+        if not local_path.is_dir():
+            out.error(f"Path is not a directory: {path}")
+            ctx.exit(1)
+
+        # Determine remote path
+        if remote_path is None:
+            # Use folder name as remote path
+            remote_path = local_path.name
+
+        # Create sync pair with TWO_WAY as default
         pair = SyncPair(
             local=local_path,
             remote=remote_path,
@@ -1871,6 +1912,16 @@ def sync(
             workspace_id=workspace,
         )
 
+    if not out.quiet:
+        # Show workspace information
+        workspace_display, _ = format_workspace_display(client, workspace)
+        out.info(f"Workspace: {workspace_display}")
+        out.info(f"Sync mode: {pair.sync_mode.value}")
+        out.info(f"Local path: {pair.local}")
+        out.info(f"Remote path: {pair.remote}")
+        out.info("")  # Empty line for readability
+
+    try:
         # Create output formatter for engine (respect no_progress)
         engine_out = OutputFormatter(
             json_output=out.json_output, quiet=no_progress or out.quiet

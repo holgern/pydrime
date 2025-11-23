@@ -212,3 +212,84 @@ class TestSyncPair:
         assert "local=" in result
         assert "remote=" in result
         assert "sync_mode=" in result
+
+
+class TestSyncPairLiteralParsing:
+    """Comprehensive tests for literal sync pair parsing with all 5 sync modes."""
+
+    def test_parse_literal_two_way_shorthand(self):
+        """Test parsing two-way sync with shorthand notation."""
+        pair = SyncPair.parse_literal("./local:/remote")
+        assert str(pair.local) == "local"
+        assert pair.remote == "remote"
+        assert pair.sync_mode == SyncMode.TWO_WAY
+
+    def test_parse_literal_two_way_full_name(self):
+        """Test parsing two-way sync with full mode name."""
+        pair = SyncPair.parse_literal("./local:twoWay:/remote")
+        assert str(pair.local) == "local"
+        assert pair.remote == "remote"
+        assert pair.sync_mode == SyncMode.TWO_WAY
+
+    def test_parse_literal_two_way_abbreviation(self):
+        """Test parsing two-way sync with abbreviation."""
+        pair = SyncPair.parse_literal("./local:tw:/remote")
+        assert str(pair.local) == "local"
+        assert pair.remote == "remote"
+        assert pair.sync_mode == SyncMode.TWO_WAY
+
+    def test_parse_literal_local_to_cloud_full_name(self):
+        """Test parsing local-to-cloud sync with full mode name."""
+        pair = SyncPair.parse_literal("./local:localToCloud:/remote")
+        assert str(pair.local) == "local"
+        assert pair.remote == "remote"
+        assert pair.sync_mode == SyncMode.LOCAL_TO_CLOUD
+
+    def test_parse_literal_local_to_cloud_abbreviation(self):
+        """Test parsing local-to-cloud sync with abbreviation."""
+        pair = SyncPair.parse_literal("./local:ltc:/remote")
+        assert str(pair.local) == "local"
+        assert pair.remote == "remote"
+        assert pair.sync_mode == SyncMode.LOCAL_TO_CLOUD
+
+    def test_parse_literal_local_backup_full_name(self):
+        """Test parsing local backup sync with full mode name."""
+        pair = SyncPair.parse_literal("./local:localBackup:/remote")
+        assert str(pair.local) == "local"
+        assert pair.remote == "remote"
+        assert pair.sync_mode == SyncMode.LOCAL_BACKUP
+
+    def test_parse_literal_local_backup_abbreviation(self):
+        """Test parsing local backup sync with abbreviation."""
+        pair = SyncPair.parse_literal("./local:lb:/remote")
+        assert str(pair.local) == "local"
+        assert pair.remote == "remote"
+        assert pair.sync_mode == SyncMode.LOCAL_BACKUP
+
+    def test_parse_literal_cloud_to_local_full_name(self):
+        """Test parsing cloud-to-local sync with full mode name."""
+        pair = SyncPair.parse_literal("./local:cloudToLocal:/remote")
+        assert str(pair.local) == "local"
+        assert pair.remote == "remote"
+        assert pair.sync_mode == SyncMode.CLOUD_TO_LOCAL
+
+    def test_parse_literal_cloud_to_local_abbreviation(self):
+        """Test parsing cloud-to-local sync with abbreviation."""
+        pair = SyncPair.parse_literal("./local:ctl:/remote")
+        assert str(pair.local) == "local"
+        assert pair.remote == "remote"
+        assert pair.sync_mode == SyncMode.CLOUD_TO_LOCAL
+
+    def test_parse_literal_cloud_backup_full_name(self):
+        """Test parsing cloud backup sync with full mode name."""
+        pair = SyncPair.parse_literal("./local:cloudBackup:/remote")
+        assert str(pair.local) == "local"
+        assert pair.remote == "remote"
+        assert pair.sync_mode == SyncMode.CLOUD_BACKUP
+
+    def test_parse_literal_cloud_backup_abbreviation(self):
+        """Test parsing cloud backup sync with abbreviation."""
+        pair = SyncPair.parse_literal("./local:cb:/remote")
+        assert str(pair.local) == "local"
+        assert pair.remote == "remote"
+        assert pair.sync_mode == SyncMode.CLOUD_BACKUP
