@@ -828,6 +828,709 @@ class TestWorkspacesCommand:
         assert "No workspaces found" in result.output
 
 
+class TestFoldersCommand:
+    """Tests for the folders command."""
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_folders_list(self, mock_config, mock_client_class, runner):
+        """Test listing folders."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_logged_user.return_value = {
+            "user": {"id": 123, "email": "test@example.com"}
+        }
+        mock_client.get_user_folders.return_value = {
+            "folders": [
+                {
+                    "id": 1,
+                    "name": "Documents",
+                    "parent_id": None,
+                    "path": "/Documents",
+                },
+                {
+                    "id": 2,
+                    "name": "Photos",
+                    "parent_id": None,
+                    "path": "/Photos",
+                },
+                {
+                    "id": 3,
+                    "name": "Work",
+                    "parent_id": 1,
+                    "path": "/Documents/Work",
+                },
+            ]
+        }
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["folders"])
+
+        assert result.exit_code == 0
+        assert "Documents" in result.output
+        assert "Photos" in result.output
+        assert "Work" in result.output
+        mock_client.get_user_folders.assert_called_once_with(123, 0)
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_folders_with_workspace(self, mock_config, mock_client_class, runner):
+        """Test listing folders in a specific workspace."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_logged_user.return_value = {
+            "user": {"id": 456, "email": "test@example.com"}
+        }
+        mock_client.get_user_folders.return_value = {
+            "folders": [
+                {
+                    "id": 10,
+                    "name": "Shared Folder",
+                    "parent_id": None,
+                    "path": "/Shared Folder",
+                }
+            ]
+        }
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["folders", "--workspace", "5"])
+
+        assert result.exit_code == 0
+        assert "Shared Folder" in result.output
+        mock_client.get_user_folders.assert_called_once_with(456, 5)
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_folders_empty(self, mock_config, mock_client_class, runner):
+        """Test listing folders when none exist."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_logged_user.return_value = {
+            "user": {"id": 123, "email": "test@example.com"}
+        }
+        mock_client.get_user_folders.return_value = {"folders": []}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["folders"])
+
+        assert result.exit_code == 0
+        assert "No folders found" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_folders_json_output(self, mock_config, mock_client_class, runner):
+        """Test folders command with JSON output."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_logged_user.return_value = {
+            "user": {"id": 123, "email": "test@example.com"}
+        }
+        mock_client.get_user_folders.return_value = {
+            "folders": [{"id": 1, "name": "Test", "parent_id": None, "path": "/Test"}]
+        }
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["--json", "folders"])
+
+        assert result.exit_code == 0
+        assert '"folders"' in result.output
+        assert '"Test"' in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_folders_user_not_found(self, mock_config, mock_client_class, runner):
+        """Test folders command when user info is not available."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_logged_user.return_value = {"user": None}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["folders"])
+
+        assert result.exit_code == 1
+        assert "Failed to get user information" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_folders_api_error(self, mock_config, mock_client_class, runner):
+        """Test folders command handles API errors."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_logged_user.side_effect = DrimeAPIError("Network error")
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["folders"])
+
+        assert result.exit_code == 1
+        assert "Network error" in result.output
+
+    def test_folders_not_configured(self, runner, mock_config):
+        """Test folders command when not configured."""
+        mock_config.is_configured.return_value = False
+
+        result = runner.invoke(main, ["folders"])
+
+        assert result.exit_code == 1
+        assert "API key not configured" in result.output
+
+
+class TestVaultShowCommand:
+    """Tests for the vault show command."""
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_show(self, mock_config, mock_client_class, runner):
+        """Test showing vault information."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault.return_value = {
+            "vault": {
+                "id": 784,
+                "user_id": 123,
+                "salt": "abc123",
+                "check": "def456",
+                "iv": "ghi789",
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-15T12:00:00Z",
+            }
+        }
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "show"])
+
+        assert result.exit_code == 0
+        assert "ID: 784" in result.output
+        assert "User ID: 123" in result.output
+        assert "Created:" in result.output
+        assert "Updated:" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_show_no_vault(self, mock_config, mock_client_class, runner):
+        """Test vault show when no vault exists."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault.return_value = {"vault": None}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "show"])
+
+        assert result.exit_code == 0
+        assert "No vault found" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_show_json_output(self, mock_config, mock_client_class, runner):
+        """Test vault show with JSON output."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault.return_value = {"vault": {"id": 784, "user_id": 123}}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["--json", "vault", "show"])
+
+        assert result.exit_code == 0
+        assert '"vault"' in result.output
+        assert '"id"' in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_show_api_error(self, mock_config, mock_client_class, runner):
+        """Test vault show handles API errors."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault.side_effect = DrimeAPIError("Network error")
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "show"])
+
+        assert result.exit_code == 1
+        assert "Network error" in result.output
+
+    def test_vault_show_not_configured(self, runner, mock_config):
+        """Test vault show when not configured."""
+        mock_config.is_configured.return_value = False
+
+        result = runner.invoke(main, ["vault", "show"])
+
+        assert result.exit_code == 1
+        assert "API key not configured" in result.output
+
+
+class TestVaultLsCommand:
+    """Tests for the vault ls command."""
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_ls_root(self, mock_config, mock_client_class, runner):
+        """Test listing vault root."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault.return_value = {"vault": {"id": 784}}
+        mock_client.get_vault_file_entries.return_value = {
+            "data": [
+                {"id": 1, "name": "Documents", "type": "folder", "file_size": 1024},
+                {"id": 2, "name": "photo.jpg", "type": "image", "file_size": 2048},
+            ]
+        }
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "ls"])
+
+        assert result.exit_code == 0
+        assert "[Documents]" in result.output
+        assert "photo.jpg" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_ls_by_folder_name(self, mock_config, mock_client_class, runner):
+        """Test listing vault folder by name."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault.return_value = {"vault": {"id": 784}}
+        # First call searches for folder by name
+        mock_client.get_vault_file_entries.side_effect = [
+            {
+                "data": [
+                    {
+                        "id": 34430,
+                        "name": "Test1",
+                        "type": "folder",
+                        "hash": "MzQ0MzB8cGFkZA",
+                        "file_size": 0,
+                    },
+                ]
+            },
+            # Second call gets folder contents
+            {
+                "data": [
+                    {"id": 3, "name": "file1.txt", "type": "text", "file_size": 100},
+                ]
+            },
+        ]
+        mock_client.get_folder_path.return_value = {"path": [{"name": "Test1"}]}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "ls", "Test1"])
+
+        assert result.exit_code == 0
+        assert "Resolved 'Test1' to folder hash: MzQ0MzB8cGFkZA" in result.output
+        assert "Path: /Test1" in result.output
+        assert "file1.txt" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_ls_by_folder_id(self, mock_config, mock_client_class, runner):
+        """Test listing vault folder by ID."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault.return_value = {"vault": {"id": 784}}
+        mock_client.get_vault_file_entries.return_value = {
+            "data": [
+                {"id": 3, "name": "file1.txt", "type": "text", "file_size": 100},
+            ]
+        }
+        mock_client.get_folder_path.return_value = {"path": [{"name": "Test1"}]}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "ls", "34430"])
+
+        assert result.exit_code == 0
+        assert "Path: /Test1" in result.output
+        assert "file1.txt" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_ls_folder_not_found(self, mock_config, mock_client_class, runner):
+        """Test vault ls when folder not found - falls back to using as hash."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault.return_value = {"vault": {"id": 784}}
+        # First call searches for folder - returns empty
+        # Second call uses identifier as hash - also returns empty
+        mock_client.get_vault_file_entries.side_effect = [
+            {"data": []},  # Search for folder by name
+            {"data": []},  # Use as hash, returns empty
+        ]
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "ls", "NonExistent"])
+
+        # Should succeed but show "No files in vault folder" message
+        assert result.exit_code == 0
+        assert "No files in vault folder 'NonExistent'" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_ls_empty(self, mock_config, mock_client_class, runner):
+        """Test vault ls when vault is empty."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault.return_value = {"vault": {"id": 784}}
+        mock_client.get_vault_file_entries.return_value = {"data": []}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "ls"])
+
+        assert result.exit_code == 0
+        assert "Vault is empty" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_ls_pagination(self, mock_config, mock_client_class, runner):
+        """Test vault ls with pagination info."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault.return_value = {"vault": {"id": 784}}
+        mock_client.get_vault_file_entries.return_value = {
+            "data": [
+                {"id": 1, "name": "file1.txt", "type": "text", "file_size": 100},
+            ],
+            "pagination": {
+                "current_page": 1,
+                "last_page": 3,
+                "total": 150,
+            },
+        }
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "ls"])
+
+        assert result.exit_code == 0
+        assert "Page 1 of 3" in result.output
+        assert "150 total" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_ls_json_output(self, mock_config, mock_client_class, runner):
+        """Test vault ls with JSON output."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault.return_value = {"vault": {"id": 784}}
+        mock_client.get_vault_file_entries.return_value = {
+            "data": [{"id": 1, "name": "file.txt", "type": "text", "file_size": 100}]
+        }
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["--json", "vault", "ls"])
+
+        assert result.exit_code == 0
+        assert '"data"' in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_ls_api_error(self, mock_config, mock_client_class, runner):
+        """Test vault ls handles API errors."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault.side_effect = DrimeAPIError("Network error")
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "ls"])
+
+        assert result.exit_code == 1
+        assert "Network error" in result.output
+
+    def test_vault_ls_not_configured(self, runner, mock_config):
+        """Test vault ls when not configured."""
+        mock_config.is_configured.return_value = False
+
+        result = runner.invoke(main, ["vault", "ls"])
+
+        assert result.exit_code == 1
+        assert "API key not configured" in result.output
+
+
+class TestVaultDownloadCommand:
+    """Tests for the vault download command."""
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_download_by_hash(self, mock_config, mock_client_class, runner):
+        """Test downloading vault file by hash."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault_file_entries.return_value = {
+            "data": [
+                {"id": 1, "name": "secret.txt", "type": "text", "hash": "abc123"},
+            ]
+        }
+        mock_client.download_vault_file.return_value = Path("secret.txt")
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "download", "abc123"])
+
+        assert result.exit_code == 0
+        assert "Downloaded: secret.txt" in result.output
+        mock_client.download_vault_file.assert_called_once()
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_download_by_name(self, mock_config, mock_client_class, runner):
+        """Test downloading vault file by name."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 1,
+                    "name": "document.pdf",
+                    "type": "pdf",
+                    "hash": "MzQ0MzF8cGFkZA",
+                },
+            ]
+        }
+        mock_client.download_vault_file.return_value = Path("document.pdf")
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "download", "document.pdf"])
+
+        assert result.exit_code == 0
+        assert "Resolved 'document.pdf' to hash: MzQ0MzF8cGFkZA" in result.output
+        assert "Downloaded: document.pdf" in result.output
+        mock_client.download_vault_file.assert_called_once_with(
+            hash_value="MzQ0MzF8cGFkZA",
+            output_path=None,
+        )
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_download_by_id(self, mock_config, mock_client_class, runner):
+        """Test downloading vault file by numeric ID."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault_file_entries.return_value = {"data": []}
+        mock_client.download_vault_file.return_value = Path("file.txt")
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "download", "34431"])
+
+        assert result.exit_code == 0
+        # Should convert ID to hash
+        mock_client.download_vault_file.assert_called_once()
+        call_args = mock_client.download_vault_file.call_args
+        assert call_args[1]["hash_value"] is not None
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_download_with_output(self, mock_config, mock_client_class, runner):
+        """Test downloading vault file to specific output path."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault_file_entries.return_value = {"data": []}
+        mock_client.download_vault_file.return_value = Path("/tmp/output.pdf")
+        mock_client_class.return_value = mock_client
+
+        # Use a hash-like identifier (8+ chars, no extension)
+        result = runner.invoke(
+            main, ["vault", "download", "MzQ0MzF8cGFkZA", "-o", "/tmp/output.pdf"]
+        )
+
+        assert result.exit_code == 0
+        mock_client.download_vault_file.assert_called_once()
+        call_args = mock_client.download_vault_file.call_args
+        assert call_args[1]["output_path"] == Path("/tmp/output.pdf")
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_download_skips_folders(self, mock_config, mock_client_class, runner):
+        """Test vault download skips folders when resolving by name."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault_file_entries.return_value = {
+            "data": [
+                {"id": 1, "name": "Documents", "type": "folder", "hash": "folder_hash"},
+                {"id": 2, "name": "file.txt", "type": "text", "hash": "file_hash"},
+            ]
+        }
+        mock_client.download_vault_file.return_value = Path("file.txt")
+        mock_client_class.return_value = mock_client
+
+        # Trying to download "Documents" should not match the folder
+        result = runner.invoke(main, ["vault", "download", "Documents"])
+
+        assert result.exit_code == 0
+        # Should use "Documents" as hash since folder was skipped (9 chars, no ext)
+        call_args = mock_client.download_vault_file.call_args
+        assert call_args[1]["hash_value"] == "Documents"
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_download_by_path(self, mock_config, mock_client_class, runner):
+        """Test downloading vault file by path (e.g., Test1/file.txt)."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        # First call: list root to find Test1 folder
+        # Second call: list Test1 folder to find file
+        mock_client.get_vault_file_entries.side_effect = [
+            {
+                "data": [
+                    {
+                        "id": 1,
+                        "name": "Test1",
+                        "type": "folder",
+                        "hash": "folder_hash_123",
+                    },
+                ]
+            },
+            {
+                "data": [
+                    {
+                        "id": 2,
+                        "name": "secret.txt",
+                        "type": "text",
+                        "hash": "file_hash_456",
+                    },
+                ]
+            },
+        ]
+        mock_client.download_vault_file.return_value = Path("secret.txt")
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "download", "Test1/secret.txt"])
+
+        assert result.exit_code == 0
+        assert "Resolved 'Test1/secret.txt' to hash: file_hash_456" in result.output
+        assert "Downloaded: secret.txt" in result.output
+        mock_client.download_vault_file.assert_called_once_with(
+            hash_value="file_hash_456",
+            output_path=None,
+        )
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_download_by_nested_path(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test downloading vault file by nested path (e.g., A/B/file.txt)."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        # Navigate: root -> FolderA -> FolderB -> file.pdf
+        mock_client.get_vault_file_entries.side_effect = [
+            {"data": [{"id": 1, "name": "FolderA", "type": "folder", "hash": "hashA"}]},
+            {"data": [{"id": 2, "name": "FolderB", "type": "folder", "hash": "hashB"}]},
+            {
+                "data": [
+                    {"id": 3, "name": "file.pdf", "type": "pdf", "hash": "hashFile"}
+                ]
+            },
+        ]
+        mock_client.download_vault_file.return_value = Path("file.pdf")
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "download", "FolderA/FolderB/file.pdf"])
+
+        assert result.exit_code == 0
+        mock_client.download_vault_file.assert_called_once_with(
+            hash_value="hashFile",
+            output_path=None,
+        )
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_download_path_folder_not_found(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test vault download with path when folder doesn't exist."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault_file_entries.return_value = {"data": []}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "download", "NonExistent/file.txt"])
+
+        assert result.exit_code == 1
+        assert "Folder 'NonExistent' not found" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_download_path_file_not_found(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test vault download with path when file doesn't exist in folder."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault_file_entries.side_effect = [
+            {"data": [{"id": 1, "name": "Test1", "type": "folder", "hash": "hashT1"}]},
+            {"data": []},  # No files in folder
+        ]
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "download", "Test1/missing.txt"])
+
+        assert result.exit_code == 1
+        assert "File 'missing.txt' not found" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_download_filename_not_in_root(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test vault download with filename not found in root shows helpful message."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault_file_entries.return_value = {"data": []}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "download", "missing.txt"])
+
+        assert result.exit_code == 1
+        assert "not found in vault root" in result.output
+        assert "Folder/file.txt" in result.output  # Helpful hint
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_download_api_error(self, mock_config, mock_client_class, runner):
+        """Test vault download handles API errors."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault_file_entries.side_effect = DrimeAPIError("Network error")
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "download", "hash123"])
+
+        assert result.exit_code == 1
+        assert "Network error" in result.output
+
+    def test_vault_download_not_configured(self, runner, mock_config):
+        """Test vault download when not configured."""
+        mock_config.is_configured.return_value = False
+
+        result = runner.invoke(main, ["vault", "download", "hash123"])
+
+        assert result.exit_code == 1
+        assert "API key not configured" in result.output
+
+
 class TestDownloadCommandWithIdSupport:
     """Tests for the download command with ID and hash support."""
 
@@ -1187,6 +1890,111 @@ class TestDownloadCommandWithIdSupport:
         assert "Resolved 'test.txt' to entry ID: 480424796" in result.output
         mock_client.resolve_entry_identifier.assert_called_once()
         mock_client.download_file.assert_called_once()
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_download_by_path(self, mock_config, mock_client_class, runner):
+        """Test downloading file by path (e.g., folder/file.txt)."""
+        mock_config.is_configured.return_value = True
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+
+        # Mock get_file_entries to navigate path: root -> benchmark_folder -> file
+        mock_client.get_file_entries.side_effect = [
+            # First call: list root to find benchmark folder
+            {
+                "data": [
+                    {
+                        "id": 12345,
+                        "name": "benchmark_f07f37b3",
+                        "type": "folder",
+                        "hash": "folder_hash_123",
+                    },
+                ]
+            },
+            # Second call: list benchmark folder to find file
+            {
+                "data": [
+                    {
+                        "id": 67890,
+                        "name": "test_file_000.txt",
+                        "type": "text",
+                        "hash": "file_hash_456",
+                    },
+                ]
+            },
+            # Third call: get entry from hash (for download)
+            {
+                "data": [
+                    {
+                        "id": 67890,
+                        "name": "test_file_000.txt",
+                        "type": "text",
+                        "hash": "file_hash_456",
+                    },
+                ]
+            },
+        ]
+
+        mock_client.download_file.return_value = Path("test_file_000.txt")
+
+        result = runner.invoke(
+            main, ["download", "benchmark_f07f37b3/test_file_000.txt"]
+        )
+
+        assert result.exit_code == 0
+        assert (
+            "Resolved 'benchmark_f07f37b3/test_file_000.txt' to hash: file_hash_456"
+            in result.output
+        )
+        mock_client.download_file.assert_called_once()
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_download_by_nested_path(self, mock_config, mock_client_class, runner):
+        """Test downloading file by nested path (e.g., a/b/c/file.txt)."""
+        mock_config.is_configured.return_value = True
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+
+        # Mock get_file_entries to navigate: root -> A -> B -> file
+        mock_client.get_file_entries.side_effect = [
+            {"data": [{"id": 1, "name": "A", "type": "folder", "hash": "hashA"}]},
+            {"data": [{"id": 2, "name": "B", "type": "folder", "hash": "hashB"}]},
+            {"data": [{"id": 3, "name": "file.txt", "type": "text", "hash": "hashF"}]},
+            {"data": [{"id": 3, "name": "file.txt", "type": "text", "hash": "hashF"}]},
+        ]
+
+        mock_client.download_file.return_value = Path("file.txt")
+
+        result = runner.invoke(main, ["download", "A/B/file.txt"])
+
+        assert result.exit_code == 0
+        mock_client.download_file.assert_called_once()
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_download_path_folder_not_found(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test download with path when folder doesn't exist."""
+        mock_config.is_configured.return_value = True
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+
+        # Mock get_file_entries to return empty (folder not found)
+        mock_client.get_file_entries.return_value = {"data": []}
+
+        result = runner.invoke(main, ["download", "NonExistent/file.txt"])
+
+        assert result.exit_code == 1
+        assert "Path not found" in result.output
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
@@ -2522,9 +3330,9 @@ class TestFolderStructureDetection:
             # Check that all paths use forward slashes
             for _file_path, rel_path in files:
                 assert "\\" not in rel_path, f"Path contains backslash: {rel_path}"
-                assert "/" in rel_path or rel_path in [
-                    "file3.txt"
-                ], f"Expected forward slashes in nested paths: {rel_path}"
+                assert "/" in rel_path or rel_path in ["file3.txt"], (
+                    f"Expected forward slashes in nested paths: {rel_path}"
+                )
 
             # Check expected structure
             rel_paths = [rel_path for _, rel_path in files]
@@ -2713,12 +3521,12 @@ class TestFolderStructureDetection:
             for file_info in files_arg:
                 rel_path = file_info.get("relativePath", "")
                 if rel_path:  # Only check non-empty paths
-                    assert (
-                        "\\" not in rel_path
-                    ), f"relativePath should not contain backslashes: {rel_path}"
-                    assert (
-                        "/" in rel_path or rel_path == ""
-                    ), f"relativePath should use forward slashes: {rel_path}"
+                    assert "\\" not in rel_path, (
+                        f"relativePath should not contain backslashes: {rel_path}"
+                    )
+                    assert "/" in rel_path or rel_path == "", (
+                        f"relativePath should use forward slashes: {rel_path}"
+                    )
 
 
 class TestWindowsPathHandling:
@@ -2813,9 +3621,9 @@ class TestWindowsPathHandling:
 
             # Check that relativePath uses forward slashes only
             assert "\\" not in rel_path, f"relativePath contains backslash: {rel_path}"
-            assert (
-                rel_path == f"{Path(tmpdir).name}/folder1/folder2"
-            ), f"Expected proper POSIX path, got: {rel_path}"
+            assert rel_path == f"{Path(tmpdir).name}/folder1/folder2", (
+                f"Expected proper POSIX path, got: {rel_path}"
+            )
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.auth.config")
@@ -2860,13 +3668,13 @@ class TestWindowsPathHandling:
                 if "📁" in line:
                     path_part = line.split("📁")[1].strip()
                     # Should not contain backslashes
-                    assert (
-                        "\\" not in path_part
-                    ), f"Folder path contains backslash: {path_part}"
+                    assert "\\" not in path_part, (
+                        f"Folder path contains backslash: {path_part}"
+                    )
                     # Should end with forward slash
-                    assert path_part.endswith(
-                        "/"
-                    ), f"Folder path should end with /: {path_part}"
+                    assert path_part.endswith("/"), (
+                        f"Folder path should end with /: {path_part}"
+                    )
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.auth.config")
@@ -2907,9 +3715,9 @@ class TestWindowsPathHandling:
 
             for line in in_lines:
                 # Should not contain backslashes
-                assert (
-                    "\\" not in line
-                ), f"Directory grouping contains backslash: {line}"
+                assert "\\" not in line, (
+                    f"Directory grouping contains backslash: {line}"
+                )
                 # Should use forward slashes for nested paths
                 if "root" not in line.lower():
                     assert "/" in line, f"Expected forward slash in path: {line}"
@@ -2935,21 +3743,21 @@ class TestWindowsPathHandling:
         posix_parts = posix_path.parts
         posix_reconstructed = str(PurePosixPath(*posix_parts[:3]))
 
-        assert (
-            "\\" not in posix_reconstructed
-        ), "PurePosixPath should not have backslashes"
-        assert (
-            posix_reconstructed == "data/01/02"
-        ), f"Expected 'data/01/02', got '{posix_reconstructed}'"
+        assert "\\" not in posix_reconstructed, (
+            "PurePosixPath should not have backslashes"
+        )
+        assert posix_reconstructed == "data/01/02", (
+            f"Expected 'data/01/02', got '{posix_reconstructed}'"
+        )
 
         # Check parent extraction
         posix_parent = str(posix_path.parent)
-        assert (
-            posix_parent == "data/01/02"
-        ), f"Expected 'data/01/02', got '{posix_parent}'"
-        assert (
-            "\\" not in posix_parent
-        ), "PurePosixPath parent should not have backslashes"
+        assert posix_parent == "data/01/02", (
+            f"Expected 'data/01/02', got '{posix_parent}'"
+        )
+        assert "\\" not in posix_parent, (
+            "PurePosixPath parent should not have backslashes"
+        )
 
 
 class TestRemotePathDuplicateDetection:
@@ -3165,9 +3973,9 @@ class TestRemotePathDuplicateDetection:
                 if "duplicate" in line.lower()
             ]
             backup_in_duplicates = any("backup" in line for line in duplicate_lines)
-            assert (
-                not backup_in_duplicates
-            ), "backup folder should not be in duplicate warnings"
+            assert not backup_in_duplicates, (
+                "backup folder should not be in duplicate warnings"
+            )
 
 
 class TestSyncCommand:

@@ -27,7 +27,7 @@ from .models import FileEntriesResult, FileEntry, SchemaValidationWarning, UserS
 from .output import OutputFormatter
 from .progress import UploadProgressTracker
 from .upload_preview import display_upload_preview
-from .utils import is_file_id, normalize_to_hash
+from .utils import calculate_drime_hash, is_file_id, normalize_to_hash
 from .workspace_utils import format_workspace_display, get_folder_display_name
 
 logger = logging.getLogger(__name__)
@@ -1260,24 +1260,22 @@ def download(
 ) -> None:
     """Download file(s) or folder(s) from Drime Cloud.
 
-    ENTRY_IDENTIFIERS: One or more file/folder names, hashes, or numeric IDs
+    ENTRY_IDENTIFIERS: One or more file/folder paths, names, hashes, or numeric IDs
 
-    Supports file/folder names (resolved in current directory), numeric IDs,
-    and hashes. Names are resolved in the current working directory.
-    Folders are automatically downloaded recursively with all their contents.
+    Supports file/folder paths (e.g., folder/file.txt), names (resolved in current
+    directory), numeric IDs, and hashes. Folders are automatically downloaded
+    recursively with all their contents.
 
     Examples:
-        pydrime download 480424796                  # Download file by ID
-        pydrime download NDgwNDI0Nzk2fA             # Download file by hash
-        pydrime download test1.txt                  # Download file by name
-        pydrime download test_folder                # Download folder
-        pydrime download 480424796 480424802        # Multiple files by ID
-        pydrime download 480424796 NDgwNDI0ODAyfA   # Mixed IDs and hashes
-        pydrime download test1.txt test2.txt        # Multiple files by name
-        pydrime download 480432024                  # Download folder by ID
-        pydrime download -o ./dest test_folder      # Download to dir
+        pydrime download folder/file.txt              # Download by path
+        pydrime download a/b/c/file.txt               # Download from nested path
+        pydrime download 480424796                    # Download file by ID
+        pydrime download NDgwNDI0Nzk2fA               # Download file by hash
+        pydrime download test1.txt                    # Download file by name
+        pydrime download test_folder                  # Download folder
+        pydrime download 480424796 480424802          # Multiple files by ID
+        pydrime download -o ./dest test_folder        # Download to dir
         pydrime download test_folder --on-duplicate skip    # Skip existing
-        pydrime download test_folder --on-duplicate rename  # Rename if exists
     """
     api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
@@ -1303,8 +1301,68 @@ def download(
         shared_progress_display: Optional[Any] = None
         shared_task_queue: Optional[Any] = None
 
+        def resolve_path_to_hash(path_str: str) -> Optional[str]:
+            """Resolve a path like 'folder/subfolder/file.txt' to a hash.
+
+            Returns the hash of the final component, or None if not found.
+            """
+            path_parts = path_str.split("/")
+            target_name = path_parts[-1]
+            folder_parts = path_parts[:-1]
+
+            # Start from current folder or root
+            current_parent_id = current_folder
+
+            # Navigate through each folder in the path
+            for folder_name in folder_parts:
+                # Search for the folder in current parent
+                result = client.get_file_entries(
+                    parent_ids=[current_parent_id] if current_parent_id else None,
+                    workspace_id=workspace,
+                    per_page=1000,
+                )
+                entries = result.get("data", [])
+
+                folder_found = False
+                for entry in entries:
+                    if (
+                        entry.get("type") == "folder"
+                        and entry.get("name") == folder_name
+                    ):
+                        current_parent_id = entry.get("id")
+                        folder_found = True
+                        break
+
+                if not folder_found:
+                    return None
+
+            # Now find the target file/folder in the final directory
+            result = client.get_file_entries(
+                parent_ids=[current_parent_id] if current_parent_id else None,
+                workspace_id=workspace,
+                per_page=1000,
+            )
+            entries = result.get("data", [])
+
+            for entry in entries:
+                if entry.get("name") == target_name:
+                    entry_hash = entry.get("hash")
+                    if not out.quiet:
+                        out.info(f"Resolved '{path_str}' to hash: {entry_hash}")
+                    return entry_hash
+
+            return None
+
         def resolve_identifier_to_hash(identifier: str) -> str:
-            """Resolve identifier (name/ID/hash) to hash value."""
+            """Resolve identifier (name/ID/hash/path) to hash value."""
+            # Check if it's a path (contains /)
+            if "/" in identifier:
+                hash_value = resolve_path_to_hash(identifier)
+                if hash_value:
+                    return hash_value
+                # Path not found, will be handled by caller
+                raise DrimeNotFoundError(f"Path not found: {identifier}")
+
             try:
                 # Try resolving as entry identifier (supports names, IDs, hashes)
                 entry_id = client.resolve_entry_identifier(
@@ -2532,6 +2590,549 @@ def workspaces(ctx: Any) -> None:
         else:
             out.warning("Unexpected response format")
             out.output_json(result)
+
+    except DrimeAPIError as e:
+        out.error(str(e))
+        ctx.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    "-w",
+    type=int,
+    default=0,
+    help="Workspace ID (default: 0 for personal workspace)",
+)
+@click.pass_context
+def folders(ctx: Any, workspace: int) -> None:
+    """List all folders in a workspace.
+
+    Shows folder ID, name, parent ID, and path for all folders
+    accessible to the current user in the specified workspace.
+    """
+    api_key = ctx.obj.get("api_key")
+    out: OutputFormatter = ctx.obj["out"]
+
+    if not config.is_configured() and not api_key:
+        out.error("API key not configured.")
+        out.info("Run 'drime init' to configure your API key")
+        ctx.exit(1)
+
+    try:
+        client = DrimeClient(api_key=api_key)
+
+        # Get current user ID
+        user_info = client.get_logged_user()
+        if not user_info or not user_info.get("user"):
+            out.error("Failed to get user information")
+            ctx.exit(1)
+
+        user_id = user_info["user"].get("id")
+        if not user_id:
+            out.error("User ID not found in response")
+            ctx.exit(1)
+
+        # Get folders for the user
+        result = client.get_user_folders(user_id, workspace)
+
+        if out.json_output:
+            out.output_json(result)
+            return
+
+        if isinstance(result, dict) and "folders" in result:
+            folders_list = result["folders"]
+
+            if not folders_list:
+                out.warning("No folders found")
+                return
+
+            table_data = []
+            for folder in folders_list:
+                table_data.append(
+                    {
+                        "id": str(folder.get("id", "")),
+                        "name": folder.get("name", ""),
+                        "parent_id": str(folder.get("parent_id") or "root"),
+                        "path": folder.get("path", "/"),
+                    }
+                )
+
+            out.output_table(
+                table_data,
+                ["id", "name", "parent_id", "path"],
+                {
+                    "id": "ID",
+                    "name": "Name",
+                    "parent_id": "Parent",
+                    "path": "Path",
+                },
+            )
+        else:
+            out.warning("Unexpected response format")
+            out.output_json(result)
+
+    except DrimeAPIError as e:
+        out.error(str(e))
+        ctx.exit(1)
+
+
+@main.group()
+@click.pass_context
+def vault(ctx: Any) -> None:
+    """Manage encrypted vault storage.
+
+    Commands for working with your encrypted vault.
+
+    Examples:
+        pydrime vault show                # Show vault info
+        pydrime vault ls                  # List vault root
+        pydrime vault ls Test1            # List folder by name
+    """
+    pass
+
+
+@vault.command("show")
+@click.pass_context
+def vault_show(ctx: Any) -> None:
+    """Show vault information.
+
+    Displays metadata about your encrypted vault including ID and timestamps.
+
+    Examples:
+        pydrime vault show                # Show vault info
+    """
+    api_key = ctx.obj.get("api_key")
+    out: OutputFormatter = ctx.obj["out"]
+
+    if not config.is_configured() and not api_key:
+        out.error("API key not configured.")
+        out.info("Run 'pydrime init' to configure your API key")
+        ctx.exit(1)
+
+    try:
+        client = DrimeClient(api_key=api_key)
+
+        # Get vault info
+        vault_result = client.get_vault()
+
+        if out.json_output:
+            out.output_json(vault_result)
+            return
+
+        vault_info = vault_result.get("vault")
+        if not vault_info:
+            out.warning("No vault found. You may need to set up a vault first.")
+            return
+
+        # Display vault info
+        out.print(f"ID: {vault_info.get('id')}")
+        out.print(f"User ID: {vault_info.get('user_id')}")
+        out.print(f"Created: {vault_info.get('created_at', 'N/A')}")
+        out.print(f"Updated: {vault_info.get('updated_at', 'N/A')}")
+
+    except DrimeAPIError as e:
+        out.error(str(e))
+        ctx.exit(1)
+
+
+@vault.command("ls")
+@click.argument("folder_identifier", type=str, default="", required=False)
+@click.option(
+    "--page",
+    "-p",
+    type=int,
+    default=1,
+    help="Page number (default: 1)",
+)
+@click.option(
+    "--page-size",
+    type=int,
+    default=50,
+    help="Number of items per page (default: 50)",
+)
+@click.option(
+    "--order-by",
+    type=click.Choice(["updated_at", "created_at", "name", "file_size"]),
+    default="updated_at",
+    help="Field to order by (default: updated_at)",
+)
+@click.option(
+    "--order",
+    type=click.Choice(["asc", "desc"]),
+    default="desc",
+    help="Order direction (default: desc)",
+)
+@click.pass_context
+def vault_ls(
+    ctx: Any,
+    folder_identifier: str,
+    page: int,
+    page_size: int,
+    order_by: str,
+    order: str,
+) -> None:
+    """List files and folders in the vault.
+
+    Lists encrypted files and folders stored in your vault.
+
+    FOLDER_IDENTIFIER: Folder name, ID, or hash to list (default: root)
+
+    Examples:
+        pydrime vault ls                  # List root vault folder
+        pydrime vault ls Test1            # List folder by name
+        pydrime vault ls 34430            # List folder by ID
+        pydrime vault ls MzQ0MzB8cGFkZA   # List folder by hash
+        pydrime vault ls --page 2         # Show page 2 of results
+        pydrime vault ls --order-by name  # Sort by name
+    """
+    from typing import Literal
+
+    api_key = ctx.obj.get("api_key")
+    out: OutputFormatter = ctx.obj["out"]
+
+    if not config.is_configured() and not api_key:
+        out.error("API key not configured.")
+        out.info("Run 'pydrime init' to configure your API key")
+        ctx.exit(1)
+
+    try:
+        client = DrimeClient(api_key=api_key)
+
+        # Get vault info to get vault_id
+        vault_result = client.get_vault()
+        vault_info = vault_result.get("vault")
+        vault_id: Optional[int] = vault_info.get("id") if vault_info else None
+
+        # Resolve folder identifier to folder hash
+        folder_hash: str = ""
+        resolved_folder_name: Optional[str] = None
+
+        if folder_identifier:
+            # Check if it's a numeric ID - convert to hash
+            if folder_identifier.isdigit():
+                folder_hash = calculate_drime_hash(int(folder_identifier))
+            else:
+                # Could be a name or already a hash
+                # First check if it looks like a hash (base64-like)
+                # Try to find folder by name in vault root
+                search_result = client.get_vault_file_entries(per_page=1000)
+
+                # Handle response format
+                search_entries = []
+                if isinstance(search_result, dict):
+                    if "data" in search_result:
+                        search_entries = search_result["data"]
+                    elif "pagination" in search_result and isinstance(
+                        search_result["pagination"], dict
+                    ):
+                        search_entries = search_result["pagination"].get("data", [])
+
+                found = False
+                for entry in search_entries:
+                    entry_name = entry.get("name", "")
+                    entry_hash = entry.get("hash", "")
+                    entry_type = entry.get("type", "")
+
+                    # Match by name or hash, only folders
+                    if entry_type == "folder" and (
+                        entry_name == folder_identifier
+                        or entry_hash == folder_identifier
+                    ):
+                        folder_hash = entry_hash
+                        resolved_folder_name = entry_name
+                        found = True
+                        if not out.quiet:
+                            out.info(
+                                f"Resolved '{folder_identifier}' to folder "
+                                f"hash: {folder_hash}"
+                            )
+                        break
+
+                if not found:
+                    # Maybe it's already a valid hash, try using it directly
+                    folder_hash = folder_identifier
+
+        # Show current path if we're in a subfolder
+        if folder_hash and vault_id and not out.quiet:
+            try:
+                path_result = client.get_folder_path(folder_hash, vault_id=vault_id)
+                if isinstance(path_result, dict) and "path" in path_result:
+                    path_parts = [f.get("name", "?") for f in path_result["path"]]
+                    current_path = "/" + "/".join(path_parts)
+                    out.info(f"Path: {current_path}")
+                    out.info("")
+            except DrimeAPIError:
+                # Silently ignore path errors, just don't show path
+                pass
+
+        # Cast order to Literal type for type checker
+        order_dir = cast(Literal["asc", "desc"], order)
+
+        # Get vault file entries
+        result = client.get_vault_file_entries(
+            folder_hash=folder_hash,
+            page=page,
+            per_page=page_size,
+            order_by=order_by,
+            order_dir=order_dir,
+        )
+
+        if out.json_output:
+            out.output_json(result)
+            return
+
+        # Handle different response formats:
+        # - {"data": [...]} - data at top level
+        # - {"pagination": {"data": [...], ...}} - data nested in pagination
+        entries = None
+        pagination = None
+
+        if isinstance(result, dict):
+            if "data" in result:
+                entries = result["data"]
+                pagination = result.get("pagination") or result.get("meta")
+            elif "pagination" in result and isinstance(result["pagination"], dict):
+                pagination = result["pagination"]
+                entries = pagination.get("data", [])
+
+        if entries is None:
+            out.warning("Unexpected response format")
+            out.output_json(result)
+            return
+
+        if not entries:
+            if not folder_hash:
+                out.info("Vault is empty")
+            else:
+                folder_display = (
+                    resolved_folder_name or folder_identifier or folder_hash
+                )
+                out.info(f"No files in vault folder '{folder_display}'")
+            return
+
+        # Display files in table format
+        table_data = []
+        for entry in entries:
+            entry_type = entry.get("type", "file")
+            name = entry.get("name", "Unknown")
+            if entry_type == "folder":
+                name = f"[{name}]"
+
+            table_data.append(
+                {
+                    "id": str(entry.get("id", "")),
+                    "name": name,
+                    "type": entry_type,
+                    "size": out.format_size(entry.get("file_size", 0)),
+                }
+            )
+
+        out.output_table(
+            table_data,
+            ["id", "name", "type", "size"],
+            {
+                "id": "ID",
+                "name": "Name",
+                "type": "Type",
+                "size": "Size",
+            },
+        )
+
+        # Show pagination info if available
+        if pagination:
+            current = pagination.get("current_page", page)
+            total_pages = pagination.get("last_page")
+            total_items = pagination.get("total")
+            if total_items is not None and total_pages is not None:
+                out.info("")
+                out.info(f"Page {current} of {total_pages} ({total_items} total)")
+
+    except DrimeAPIError as e:
+        out.error(str(e))
+        ctx.exit(1)
+
+
+@vault.command("download")
+@click.argument("file_identifier", type=str)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output file path (default: current directory with original filename)",
+)
+@click.pass_context
+def vault_download(
+    ctx: Any,
+    file_identifier: str,
+    output: Optional[str],
+) -> None:
+    """Download a file from the vault.
+
+    Downloads an encrypted file from your vault.
+
+    FILE_IDENTIFIER: File path, name, ID, or hash to download
+
+    Examples:
+        pydrime vault download document.pdf              # Download from root
+        pydrime vault download Test1/document.pdf        # Download from subfolder
+        pydrime vault download 34431                     # Download by ID
+        pydrime vault download MzQ0MzF8cGFkZA           # Download by hash
+        pydrime vault download doc.pdf -o out.pdf       # Download to specific path
+    """
+    api_key = ctx.obj.get("api_key")
+    out: OutputFormatter = ctx.obj["out"]
+
+    if not config.is_configured() and not api_key:
+        out.error("API key not configured.")
+        out.info("Run 'pydrime init' to configure your API key")
+        ctx.exit(1)
+
+    try:
+        client = DrimeClient(api_key=api_key)
+
+        # Resolve file identifier to hash
+        file_hash: Optional[str] = None
+
+        # Check if it's a numeric ID - convert to hash
+        if file_identifier.isdigit():
+            file_hash = calculate_drime_hash(int(file_identifier))
+        elif "/" in file_identifier:
+            # Path-based resolution: Test1/subfolder/file.txt
+            path_parts = file_identifier.split("/")
+            file_name = path_parts[-1]
+            folder_parts = path_parts[:-1]
+
+            # Navigate through folders to find the target folder
+            current_folder_hash = ""
+            for folder_name in folder_parts:
+                # Get entries in current folder
+                search_result = client.get_vault_file_entries(
+                    folder_hash=current_folder_hash, per_page=1000
+                )
+
+                # Handle response format
+                search_entries = []
+                if isinstance(search_result, dict):
+                    if "data" in search_result:
+                        search_entries = search_result["data"]
+                    elif "pagination" in search_result and isinstance(
+                        search_result["pagination"], dict
+                    ):
+                        search_entries = search_result["pagination"].get("data", [])
+
+                # Find the folder
+                folder_found = False
+                for entry in search_entries:
+                    if (
+                        entry.get("type") == "folder"
+                        and entry.get("name") == folder_name
+                    ):
+                        current_folder_hash = entry.get("hash", "")
+                        folder_found = True
+                        break
+
+                if not folder_found:
+                    out.error(f"Folder '{folder_name}' not found in vault path")
+                    ctx.exit(1)
+                    return
+
+            # Now find the file in the target folder
+            search_result = client.get_vault_file_entries(
+                folder_hash=current_folder_hash, per_page=1000
+            )
+
+            search_entries = []
+            if isinstance(search_result, dict):
+                if "data" in search_result:
+                    search_entries = search_result["data"]
+                elif "pagination" in search_result and isinstance(
+                    search_result["pagination"], dict
+                ):
+                    search_entries = search_result["pagination"].get("data", [])
+
+            for entry in search_entries:
+                if entry.get("type") != "folder" and entry.get("name") == file_name:
+                    file_hash = entry.get("hash")
+                    if not out.quiet:
+                        out.info(f"Resolved '{file_identifier}' to hash: {file_hash}")
+                    break
+
+            if not file_hash:
+                out.error(
+                    f"File '{file_name}' not found in vault path '{file_identifier}'"
+                )
+                ctx.exit(1)
+                return
+        else:
+            # Could be a name or already a hash
+            # Search in vault root for the file by name
+            search_result = client.get_vault_file_entries(per_page=1000)
+
+            # Handle response format
+            search_entries = []
+            if isinstance(search_result, dict):
+                if "data" in search_result:
+                    search_entries = search_result["data"]
+                elif "pagination" in search_result and isinstance(
+                    search_result["pagination"], dict
+                ):
+                    search_entries = search_result["pagination"].get("data", [])
+
+            found = False
+            for entry in search_entries:
+                entry_name = entry.get("name", "")
+                entry_hash = entry.get("hash", "")
+                entry_type = entry.get("type", "")
+
+                # Match by name or hash, only files (not folders)
+                if entry_type != "folder" and (
+                    entry_name == file_identifier or entry_hash == file_identifier
+                ):
+                    file_hash = entry_hash
+                    found = True
+                    if not out.quiet:
+                        out.info(f"Resolved '{file_identifier}' to hash: {file_hash}")
+                    break
+
+            if not found:
+                # Check if this looks like a hash (base64-like, no file extension)
+                # Hashes are typically alphanumeric with possible = padding
+                looks_like_hash = (
+                    "." not in file_identifier and len(file_identifier) >= 8
+                )
+                if looks_like_hash:
+                    # Assume it's already a valid hash
+                    file_hash = file_identifier
+                else:
+                    out.error(
+                        f"File '{file_identifier}' not found in vault root. "
+                        "Use a path like 'Folder/file.txt' for files in subfolders."
+                    )
+                    ctx.exit(1)
+                    return  # Unreachable, but helps type checker
+
+        if not file_hash:
+            out.error(f"Could not resolve file identifier: {file_identifier}")
+            ctx.exit(1)
+            return  # Unreachable, but helps type checker
+
+        # Determine output path
+        output_path: Optional[Path] = None
+        if output:
+            output_path = Path(output)
+
+        # Download the file
+        if not out.quiet:
+            out.info("Downloading vault file...")
+
+        saved_path = client.download_vault_file(
+            hash_value=file_hash,
+            output_path=output_path,
+        )
+
+        out.success(f"Downloaded: {saved_path}")
 
     except DrimeAPIError as e:
         out.error(str(e))

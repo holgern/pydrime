@@ -801,6 +801,99 @@ class DrimeClient:
     # Folder Operations
     # =========================
 
+    def get_user_folders(
+        self,
+        user_id: int,
+        workspace_id: int = 0,
+    ) -> Any:
+        """Get list of folders for a user in a workspace.
+
+        Args:
+            user_id: ID of the user
+            workspace_id: ID of the workspace (default: 0 for personal)
+
+        Returns:
+            Response with 'folders' key containing list of folder objects
+        """
+        endpoint = f"/users/{user_id}/folders"
+        params = {
+            "userId": user_id,
+            "workspaceId": workspace_id,
+        }
+        return self._request("GET", endpoint, params=params)
+
+    def get_folder_count(self, folder_id: int) -> int:
+        """Get the count of items in a folder.
+
+        Args:
+            folder_id: ID of the folder
+
+        Returns:
+            Number of items in the folder
+
+        Raises:
+            DrimeAPIError: If the request fails
+
+        Example:
+            >>> client = DrimeClient(api_key="your_key")
+            >>> count = client.get_folder_count(481967773)
+            >>> print(count)
+            16
+        """
+        endpoint = f"/folders/{folder_id}/count"
+        result = self._request("GET", endpoint)
+        return result.get("count", 0)
+
+    def get_folder_path(
+        self,
+        folder_hash: str,
+        vault_id: Optional[int] = None,
+    ) -> Any:
+        """Get the path hierarchy of a folder.
+
+        Retrieves the folder path from root to the specified folder.
+        Works for both regular folders and encrypted vault folders.
+
+        Args:
+            folder_hash: Hash of the folder (e.g., "NDgxMDAzNjAzfA")
+            vault_id: Optional vault ID for encrypted folders
+
+        Returns:
+            Response with 'path' key containing a list of folder objects
+            in the path hierarchy (from root to target). Each folder contains:
+            - id: Folder ID
+            - name: Folder name
+            - hash: Folder hash
+            - type: Entry type ("folder")
+            - file_size: Size of folder contents
+            - parent_id: Parent folder ID or null
+            - workspace_id: Workspace ID
+            - is_encrypted: Whether the folder is encrypted (0 or 1)
+            - vault_id: Associated vault ID (if encrypted)
+            - owner_id: Owner's user ID
+            - permissions: Permission flags (update, create, download, delete)
+            - users: List of users with access
+            - created_at: Creation timestamp
+            - updated_at: Update timestamp
+
+        Raises:
+            DrimeAPIError: If the request fails
+
+        Example:
+            >>> client = DrimeClient(api_key="your_key")
+            >>> # Regular folder
+            >>> result = client.get_folder_path("NDgxMDAzNjAzfA")
+            >>> for folder in result["path"]:
+            ...     print(folder["name"])
+            >>> # Vault folder
+            >>> result = client.get_folder_path("MzQ0MzB8cGFkZA", vault_id=784)
+        """
+        endpoint = f"/folders/{folder_hash}/path"
+        params: dict[str, Any] = {}
+        if vault_id is not None:
+            params["vaultId"] = vault_id
+        return self._request("GET", endpoint, params=params if params else None)
+
     def create_folder(
         self,
         name: str,
@@ -1174,6 +1267,228 @@ class DrimeClient:
         """
         endpoint = "/user/space-usage"
         return self._request("GET", endpoint)
+
+    # =========================
+    # Notification Operations
+    # =========================
+
+    def get_notifications(
+        self,
+        per_page: int = 10,
+        page: int = 1,
+    ) -> Any:
+        """Get user notifications.
+
+        Args:
+            per_page: Number of notifications per page (default: 10)
+            page: Page number to retrieve (default: 1)
+
+        Returns:
+            Response with 'pagination' key containing:
+            - current_page: Current page number
+            - data: List of notification objects
+            - from: Starting index
+            - last_page: Last page number
+            - next_page: Next page number or null
+            - per_page: Items per page
+            - prev_page: Previous page number or null
+            - to: Ending index
+            - total: Total number of notifications
+
+            Each notification contains:
+            - id: Notification UUID
+            - type: Notification type
+            - data: Notification content with lines and actions
+            - read_at: Read timestamp or null
+            - created_at: Creation timestamp
+            - updated_at: Update timestamp
+
+        Raises:
+            DrimeAPIError: If the request fails
+
+        Example:
+            >>> client = DrimeClient(api_key="your_key")
+            >>> result = client.get_notifications(per_page=10, page=1)
+            >>> notifications = result["pagination"]["data"]
+            >>> for notif in notifications:
+            ...     print(notif["data"]["lines"][0]["content"])
+        """
+        endpoint = "/notifications"
+        params: dict[str, Any] = {
+            "perPage": per_page,
+            "page": page,
+        }
+        return self._request("GET", endpoint, params=params)
+
+    # =========================
+    # Vault Operations
+    # =========================
+
+    def get_vault(self) -> Any:
+        """Get user's vault information.
+
+        The vault contains encryption-related data for secure storage.
+
+        Returns:
+            Response with 'vault' key containing:
+            - id: Vault ID
+            - user_id: Owner's user ID
+            - salt: Encryption salt (base64 encoded)
+            - check: Encryption check value (base64 encoded)
+            - iv: Initialization vector
+            - created_at: Creation timestamp
+            - updated_at: Update timestamp
+
+        Raises:
+            DrimeAPIError: If the request fails
+
+        Example:
+            >>> client = DrimeClient(api_key="your_key")
+            >>> result = client.get_vault()
+            >>> vault = result["vault"]
+            >>> print(vault["id"])
+        """
+        endpoint = "/vault"
+        return self._request("GET", endpoint)
+
+    def get_vault_file_entries(
+        self,
+        folder_hash: str = "",
+        page: int = 1,
+        per_page: int = 50,
+        order_by: str = "updated_at",
+        order_dir: Literal["asc", "desc"] = "desc",
+        backup: int = 0,
+    ) -> Any:
+        """Get file entries from the vault.
+
+        Retrieves encrypted file entries stored in the user's vault.
+
+        Args:
+            folder_hash: Hash of the vault folder (empty string for root)
+            page: Page number (default: 1)
+            per_page: Number of entries per page (default: 50)
+            order_by: Field to order by (default: "updated_at")
+            order_dir: Order direction, "asc" or "desc" (default: "desc")
+            backup: Include backup files (default: 0)
+
+        Returns:
+            Response with file entries data similar to get_file_entries,
+            but for encrypted vault files. Contains:
+            - pagination.data: List of encrypted file entry objects
+            - Each entry includes is_encrypted=1 and vault_id
+
+        Raises:
+            DrimeAPIError: If the request fails
+
+        Example:
+            >>> client = DrimeClient(api_key="your_key")
+            >>> # List vault root
+            >>> result = client.get_vault_file_entries()
+            >>> # List specific folder by hash
+            >>> result = client.get_vault_file_entries(folder_hash="MzQ0MzB8cGFkZA")
+            >>> for entry in result.get("pagination", {}).get("data", []):
+            ...     print(entry["name"])
+        """
+        endpoint = "/vault/file-entries"
+        params: dict[str, Any] = {
+            "page": page,
+            "perPage": per_page,
+            "orderBy": order_by,
+            "orderDir": order_dir,
+            "backup": backup,
+        }
+        # Only include folder params if a folder hash is specified
+        if folder_hash:
+            params["folderId"] = folder_hash
+            params["pageId"] = folder_hash
+        return self._request("GET", endpoint, params=params)
+
+    def download_vault_file(
+        self,
+        hash_value: str,
+        output_path: Optional[Path] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        timeout: int = 60,
+    ) -> Path:
+        """Download an encrypted file from the vault.
+
+        Downloads encrypted files from the vault. The difference from regular
+        download is that vault files use workspaceId=null and encrypted=true.
+
+        Args:
+            hash_value: Hash of the vault file to download
+            output_path: Optional path where to save the file
+            progress_callback: Optional callback function(bytes_downloaded, total_bytes)
+            timeout: Request timeout in seconds (default: 60)
+
+        Returns:
+            Path where the file was saved
+
+        Raises:
+            DrimeAPIError: If download fails
+
+        Example:
+            >>> client = DrimeClient(api_key="your_key")
+            >>> # Download vault file by hash
+            >>> path = client.download_vault_file("MzQ0MzF8cGFkZA")
+            >>> print(f"Downloaded to: {path}")
+        """
+        # Vault files use workspaceId=null and encrypted=true
+        endpoint = (
+            f"/file-entries/download/{hash_value}?workspaceId=null&encrypted=true"
+        )
+        url = f"{self.api_url}/{endpoint.lstrip('/')}"
+
+        try:
+            response = self.session.get(url, stream=True, timeout=timeout)
+            response.raise_for_status()
+
+            # Try to extract filename from Content-Disposition header
+            filename = None
+            content_disp = response.headers.get("Content-Disposition", "")
+            if "filename=" in content_disp:
+                # Try filename* first (RFC 5987)
+                if "filename*=" in content_disp:
+                    parts = content_disp.split("filename*=")
+                    if len(parts) > 1:
+                        encoded = parts[1].split(";")[0].strip()
+                        if "''" in encoded:
+                            filename = encoded.split("''", 1)[1]
+                # Fall back to regular filename
+                elif "filename=" in content_disp:
+                    parts = content_disp.split("filename=")
+                    if len(parts) > 1:
+                        filename = parts[1].split(";")[0].strip().strip('"').strip("'")
+
+            # Use provided output path or generate one
+            if output_path:
+                save_path = output_path
+            elif filename:
+                save_path = Path(filename)
+            else:
+                save_path = Path(f"vault_{hash_value}")
+
+            # Write file content
+            total_size = int(response.headers.get("Content-Length", 0))
+            bytes_downloaded = 0
+
+            with open(save_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        bytes_downloaded += len(chunk)
+                        if progress_callback:
+                            progress_callback(bytes_downloaded, total_size)
+
+            return save_path
+
+        except requests.exceptions.HTTPError as e:
+            raise DrimeDownloadError(f"Vault download failed: {e}") from e
+        except requests.exceptions.RequestException as e:
+            raise DrimeNetworkError(f"Network error during vault download: {e}") from e
+        except OSError as e:
+            raise DrimeDownloadError(f"Failed to write vault file: {e}") from e
 
     # =========================
     # Helper/Alias Methods
