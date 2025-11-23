@@ -717,7 +717,7 @@ class TestRmCommand:
         assert result.exit_code == 0
         assert "Moved" in result.output and "trash" in result.output
         mock_client.delete_file_entries.assert_called_once_with(
-            [1, 2], delete_forever=False
+            [1, 2], delete_forever=False, workspace_id=0
         )
 
     @patch("pydrime.cli.DrimeClient")
@@ -740,7 +740,7 @@ class TestRmCommand:
         assert result.exit_code == 0
         assert "Permanently deleted" in result.output
         mock_client.delete_file_entries.assert_called_once_with(
-            [1], delete_forever=True
+            [1], delete_forever=True, workspace_id=0
         )
 
     @patch("pydrime.cli.DrimeClient")
@@ -780,7 +780,7 @@ class TestRmCommand:
         assert result.exit_code == 0
         assert "Resolved 'test.txt' to entry ID: 123" in result.output
         mock_client.delete_file_entries.assert_called_once_with(
-            [123], delete_forever=False
+            [123], delete_forever=False, workspace_id=0
         )
 
 

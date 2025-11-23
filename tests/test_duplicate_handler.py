@@ -372,63 +372,52 @@ class TestParentFolderContext:
         """Test resolving a nested folder path to ID with proper parent context."""
         mock_client = MagicMock()
 
-        # Mock get_file_entries to return data for searching within specific parents
-        def mock_get_entries(
-            query=None,
-            workspace_id=0,
-            parent_ids=None,
-            per_page=100,
-            page=None,
-            **kwargs,
-        ):
-            # When parent_ids=None or [None], return "backup" folder at root
-            if parent_ids is None or (
-                isinstance(parent_ids, list)
-                and (len(parent_ids) == 0 or None in parent_ids)
-            ):
-                if query == "backup":
-                    return {
-                        "data": [
-                            {
-                                "id": 100,
-                                "name": "backup",
-                                "type": "folder",
-                                "hash": "hash1",
-                                "mime": None,
-                                "file_size": 0,
-                                "parent_id": 0,
-                                "created_at": "2023-01-01",
-                                "updated_at": "2023-01-01",
-                                "owner": {"email": "test@example.com"},
-                            }
-                        ],
-                        "pagination": {"current_page": 1, "last_page": 1},
-                    }
-            # When parent_ids=[100], getting all entries in folder 100
-            elif parent_ids == [100]:
-                return {
-                    "data": [
-                        {
-                            "id": 200,
-                            "name": "data",
-                            "type": "folder",
-                            "hash": "hash2",
-                            "mime": None,
-                            "file_size": 0,
-                            "parent_id": 100,
-                            "created_at": "2023-01-01",
-                            "updated_at": "2023-01-01",
-                            "owner": {"email": "test@example.com"},
-                        }
-                    ],
-                    "pagination": {"current_page": 1, "last_page": 1},
-                }
-            return {"data": [], "pagination": {"current_page": 1, "last_page": 1}}
-
-        mock_client.get_file_entries.side_effect = mock_get_entries
+        # Create mock FileEntry objects for folder resolution
+        backup_folder = FileEntry(
+            id=100,
+            name="backup",
+            file_name="backup",
+            type="folder",
+            hash="hash1",
+            mime="",
+            file_size=0,
+            parent_id=0,
+            created_at="2023-01-01",
+            updated_at="2023-01-01",
+            extension=None,
+            url="",
+        )
+        data_folder = FileEntry(
+            id=200,
+            name="data",
+            file_name="data",
+            type="folder",
+            hash="hash2",
+            mime="",
+            file_size=0,
+            parent_id=100,
+            created_at="2023-01-01",
+            updated_at="2023-01-01",
+            extension=None,
+            url="",
+        )
 
         out = OutputFormatter(json_output=False, quiet=False)
         handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        # Mock the entries_manager.find_folder_by_name method
+        def mock_find_folder(
+            folder_name: str,
+            parent_id: Optional[int] = None,
+            search_in_root: bool = True,
+        ):
+            if folder_name == "backup" and parent_id is None:
+                return backup_folder
+            if folder_name == "data" and parent_id == 100:
+                return data_folder
+            return None
+
+        handler.entries_manager.find_folder_by_name = mock_find_folder
 
         folder_id = handler._resolve_parent_folder_id("backup/data")
 
@@ -793,39 +782,36 @@ class TestFolderResolution:
         """Test nested folder resolution with partial cache."""
         mock_client = MagicMock()
 
-        def mock_get_entries(
-            query=None,
-            workspace_id=0,
-            parent_ids=None,
-            per_page=100,
-            page=None,
-            **kwargs,
-        ):
-            # Return "subfolder" when searching in parent 100
-            if parent_ids == [100]:
-                return {
-                    "data": [
-                        {
-                            "id": 200,
-                            "name": "subfolder",
-                            "type": "folder",
-                            "hash": "hash2",
-                            "mime": None,
-                            "file_size": 0,
-                            "parent_id": 100,
-                            "created_at": "2023-01-01",
-                            "updated_at": "2023-01-01",
-                            "owner": {"email": "test@example.com"},
-                        }
-                    ],
-                    "pagination": {"current_page": 1, "last_page": 1},
-                }
-            return {"data": [], "pagination": {"current_page": 1, "last_page": 1}}
-
-        mock_client.get_file_entries.side_effect = mock_get_entries
+        # Create mock FileEntry for subfolder
+        subfolder = FileEntry(
+            id=200,
+            name="subfolder",
+            file_name="subfolder",
+            type="folder",
+            hash="hash2",
+            mime="",
+            file_size=0,
+            parent_id=100,
+            created_at="2023-01-01",
+            updated_at="2023-01-01",
+            extension=None,
+            url="",
+        )
 
         out = OutputFormatter(json_output=False, quiet=False)
         handler = DuplicateHandler(mock_client, out, 0, "ask")
+
+        # Mock the entries_manager.find_folder_by_name method
+        def mock_find_folder(
+            folder_name: str,
+            parent_id: Optional[int] = None,
+            search_in_root: bool = True,
+        ):
+            if folder_name == "subfolder" and parent_id == 100:
+                return subfolder
+            return None
+
+        handler.entries_manager.find_folder_by_name = mock_find_folder
 
         # Pre-cache the "backup" folder (lines 440-445 tested)
         handler._folder_id_cache["backup"] = 100
