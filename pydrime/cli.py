@@ -27,7 +27,7 @@ from .models import FileEntriesResult, FileEntry, SchemaValidationWarning, UserS
 from .output import OutputFormatter
 from .progress import UploadProgressTracker
 from .upload_preview import display_upload_preview
-from .utils import calculate_drime_hash, is_file_id, normalize_to_hash
+from .utils import calculate_drime_hash
 from .workspace_utils import format_workspace_display, get_folder_display_name
 
 logger = logging.getLogger(__name__)
@@ -1735,17 +1735,25 @@ def sync(
 
 
 @main.command()
-@click.argument("hash_or_id_value", type=str)
+@click.argument("identifier", type=str)
 @click.pass_context
-def info(ctx: Any, hash_or_id_value: str) -> None:
-    """Get detailed information about a file or folder.
+def stat(ctx: Any, identifier: str) -> None:
+    """Show detailed statistics for a file or folder.
 
-    HASH_OR_ID_VALUE: File hash or numeric file ID
+    IDENTIFIER: File/folder path, name, hash, or numeric ID
+
+    Supports paths (folder/file.txt), names (resolved in current directory),
+    numeric IDs, and hashes.
 
     Examples:
-        pydrime info 480424796          # Get info by ID
-        pydrime info NDgwNDI0Nzk2fA     # Get info by hash
+        pydrime stat my-file.txt             # By name in current folder
+        pydrime stat myfolder/my-file.txt    # By path
+        pydrime stat 480424796               # By numeric ID
+        pydrime stat NDgwNDI0Nzk2fA          # By hash
+        pydrime stat "My Documents"          # Folder by name
     """
+    from .download_helpers import get_entry_from_hash, resolve_identifier_to_hash
+
     api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
 
@@ -1756,31 +1764,32 @@ def info(ctx: Any, hash_or_id_value: str) -> None:
 
     try:
         client = DrimeClient(api_key=api_key)
+        current_folder = config.get_current_folder()
+        workspace = config.get_default_workspace() or 0
 
-        # Convert ID to hash if needed
-        if is_file_id(hash_or_id_value):
-            hash_value = normalize_to_hash(hash_or_id_value)
-            if not out.quiet:
-                out.info(f"Converting ID {hash_or_id_value} to hash {hash_value}")
-        else:
-            hash_value = hash_or_id_value
+        # Resolve identifier to hash (supports paths, names, IDs, hashes)
+        hash_value = resolve_identifier_to_hash(
+            client, identifier, current_folder, workspace, out
+        )
 
-        # Search for the entry using the hash
-        result = client.get_file_entries(query=hash_value)
-
-        if not result or not result.get("data"):
-            out.error(f"No file found with hash/ID: {hash_or_id_value}")
+        if not hash_value:
+            out.error(f"Entry not found: {identifier}")
             ctx.exit(1)
+            return  # For type checker
 
-        # Parse the response
-        file_entries = FileEntriesResult.from_api_response(result)
+        # Get the entry details
+        entry = get_entry_from_hash(client, hash_value, identifier, out)
 
-        if file_entries.is_empty:
-            out.error(f"No file found with hash/ID: {hash_or_id_value}")
+        if not entry:
             ctx.exit(1)
+            return  # For type checker
 
-        # Get the first entry (should be the only one for exact hash match)
-        entry = file_entries.entries[0]
+        # Get owner info from users list
+        owner_email = None
+        for user in entry.users:
+            if user.owns_entry:
+                owner_email = user.email
+                break
 
         # Output based on format
         if out.json_output:
@@ -1791,50 +1800,92 @@ def info(ctx: Any, hash_or_id_value: str) -> None:
                 "type": entry.type,
                 "hash": entry.hash,
                 "size": entry.file_size,
+                "size_formatted": (
+                    out.format_size(entry.file_size) if entry.file_size else None
+                ),
                 "parent_id": entry.parent_id,
                 "created_at": entry.created_at,
                 "updated_at": entry.updated_at,
-                "owner": entry.owner.email if entry.owner else None,
+                "owner": owner_email,
                 "public": entry.public,
                 "description": entry.description,
+                "extension": entry.extension,
+                "mime": entry.mime,
+                "workspace_id": entry.workspace_id,
             }
             out.output_json(entry_dict)
         else:
-            # Text format with detailed info
+            # Text format - display as a table
             icon = "📁" if entry.type == "folder" else "📄"
-            out.print(f"\n{icon} {entry.name}")
-            out.print(f"  ID: {entry.id}")
-            out.print(f"  Hash: {entry.hash or 'N/A'}")
-            out.print(f"  Type: {entry.type}")
-            if entry.file_size:
-                out.print(f"  Size: {out.format_size(entry.file_size)}")
-            if entry.parent_id:
-                out.print(f"  Parent ID: {entry.parent_id}")
-            else:
-                out.print("  Parent ID: Root")
-            if entry.owner:
-                out.print(f"  Owner: {entry.owner.email}")
 
-            # Format created timestamp
+            # Format timestamps
             created_dt = parse_iso_timestamp(entry.created_at)
             created_str = (
-                created_dt.strftime("%Y-%m-%d %H:%M:%S") if created_dt else "N/A"
+                created_dt.strftime("%Y-%m-%d %H:%M:%S") if created_dt else "-"
             )
-            out.print(f"  Created: {created_str}")
 
-            if entry.updated_at:
-                # Format updated timestamp
-                updated_dt = parse_iso_timestamp(entry.updated_at)
-                updated_str = (
-                    updated_dt.strftime("%Y-%m-%d %H:%M:%S")
-                    if updated_dt
-                    else entry.updated_at
+            updated_dt = parse_iso_timestamp(entry.updated_at)
+            updated_str = (
+                updated_dt.strftime("%Y-%m-%d %H:%M:%S") if updated_dt else "-"
+            )
+
+            # Build table data
+            table_data = [
+                {"field": "Name", "value": f"{icon} {entry.name}"},
+                {"field": "Type", "value": entry.type or "-"},
+                {"field": "ID", "value": str(entry.id)},
+                {"field": "Hash", "value": entry.hash or "-"},
+            ]
+
+            # Add size (for files)
+            if entry.file_size:
+                size_str = (
+                    f"{out.format_size(entry.file_size)} ({entry.file_size:,} bytes)"
                 )
-                out.print(f"  Updated: {updated_str}")
+                table_data.append({"field": "Size", "value": size_str})
+
+            # Add extension and mime type (for files)
+            if entry.extension:
+                table_data.append({"field": "Extension", "value": entry.extension})
+            if entry.mime:
+                table_data.append({"field": "MIME Type", "value": entry.mime})
+
+            # Add location info
+            if entry.parent_id:
+                table_data.append({"field": "Parent ID", "value": str(entry.parent_id)})
+            else:
+                table_data.append({"field": "Parent ID", "value": "Root"})
+
+            if entry.workspace_id:
+                table_data.append(
+                    {"field": "Workspace ID", "value": str(entry.workspace_id)}
+                )
+
+            # Add timestamps
+            table_data.append({"field": "Created", "value": created_str})
+            table_data.append({"field": "Updated", "value": updated_str})
+
+            # Add owner
+            if owner_email:
+                table_data.append({"field": "Owner", "value": owner_email})
+
+            # Add flags
+            flags = []
             if entry.public:
-                out.print("  🌐 Public")
+                flags.append("Public")
+            if flags:
+                table_data.append({"field": "Flags", "value": ", ".join(flags)})
+
+            # Add description
             if entry.description:
-                out.print(f"  Description: {entry.description}")
+                table_data.append({"field": "Description", "value": entry.description})
+
+            # Output the table
+            out.output_table(
+                table_data,
+                ["field", "value"],
+                {"field": "Field", "value": "Value"},
+            )
 
     except DrimeAPIError as e:
         out.error(str(e))
