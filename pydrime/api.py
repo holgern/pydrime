@@ -1056,6 +1056,7 @@ class DrimeClient:
         hash_value: str,
         output_path: Optional[Path] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        timeout: int = 60,
     ) -> Path:
         """Download a file from Drime Cloud.
 
@@ -1063,6 +1064,7 @@ class DrimeClient:
             hash_value: Hash of the file to download
             output_path: Optional path where to save the file
             progress_callback: Optional callback function(bytes_downloaded, total_bytes)
+            timeout: Request timeout in seconds (default: 60)
 
         Returns:
             Path where the file was saved
@@ -1074,7 +1076,7 @@ class DrimeClient:
         url = f"{self.api_url}/{endpoint.lstrip('/')}"
 
         try:
-            response = self.session.get(url, stream=True)
+            response = self.session.get(url, stream=True, timeout=timeout)
             response.raise_for_status()
 
             # Try to extract filename from Content-Disposition header

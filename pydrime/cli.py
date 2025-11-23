@@ -1,5 +1,6 @@
 """CLI interface for Drime Cloud uploader."""
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,8 @@ from .progress import UploadProgressTracker
 from .upload_preview import display_upload_preview
 from .utils import is_file_id, normalize_to_hash
 from .workspace_utils import format_workspace_display, get_folder_display_name
+
+logger = logging.getLogger(__name__)
 
 
 def parse_iso_timestamp(timestamp_str: Optional[str]) -> Optional[datetime]:
@@ -137,10 +140,21 @@ def scan_directory(
     is_flag=True,
     help="Enable API schema validation warnings (for debugging)",
 )
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Enable verbose/debug logging output",
+)
 @click.version_option()
 @click.pass_context
 def main(
-    ctx: Any, api_key: Optional[str], quiet: bool, json: bool, validate_schema: bool
+    ctx: Any,
+    api_key: Optional[str],
+    quiet: bool,
+    json: bool,
+    validate_schema: bool,
+    verbose: bool,
 ) -> None:
     """PyDrime - Upload & Download files and directories to Drime Cloud."""
     # Store settings in context for subcommands to access
@@ -148,6 +162,20 @@ def main(
     ctx.obj["api_key"] = api_key
     ctx.obj["out"] = OutputFormatter(json_output=json, quiet=quiet)
     ctx.obj["validate_schema"] = validate_schema
+    ctx.obj["verbose"] = verbose
+
+    # Configure logging based on verbose flag
+    if verbose:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            datefmt="%H:%M:%S",
+        )
+        # Enable debug logging for pydrime modules
+        logging.getLogger("pydrime").setLevel(logging.DEBUG)
+    else:
+        # Set default logging level to WARNING to suppress debug/info messages
+        logging.basicConfig(level=logging.WARNING)
 
     # Enable schema validation if flag is set
     if validate_schema:
@@ -1756,13 +1784,6 @@ def download(
     "--dry-run", is_flag=True, help="Show what would be synced without syncing"
 )
 @click.option(
-    "--workers",
-    "-j",
-    type=int,
-    default=1,
-    help="Number of parallel workers (default: 1, currently not used)",
-)
-@click.option(
     "--no-progress",
     is_flag=True,
     help="Disable progress bars",
@@ -1781,6 +1802,24 @@ def download(
     default=30,
     help="File size threshold in MB for using multipart upload (default: 30MB)",
 )
+@click.option(
+    "--batch-size",
+    "-b",
+    type=int,
+    default=50,
+    help="Number of remote files to process per batch in streaming mode (default: 50)",
+)
+@click.option(
+    "--no-streaming",
+    is_flag=True,
+    help="Disable streaming mode (scan all files upfront instead of batch processing)",
+)
+@click.option(
+    "--workers",
+    type=int,
+    default=1,
+    help="Number of parallel workers for uploads/downloads (default: 1)",
+)
 @click.pass_context
 def sync(
     ctx: Any,
@@ -1788,10 +1827,12 @@ def sync(
     remote_path: Optional[str],
     workspace: Optional[int],
     dry_run: bool,
-    workers: int,
     no_progress: bool,
     chunk_size: int,
     multipart_threshold: int,
+    batch_size: int,
+    no_streaming: bool,
+    workers: int,
 ) -> None:
     """Sync files between local directory and Drime Cloud.
 
@@ -1823,9 +1864,10 @@ def sync(
         pydrime sync ./local:lb:/Backup
 
         # Other options
-        pydrime sync . -w 5                         # Sync in workspace 5
-        pydrime sync ./data --dry-run               # Preview sync changes
-        pydrime sync /local:tw:/remote -j 4         # Parallel with 4 workers
+        pydrime sync . -w 5                          # Sync in workspace 5
+        pydrime sync ./data --dry-run                # Preview sync changes
+        pydrime sync ./data -b 100                   # Process 100 files per batch
+        pydrime sync ./data --no-streaming           # Scan all files upfront
     """
     from .sync import SyncEngine, SyncMode, SyncPair
 
@@ -1849,6 +1891,12 @@ def sync(
         ctx.exit(1)
     if chunk_size >= multipart_threshold:
         out.error("Chunk size must be smaller than multipart threshold")
+        ctx.exit(1)
+    if batch_size < 1:
+        out.error("Batch size must be at least 1")
+        ctx.exit(1)
+    if batch_size > 1000:
+        out.error("Batch size cannot exceed 1000")
         ctx.exit(1)
 
     chunk_size_bytes = chunk_size * 1024 * 1024
@@ -1936,6 +1984,9 @@ def sync(
             dry_run=dry_run,
             chunk_size=chunk_size_bytes,
             multipart_threshold=multipart_threshold_bytes,
+            batch_size=batch_size,
+            use_streaming=not no_streaming,
+            max_workers=workers,
         )
 
         # Output results
@@ -2282,8 +2333,11 @@ def rename(
 @main.command()
 @click.argument("entry_identifiers", nargs=-1, type=str, required=True)
 @click.option("--permanent", is_flag=True, help="Delete permanently (cannot be undone)")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
-def rm(ctx: Any, entry_identifiers: tuple[str, ...], permanent: bool) -> None:
+def rm(
+    ctx: Any, entry_identifiers: tuple[str, ...], permanent: bool, yes: bool
+) -> None:
     """Delete one or more file or folder entries.
 
     ENTRY_IDENTIFIERS: One or more entry IDs or names to delete
@@ -2330,8 +2384,12 @@ def rm(ctx: Any, entry_identifiers: tuple[str, ...], permanent: bool) -> None:
 
         # Confirm deletion
         action = "permanently delete" if permanent else "move to trash"
-        if not out.quiet and not click.confirm(
-            f"Are you sure you want to {action} {len(entry_ids)} item(s)?"
+        if (
+            not yes
+            and not out.quiet
+            and not click.confirm(
+                f"Are you sure you want to {action} {len(entry_ids)} item(s)?"
+            )
         ):
             out.warning("Deletion cancelled.")
             return
