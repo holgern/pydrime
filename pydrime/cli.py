@@ -1498,8 +1498,26 @@ def sync(
 
     # Detect if path is a literal sync pair format
     # Format: /local:mode:/remote (3 parts) or /local:/remote (2 parts)
-    # A path is a literal pair if it has at least 1 colon and splits into 2 or 3 parts
-    parts = path.split(":")
+    # On Windows, paths like C:\Users\... have a colon after drive letter,
+    # so we need to handle this case specially.
+    # A literal pair must have colons that are NOT drive letter colons.
+    # We detect this by checking if the path looks like a Windows drive path.
+    import re
+
+    # Check if path starts with a Windows drive letter (e.g., C:, D:)
+    # If so, only consider colons after the drive letter for splitting
+    windows_drive_match = re.match(r"^([A-Za-z]:)", path)
+    if windows_drive_match:
+        # Windows path: split only on colons after the drive letter
+        drive = windows_drive_match.group(1)
+        rest_of_path = path[len(drive) :]
+        parts = rest_of_path.split(":")
+        # Prepend the drive to the first part
+        if parts:
+            parts[0] = drive + parts[0]
+    else:
+        parts = path.split(":")
+
     is_literal_pair = len(parts) >= 2 and len(parts) <= 3
 
     # Validate and convert MB to bytes

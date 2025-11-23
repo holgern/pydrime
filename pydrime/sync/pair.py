@@ -108,10 +108,11 @@ class SyncPair:
         """Convert SyncPair to dictionary for JSON serialization.
 
         Returns:
-            Dictionary representation of sync pair
+            Dictionary representation of sync pair.
+            Uses POSIX-style paths (forward slashes) for cross-platform consistency.
         """
         return {
-            "local": str(self.local),
+            "local": self.local.as_posix(),
             "remote": self.remote,
             "syncMode": self.sync_mode.value,
             "alias": self.alias,
@@ -133,6 +134,10 @@ class SyncPair:
         - /local:tw:/remote                  # Abbreviated mode
         - /local:localToCloud:/remote        # Full mode name
 
+        On Windows, also supports:
+        - C:/local:mode:/remote              # Windows path with mode
+        - C:/local:/remote                   # Windows path without mode
+
         Args:
             literal: Literal sync pair string
             default_mode: Default sync mode if not specified (defaults to TWO_WAY)
@@ -151,10 +156,24 @@ class SyncPair:
             >>> pair.sync_mode
             SyncMode.LOCAL_TO_CLOUD
         """
+        import re
+
         if default_mode is None:
             default_mode = SyncMode.TWO_WAY
 
-        parts = literal.split(":")
+        # Handle Windows drive letters (e.g., C:, D:)
+        # If path starts with a drive letter, split only on colons after the drive
+        windows_drive_match = re.match(r"^([A-Za-z]:)", literal)
+        if windows_drive_match:
+            drive = windows_drive_match.group(1)
+            rest_of_literal = literal[len(drive) :]
+            parts = rest_of_literal.split(":")
+            # Prepend the drive to the first part
+            if parts:
+                parts[0] = drive + parts[0]
+        else:
+            parts = literal.split(":")
+
         if len(parts) == 2:
             # Format: /local:/remote (default mode)
             local, remote = parts
@@ -183,14 +202,18 @@ class SyncPair:
         )
 
     def __str__(self) -> str:
-        """String representation of sync pair."""
+        """String representation of sync pair.
+
+        Uses POSIX-style paths for cross-platform consistency.
+        """
+        local_str = self.local.as_posix()
         if self.alias:
-            return f"{self.alias} ({self.local} ←{self.sync_mode.value}→ {self.remote})"
-        return f"{self.local} ←{self.sync_mode.value}→ {self.remote}"
+            return f"{self.alias} ({local_str} ←{self.sync_mode.value}→ {self.remote})"
+        return f"{local_str} ←{self.sync_mode.value}→ {self.remote}"
 
     def __repr__(self) -> str:
         """Detailed representation of sync pair."""
         return (
-            f"SyncPair(local={self.local}, remote={self.remote}, "
+            f"SyncPair(local={self.local.as_posix()}, remote={self.remote}, "
             f"sync_mode={self.sync_mode}, alias={self.alias})"
         )
