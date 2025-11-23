@@ -26,9 +26,14 @@ important data.
 ## Features
 
 - Upload individual files or entire directories
+- Download files and folders by name, ID, or hash
+- **Sync** local directories with Drime Cloud (bidirectional and one-way modes)
+- **Encrypted Vault** for secure file storage with client-side encryption
 - Recursive directory scanning
 - Progress tracking with visual feedback
 - Dry-run mode to preview uploads
+- Parallel uploads/downloads with configurable workers
+- Duplicate file detection and removal
 - Support for environment-based configuration
 - Rich terminal output with colors
 - JSON output for scripting and automation
@@ -292,6 +297,86 @@ pydrime share 12345 --allow-edit --allow-download
 
 ```bash
 pydrime workspaces
+```
+
+### Sync Files
+
+Synchronize local directory with Drime Cloud:
+
+```bash
+# Default two-way sync
+pydrime sync ./my_folder
+
+# Sync with specific remote path
+pydrime sync ./docs -r remote_docs
+
+# Preview sync changes (dry run)
+pydrime sync ./data --dry-run
+
+# Using sync modes explicitly (format: local:mode:remote)
+pydrime sync /home/user/docs:twoWay:/Documents
+pydrime sync ./backup:localBackup:/Backup
+```
+
+**Sync Modes:**
+
+- `twoWay` (`tw`) - Mirror changes in both directions
+- `localToCloud` (`ltc`) - Upload local changes only
+- `localBackup` (`lb`) - Upload to cloud, never delete
+- `cloudToLocal` (`ctl`) - Download cloud changes only
+- `cloudBackup` (`cb`) - Download from cloud, never delete
+
+### Find Duplicates
+
+Find and optionally delete duplicate files:
+
+```bash
+# Show duplicates (dry run)
+pydrime find-duplicates
+
+# Find in specific folder recursively
+pydrime find-duplicates --folder "My Documents" --recursive
+
+# Actually delete duplicates (moves to trash)
+pydrime find-duplicates --delete
+```
+
+### Storage Usage
+
+Check your storage usage:
+
+```bash
+pydrime usage
+```
+
+### Vault Commands
+
+The vault provides encrypted file storage with client-side encryption:
+
+```bash
+# Show vault information
+pydrime vault show
+
+# Unlock vault for current session
+eval $(pydrime vault unlock)
+
+# List vault files
+pydrime vault ls
+pydrime vault ls MyFolder
+
+# Upload file to vault (will prompt for password)
+pydrime vault upload secret.txt
+pydrime vault upload document.pdf -f MyFolder
+
+# Download file from vault
+pydrime vault download secret.txt
+pydrime vault download secret.txt -o decrypted.txt
+
+# Delete vault file
+pydrime vault rm secret.txt
+
+# Lock vault (clear password from session)
+eval $(pydrime vault lock)
 ```
 
 ## Command Reference
