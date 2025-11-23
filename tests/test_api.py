@@ -872,8 +872,10 @@ class TestMimeTypeDetection:
             client = DrimeClient(api_key="test_key")
             mime_type = client._detect_mime_type(test_file)
 
-            # Should fall back to application/octet-stream
-            assert mime_type == "application/octet-stream"
+            # python-magic (if installed) detects content as text/plain
+            # mimetypes module falls back to application/octet-stream
+            # Both are acceptable results
+            assert mime_type in ["text/plain", "application/octet-stream"]
         finally:
             test_file.unlink()
 
@@ -924,13 +926,35 @@ class TestMimeTypeDetection:
 
     @patch("pydrime.api.DrimeClient._detect_mime_type")
     @patch("pydrime.api.DrimeClient._request")
+    @patch("pydrime.api.requests.put")
+    @patch("builtins.open", create=True)
+    @patch("pathlib.Path.stat")
+    @patch("pathlib.Path.exists")
     def test_upload_file_multipart_uses_mime_detection(
-        self, mock_request, mock_detect_mime
+        self,
+        mock_exists,
+        mock_stat,
+        mock_open,
+        mock_put,
+        mock_request,
+        mock_detect_mime,
     ):
         """Test that upload_file_multipart uses MIME detection."""
-        import tempfile
         from pathlib import Path
+        from unittest.mock import MagicMock
 
+        # Mock file existence and size
+        mock_exists.return_value = True
+        mock_stat_obj = MagicMock()
+        mock_stat_obj.st_size = 2 * 1024 * 1024  # 2MB
+        mock_stat.return_value = mock_stat_obj
+
+        # Mock file reading
+        mock_file = MagicMock()
+        mock_file.read.return_value = b"x" * (2 * 1024 * 1024)
+        mock_open.return_value.__enter__.return_value = mock_file
+
+        # Mock MIME detection and API responses
         mock_detect_mime.return_value = "application/octet-stream"
         mock_request.side_effect = [
             {"uploadId": "test-upload-id", "key": "test-key"},
@@ -939,28 +963,22 @@ class TestMimeTypeDetection:
             {"status": "success", "fileEntry": {"id": 123}},  # entry creation
         ]
 
-        with tempfile.NamedTemporaryFile(mode="wb", suffix=".bin", delete=False) as f:
-            # Create a file larger than 1MB to trigger multipart
-            f.write(b"x" * (2 * 1024 * 1024))
-            test_file = Path(f.name)
+        # Mock S3 PUT response
+        mock_put_response = Mock()
+        mock_put_response.headers = {"ETag": "test-etag"}
+        mock_put.return_value = mock_put_response
 
-        try:
-            with patch("pydrime.api.requests.put") as mock_put:
-                mock_put_response = Mock()
-                mock_put_response.headers = {"ETag": "test-etag"}
-                mock_put.return_value = mock_put_response
+        test_file = Path("/fake/path/test.bin")
 
-                client = DrimeClient(api_key="test_key")
-                # Upload with low threshold to trigger multipart
-                client.upload_file(
-                    test_file,
-                    use_multipart_threshold=1 * 1024 * 1024,  # 1MB
-                )
+        client = DrimeClient(api_key="test_key")
+        # Upload with low threshold to trigger multipart
+        client.upload_file(
+            test_file,
+            use_multipart_threshold=1 * 1024 * 1024,  # 1MB
+        )
 
-                # Verify MIME detection was called
-                mock_detect_mime.assert_called_once_with(test_file)
-        finally:
-            test_file.unlink()
+        # Verify MIME detection was called
+        mock_detect_mime.assert_called_once_with(test_file)
 
 
 class TestExceptions:
