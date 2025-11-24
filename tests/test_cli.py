@@ -3219,8 +3219,8 @@ class TestSyncCommand:
         )
 
         assert result.exit_code == 0
-        assert "Dry run mode" in result.output
-        assert "2 files to upload" in result.output or "upload" in result.output.lower()
+        assert "Dry run:" in result.output or "Dry run complete!" in result.output
+        assert "Upload: 2 file(s)" in result.output or "upload" in result.output.lower()
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.auth.config")
@@ -3248,16 +3248,30 @@ class TestSyncCommand:
                 {
                     "id": 1,
                     "name": "remote1.txt",
+                    "file_name": "remote1.txt",
+                    "mime": "text/plain",
+                    "file_size": 100,
                     "type": "text",
-                    "size": 100,
+                    "hash": "hash1",
+                    "url": "https://example.com/remote1.txt",
+                    "created_at": "2024-01-01T12:00:00Z",
                     "updated_at": "2024-01-01T12:00:00Z",
+                    "parent_id": None,
+                    "extension": "txt",
                 },
                 {
                     "id": 2,
                     "name": "remote2.txt",
+                    "file_name": "remote2.txt",
+                    "mime": "text/plain",
+                    "file_size": 200,
                     "type": "text",
-                    "size": 200,
+                    "hash": "hash2",
+                    "url": "https://example.com/remote2.txt",
+                    "created_at": "2024-01-01T13:00:00Z",
                     "updated_at": "2024-01-01T13:00:00Z",
+                    "parent_id": None,
+                    "extension": "txt",
                 },
             ]
         }
@@ -3271,9 +3285,9 @@ class TestSyncCommand:
         )
 
         assert result.exit_code == 0
-        assert "Dry run mode" in result.output
+        assert "Dry run:" in result.output or "Dry run complete!" in result.output
         assert (
-            "2 files to download" in result.output
+            "Download: 2 file(s)" in result.output
             or "download" in result.output.lower()
         )
 
@@ -3317,9 +3331,16 @@ class TestSyncCommand:
                 {
                     "id": 1,
                     "name": "file1.txt",
+                    "file_name": "file1.txt",
+                    "mime": "text/plain",
+                    "file_size": len("content1"),
                     "type": "text",
-                    "size": len("content1"),
+                    "hash": "hash123",
+                    "url": "https://example.com/file1.txt",
+                    "created_at": iso_time,
                     "updated_at": iso_time,
+                    "parent_id": None,
+                    "extension": "txt",
                 }
             ]
         }
@@ -3330,9 +3351,13 @@ class TestSyncCommand:
         )
 
         assert result.exit_code == 0
-        assert "Dry run mode" in result.output
+        assert "Dry run:" in result.output or "Dry run complete!" in result.output
         # Check that files are detected (test passes if sync logic works)
-        assert "Files in sync:" in result.output or "Files to upload:" in result.output
+        assert (
+            "Skip:" in result.output
+            or "Upload:" in result.output
+            or "Sync plan:" in result.output
+        )
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.auth.config")
@@ -3365,17 +3390,25 @@ class TestSyncCommand:
         # Mock remote file with older timestamp and different size
         from datetime import datetime, timedelta
 
-        old_dt = datetime.fromtimestamp(new_timestamp) - timedelta(hours=1)
-        old_iso_time = old_dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        # Use a much older timestamp to avoid any rounding issues (1 day ago)
+        old_dt = datetime.fromtimestamp(new_timestamp) - timedelta(days=1)
+        old_iso_time = old_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         mock_client.get_file_entries.return_value = {
             "data": [
                 {
                     "id": 1,
                     "name": "file1.txt",
+                    "file_name": "file1.txt",
+                    "mime": "text/plain",
+                    "file_size": 100,  # Different size
                     "type": "text",
-                    "size": 100,  # Different size
+                    "hash": "abc123",
+                    "url": "https://example.com/file1.txt",
+                    "created_at": old_iso_time,
                     "updated_at": old_iso_time,
+                    "parent_id": None,
+                    "extension": "txt",
                 }
             ]
         }
@@ -3388,9 +3421,9 @@ class TestSyncCommand:
         )
 
         assert result.exit_code == 0
-        assert "Dry run mode" in result.output
+        assert "Dry run:" in result.output or "Dry run complete!" in result.output
         # Should upload the newer local file
-        assert "1 file to upload" in result.output or "upload" in result.output.lower()
+        assert "Upload: 1 file(s)" in result.output or "upload" in result.output.lower()
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.auth.config")
@@ -3408,7 +3441,7 @@ class TestSyncCommand:
         import os
         import time
 
-        old_timestamp = time.time() - 3600  # 1 hour ago
+        old_timestamp = time.time() - 86400  # 1 day ago
         os.utime(file1, (old_timestamp, old_timestamp))
 
         mock_cli_config.is_configured.return_value = True
@@ -3424,16 +3457,23 @@ class TestSyncCommand:
         from datetime import datetime
 
         new_dt = datetime.fromtimestamp(time.time())
-        new_iso_time = new_dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        new_iso_time = new_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         mock_client.get_file_entries.return_value = {
             "data": [
                 {
                     "id": 1,
                     "name": "file1.txt",
+                    "file_name": "file1.txt",
+                    "mime": "text/plain",
+                    "file_size": 200,  # Different size
                     "type": "text",
-                    "size": 200,  # Different size
+                    "hash": "def456",
+                    "url": "https://example.com/file1.txt",
+                    "created_at": new_iso_time,
                     "updated_at": new_iso_time,
+                    "parent_id": None,
+                    "extension": "txt",
                 }
             ]
         }
@@ -3446,10 +3486,11 @@ class TestSyncCommand:
         )
 
         assert result.exit_code == 0
-        assert "Dry run mode" in result.output
+        assert "Dry run:" in result.output or "Dry run complete!" in result.output
         # Should download the newer remote file
         assert (
-            "1 file to download" in result.output or "download" in result.output.lower()
+            "Download: 1 file(s)" in result.output
+            or "download" in result.output.lower()
         )
 
     @patch("pydrime.cli.DrimeClient")
@@ -3480,9 +3521,16 @@ class TestSyncCommand:
                 {
                     "id": 2,
                     "name": "remote.txt",
+                    "file_name": "remote.txt",
+                    "mime": "text/plain",
+                    "file_size": 100,
                     "type": "text",
-                    "size": 100,
+                    "hash": "remote_hash",
+                    "url": "https://example.com/remote.txt",
+                    "created_at": "2024-01-01T12:00:00Z",
                     "updated_at": "2024-01-01T12:00:00Z",
+                    "parent_id": None,
+                    "extension": "txt",
                 }
             ]
         }
@@ -3547,7 +3595,7 @@ class TestSyncCommand:
         )
 
         assert result.exit_code == 0
-        assert "Dry run mode" in result.output
+        assert "Dry run:" in result.output or "Dry run complete!" in result.output
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.auth.config")
@@ -3698,11 +3746,8 @@ class TestSyncCommand:
 
         assert result.exit_code == 0
         assert (
-            "0 files to upload" in result.output or "no files" in result.output.lower()
-        )
-        assert (
-            "0 files to download" in result.output
-            or "no files" in result.output.lower()
+            "No changes needed" in result.output
+            or "everything is in sync" in result.output.lower()
         )
 
     @patch("pydrime.cli.DrimeClient")
@@ -3775,6 +3820,6 @@ class TestSyncCommand:
         )
 
         assert result.exit_code == 0
-        assert "Dry run mode" in result.output
+        assert "Dry run:" in result.output or "Dry run complete!" in result.output
         # Should detect both files
-        assert "2 files to upload" in result.output or "upload" in result.output.lower()
+        assert "Upload: 2 file(s)" in result.output or "upload" in result.output.lower()

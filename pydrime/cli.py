@@ -1,6 +1,5 @@
 """CLI interface for Drime Cloud uploader."""
 
-import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -1761,7 +1760,7 @@ def download(
     "-j",
     type=int,
     default=1,
-    help="Number of parallel workers (default: 1, use 4-8 for parallel transfers)",
+    help="Number of parallel workers (default: 1, currently not used)",
 )
 @click.option(
     "--no-progress",
@@ -1783,7 +1782,7 @@ def download(
     help="File size threshold in MB for using multipart upload (default: 30MB)",
 )
 @click.pass_context
-def sync(  # noqa: C901
+def sync(
     ctx: Any,
     path: str,
     remote_path: Optional[str],
@@ -1813,6 +1812,8 @@ def sync(  # noqa: C901
         pydrime sync ./data --dry-run               # Preview sync changes
         pydrime sync ./large_folder -j 4            # Parallel sync with 4 workers
     """
+    from .sync import SyncEngine, SyncMode, SyncPair
+
     out: OutputFormatter = ctx.obj["out"]
     local_path = Path(path)
 
@@ -1848,404 +1849,63 @@ def sync(  # noqa: C901
     # Initialize client
     client = DrimeClient(api_key=api_key)
 
-    # Get current folder context
-    current_folder_id = config.get_current_folder()
+    # Determine remote path
+    if remote_path is None:
+        # Use folder name as remote path
+        remote_path = local_path.name
 
     if not out.quiet:
         # Show workspace information
         workspace_display, _ = format_workspace_display(client, workspace)
         out.info(f"Workspace: {workspace_display}")
-
-        # Show parent folder information
-        folder_display, _ = get_folder_display_name(client, current_folder_id)
-        out.info(f"Parent folder: {folder_display}")
-
         if remote_path:
-            out.info(f"Remote path structure: {remote_path}")
-
+            out.info(f"Remote path: {remote_path}")
         out.info("")  # Empty line for readability
 
     try:
-        # Step 1: Scan local directory
-        if not out.quiet:
-            out.info(f"Scanning local directory: {local_path}")
+        # Create sync pair
+        pair = SyncPair(
+            local=local_path,
+            remote=remote_path,
+            sync_mode=SyncMode.TWO_WAY,
+            workspace_id=workspace,
+        )
 
-        # Scan with the local_path itself as base_path to get relative paths
-        # without the folder name
-        local_files = scan_directory(local_path, local_path, out)
+        # Create output formatter for engine (respect no_progress)
+        engine_out = OutputFormatter(
+            json_output=out.json_output, quiet=no_progress or out.quiet
+        )
 
-        # Step 2: Get remote files
-        if not out.quiet:
-            out.info("Fetching remote files...")
+        # Create sync engine
+        engine = SyncEngine(client, engine_out)
 
-        # Use FileEntriesManager to fetch all remote files
-        file_manager = FileEntriesManager(client, workspace)
+        # Execute sync
+        stats = engine.sync_pair(
+            pair,
+            dry_run=dry_run,
+            chunk_size=chunk_size_bytes,
+            multipart_threshold=multipart_threshold_bytes,
+        )
 
-        # Determine the remote folder to sync with
-        # If remote_path is specified, use it
-        # Otherwise, look for a folder with the same name as local_path
-        # in current_folder_id
-        remote_sync_folder_id = current_folder_id
-        remote_base_path = ""
-        skip_remote_fetch = False
-        remote_folder_found = False
-
-        if remote_path:
-            # Try to find a folder matching the remote_path
-            folder_entry = file_manager.find_folder_by_name(
-                remote_path, current_folder_id
-            )
-            if folder_entry:
-                # Found matching folder - sync into it
-                remote_sync_folder_id = folder_entry.id
-                remote_base_path = ""  # We're already inside the folder
-                remote_folder_found = True
-                if not out.quiet:
-                    out.info(
-                        f"Found remote folder '{folder_entry.name}' "
-                        f"(ID: {folder_entry.id})"
-                    )
-            else:
-                # Folder doesn't exist yet - will be created during upload
-                # Skip fetching remote files since the folder doesn't exist
-                skip_remote_fetch = True
-                remote_base_path = (
-                    remote_path or ""
-                )  # Keep for upload path construction
-                if not out.quiet:
-                    out.info(
-                        f"Remote folder '{remote_path}' not found - "
-                        f"will be created during sync"
-                    )
-        else:
-            # No remote_path specified - try to find a matching folder
-            folder_entry = file_manager.find_folder_by_name(
-                local_path.name, current_folder_id
-            )
-            if folder_entry:
-                # Found matching folder - sync into it
-                remote_sync_folder_id = folder_entry.id
-                remote_base_path = ""  # We're already inside the folder
-                remote_folder_found = True
-                if not out.quiet:
-                    out.info(
-                        f"Found remote folder '{folder_entry.name}' "
-                        f"(ID: {folder_entry.id})"
-                    )
-            else:
-                # Folder doesn't exist - skip remote fetch
-                skip_remote_fetch = True
-                remote_base_path = (
-                    ""  # Files will be uploaded with their relative paths
-                )
-                if not out.quiet:
-                    out.info(
-                        f"Remote folder '{local_path.name}' not found - "
-                        f"will be created during sync"
-                    )
-
-        # Get all remote files recursively with their paths
-        if skip_remote_fetch:
-            remote_entries_with_paths = []
-        else:
-            remote_entries_with_paths = file_manager.get_all_recursive(
-                folder_id=remote_sync_folder_id, path_prefix=remote_base_path
-            )
-
-        # Apply remote path prefix to local files if specified AND folder not found
-        # If folder was found, we sync contents directly without prefix
-        if remote_path and not remote_folder_found:
-            local_files = [
-                (file_path, f"{remote_path}/{rel_path}")
-                for file_path, rel_path in local_files
-            ]
-
-        # Build local file mapping: {relative_path: (Path, size, mtime)}
-        local_file_map: dict[str, tuple[Path, int, float]] = {}
-        for file_path, rel_path in local_files:
-            stat = file_path.stat()
-            local_file_map[rel_path] = (file_path, stat.st_size, stat.st_mtime)
-
-        if not out.quiet:
-            out.info(f"Found {len(local_file_map)} local file(s)")
-            if folder_entry:
-                # Found matching folder - sync into it
-                remote_sync_folder_id = folder_entry.id
-                remote_base_path = ""  # We're already inside the folder
-                if not out.quiet:
-                    out.info(
-                        f"Found remote folder '{folder_entry.name}' "
-                        f"(ID: {folder_entry.id})"
-                    )
-            else:
-                # Folder doesn't exist yet - will be created during upload
-                # Skip fetching remote files since the folder doesn't exist
-                skip_remote_fetch = True
-                remote_base_path = remote_path  # Keep for upload path construction
-                if not out.quiet:
-                    out.info(
-                        f"Remote folder '{remote_path}' not found - "
-                        f"will be created during sync"
-                    )
-        else:
-            # No remote_path specified - try to find a matching folder
-            folder_entry = file_manager.find_folder_by_name(
-                local_path.name, current_folder_id
-            )
-            if folder_entry:
-                # Found matching folder - sync into it
-                remote_sync_folder_id = folder_entry.id
-                remote_base_path = ""  # We're already inside the folder
-                if not out.quiet:
-                    out.info(
-                        f"Found remote folder '{folder_entry.name}' "
-                        f"(ID: {folder_entry.id})"
-                    )
-            else:
-                # Folder doesn't exist - skip remote fetch
-                skip_remote_fetch = True
-                remote_base_path = (
-                    ""  # Files will be uploaded with their relative paths
-                )
-                if not out.quiet:
-                    out.info(
-                        f"Remote folder '{local_path.name}' not found - "
-                        f"will be created during sync"
-                    )
-
-        # Get all remote files recursively with their paths
-        if skip_remote_fetch:
-            remote_entries_with_paths = []
-        else:
-            # Ensure remote_base_path is not None (should always be a string)
-            assert remote_base_path is not None, "remote_base_path should be a string"
-            remote_entries_with_paths = file_manager.get_all_recursive(
-                folder_id=remote_sync_folder_id, path_prefix=remote_base_path
-            )
-
-        # Build remote file mapping: {relative_path: FileEntry}
-        remote_file_map: dict[str, FileEntry] = {}
-
-        for entry, entry_path in remote_entries_with_paths:
-            remote_file_map[entry_path] = entry
-
-        if not out.quiet:
-            out.info(f"Found {len(remote_file_map)} remote file(s)")
-            out.info("")
-
-        # Step 3: Compare and categorize files
-        files_to_upload: list[tuple[Path, str]] = []  # (local_path, remote_path)
-        files_to_download: list[
-            tuple[FileEntry, Path]
-        ] = []  # (remote_entry, local_path)
-        files_in_sync: list[str] = []
-        files_conflict: list[tuple[str, str]] = []  # (path, reason)
-
-        # Find files only in local (need upload) or compare existing
-        for rel_path, (file_path, local_size, local_mtime) in local_file_map.items():
-            if rel_path not in remote_file_map:
-                # File only exists locally - upload it
-                files_to_upload.append((file_path, rel_path))
-            else:
-                # File exists in both - compare
-                remote_entry = remote_file_map[rel_path]
-                remote_size = remote_entry.file_size or 0
-                remote_updated = parse_iso_timestamp(remote_entry.updated_at)
-
-                # Compare by size first
-                if remote_size != local_size:
-                    # Size mismatch - use modification time to decide
-                    if remote_updated:
-                        local_dt = datetime.fromtimestamp(local_mtime)
-                        time_diff = (local_dt - remote_updated).total_seconds()
-
-                        if time_diff > 2:
-                            # Local is newer
-                            files_to_upload.append((file_path, rel_path))
-                        elif time_diff < -2:
-                            # Remote is newer
-                            files_to_download.append((remote_entry, file_path))
-                        else:
-                            # Same time but different size - conflict
-                            files_conflict.append(
-                                (
-                                    rel_path,
-                                    f"Same timestamp but size differs: "
-                                    f"local={out.format_size(local_size)}, "
-                                    f"remote={out.format_size(remote_size)}",
-                                )
-                            )
-                    else:
-                        # No remote timestamp - upload local
-                        # (assume local is source of truth)
-                        files_to_upload.append((file_path, rel_path))
-                else:
-                    # Same size - check modification time
-                    if remote_updated:
-                        local_dt = datetime.fromtimestamp(local_mtime)
-                        time_diff = (local_dt - remote_updated).total_seconds()
-
-                        # Consider in sync if size matches and time is within
-                        # 10 seconds (tolerance for filesystem precision and
-                        # minor clock skew)
-                        if abs(time_diff) <= 10:
-                            files_in_sync.append(rel_path)
-                        elif time_diff > 10:
-                            # Local is newer
-                            files_to_upload.append((file_path, rel_path))
-                        else:
-                            # Remote is newer
-                            files_to_download.append((remote_entry, file_path))
-                    else:
-                        # Same size, no timestamp difference detectable
-                        files_in_sync.append(rel_path)
-
-        # Find files only in remote (need download)
-        for rel_path, remote_entry in remote_file_map.items():
-            if rel_path not in local_file_map:
-                # Construct local path
-                # Remove remote_path prefix if present
-                local_rel_path = rel_path
-                if remote_path and local_rel_path.startswith(remote_path + "/"):
-                    local_rel_path = local_rel_path[len(remote_path) + 1 :]
-                elif remote_path and local_rel_path.startswith(remote_path):
-                    local_rel_path = local_rel_path[len(remote_path) :]
-
-                local_dest = local_path / local_rel_path
-                files_to_download.append((remote_entry, local_dest))
-
-        # Display sync plan
-        if not out.quiet:
-            out.print("=" * 60)
-            out.print("Sync Plan")
-            out.print("=" * 60)
-            out.print(f"Files to upload:      {len(files_to_upload)}")
-            out.print(f"Files to download:    {len(files_to_download)}")
-            out.print(f"Files in sync:        {len(files_in_sync)}")
-            out.print(f"Files with conflicts: {len(files_conflict)}")
-            out.print("=" * 60)
-            out.print("")
-
-            if files_to_upload:
-                out.info("Files to upload:")
-                for file_path, rel_path in files_to_upload[:10]:  # Show first 10
-                    size = file_path.stat().st_size
-                    out.print(f"  ↑ {rel_path} ({out.format_size(size)})")
-                if len(files_to_upload) > 10:
-                    out.print(f"  ... and {len(files_to_upload) - 10} more")
-                out.print("")
-
-            if files_to_download:
-                out.info("Files to download:")
-                for remote_entry, _local_dest in files_to_download[:10]:
-                    out.print(
-                        f"  ↓ {remote_entry.name} "
-                        f"({out.format_size(remote_entry.file_size or 0)})"
-                    )
-                if len(files_to_download) > 10:
-                    out.print(f"  ... and {len(files_to_download) - 10} more")
-                out.print("")
-
-            if files_conflict:
-                out.warning("Files with conflicts (skipped):")
-                for rel_path, reason in files_conflict:
-                    out.print(f"  ⚠ {rel_path}: {reason}")
-                out.print("")
-
-        if dry_run:
-            out.warning("Dry run mode - no files were synced.")
-            return
-
-        # Step 4: Execute sync
-        upload_count = 0
-        download_count = 0
-        error_count = 0
-
-        # Upload files
-        if files_to_upload:
-            if not out.quiet:
-                out.info(f"Uploading {len(files_to_upload)} file(s)...")
-
-            for file_path, rel_path in files_to_upload:
-                try:
-                    if not no_progress and not out.quiet:
-                        size_str = out.format_size(file_path.stat().st_size)
-                        out.progress_message(f"Uploading {rel_path} ({size_str})")
-
-                    client.upload_file(
-                        file_path,
-                        parent_id=remote_sync_folder_id,
-                        relative_path=rel_path,
-                        workspace_id=workspace,
-                        chunk_size=chunk_size_bytes,
-                        use_multipart_threshold=multipart_threshold_bytes,
-                    )
-                    upload_count += 1
-
-                    # Update local file modification time to match upload time
-                    # This prevents the file from being re-uploaded on next sync
-                    os.utime(file_path, None)  # Set to current time
-                except DrimeAPIError as e:
-                    error_count += 1
-                    out.error(f"Error uploading {rel_path}: {e}")
-
-        # Download files
-        if files_to_download:
-            if not out.quiet:
-                out.info(f"Downloading {len(files_to_download)} file(s)...")
-
-            for remote_entry, local_dest in files_to_download:
-                try:
-                    # Ensure parent directory exists
-                    local_dest.parent.mkdir(parents=True, exist_ok=True)
-
-                    if not no_progress and not out.quiet:
-                        size_str = out.format_size(remote_entry.file_size or 0)
-                        out.progress_message(
-                            f"Downloading {remote_entry.name} ({size_str})"
-                        )
-
-                    client.download_file(remote_entry.hash, local_dest)
-                    download_count += 1
-                except DrimeAPIError as e:
-                    error_count += 1
-                    out.error(f"Error downloading {remote_entry.name}: {e}")
-
-        # Show summary
+        # Output results
         if out.json_output:
-            out.output_json(
-                {
-                    "uploaded": upload_count,
-                    "downloaded": download_count,
-                    "in_sync": len(files_in_sync),
-                    "conflicts": len(files_conflict),
-                    "errors": error_count,
-                }
+            out.output_json(stats)
+
+        # Exit with warning if there were conflicts
+        if stats.get("conflicts", 0) > 0 and not out.quiet:
+            out.warning(
+                f"\n⚠  {stats['conflicts']} conflict(s) were skipped. "
+                "Please resolve conflicts manually."
             )
-        else:
-            out.print("")
-            summary_items = [
-                ("Uploaded", f"{upload_count} file(s)"),
-                ("Downloaded", f"{download_count} file(s)"),
-                ("Already in sync", f"{len(files_in_sync)} file(s)"),
-            ]
-            if files_conflict:
-                summary_items.append(
-                    ("Conflicts (skipped)", f"{len(files_conflict)} file(s)")
-                )
-            if error_count > 0:
-                summary_items.append(("Errors", f"{error_count} file(s)"))
-
-            out.print_summary("Sync Complete", summary_items)
-
-        if error_count > 0:
-            ctx.exit(1)
 
     except KeyboardInterrupt:
         out.warning("\nSync cancelled by user")
         ctx.exit(130)
     except DrimeAPIError as e:
         out.error(f"API error: {e}")
+        ctx.exit(1)
+    except Exception as e:
+        out.error(f"Error: {e}")
         ctx.exit(1)
 
 

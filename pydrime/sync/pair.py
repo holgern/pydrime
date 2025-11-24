@@ -1,0 +1,196 @@
+"""Sync pair definition for synchronizing local and remote paths."""
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+from .modes import SyncMode
+
+
+@dataclass
+class SyncPair:
+    """Defines a synchronization pair between local and remote paths.
+
+    A sync pair specifies how files should be synchronized between a local directory
+    and a remote path in Drime Cloud, including the sync mode and various options.
+
+    Examples:
+        >>> pair = SyncPair(
+        ...     local=Path("/home/user/Documents"),
+        ...     remote="/Documents",
+        ...     sync_mode=SyncMode.TWO_WAY
+        ... )
+        >>> pair.alias = "documents"
+        >>> pair.ignore = ["*.tmp", "*.log"]
+    """
+
+    local: Path
+    """Local directory path to sync"""
+
+    remote: str
+    """Remote path in Drime Cloud (e.g., "/Documents" or "Documents")"""
+
+    sync_mode: SyncMode
+    """Synchronization mode (how files are synced)"""
+
+    alias: Optional[str] = None
+    """Optional alias for easy reference in CLI"""
+
+    disable_local_trash: bool = False
+    """If True, deleted local files are permanently deleted instead of moved to trash"""
+
+    ignore: list[str] = field(default_factory=list)
+    """List of glob patterns to ignore (e.g., ["*.log", "temp/*"])"""
+
+    exclude_dot_files: bool = False
+    """If True, exclude files and folders starting with dot"""
+
+    workspace_id: int = 0
+    """Workspace ID (0 for personal workspace)"""
+
+    @property
+    def use_local_trash(self) -> bool:
+        """Whether to use local trash for deleted files."""
+        return not self.disable_local_trash
+
+    def __post_init__(self) -> None:
+        """Validate and normalize sync pair configuration."""
+        # Ensure local is a Path object
+        if not isinstance(self.local, Path):
+            self.local = Path(self.local)
+
+        # Ensure sync_mode is SyncMode enum
+        if isinstance(self.sync_mode, str):
+            self.sync_mode = SyncMode.from_string(self.sync_mode)
+
+        # Normalize remote path (remove leading/trailing slashes for consistency)
+        self.remote = self.remote.strip("/")
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SyncPair":
+        """Create SyncPair from dictionary (e.g., from JSON config).
+
+        Args:
+            data: Dictionary with sync pair configuration
+
+        Returns:
+            SyncPair instance
+
+        Raises:
+            ValueError: If required fields are missing or invalid
+
+        Examples:
+            >>> data = {
+            ...     "local": "/home/user/Documents",
+            ...     "remote": "/Documents",
+            ...     "syncMode": "twoWay",
+            ...     "alias": "documents"
+            ... }
+            >>> pair = SyncPair.from_dict(data)
+        """
+        required_fields = ["local", "remote", "syncMode"]
+        missing = [f for f in required_fields if f not in data]
+        if missing:
+            raise ValueError(f"Missing required fields: {', '.join(missing)}")
+
+        return cls(
+            local=Path(data["local"]),
+            remote=data["remote"],
+            sync_mode=SyncMode.from_string(data["syncMode"]),
+            alias=data.get("alias"),
+            disable_local_trash=data.get("disableLocalTrash", False),
+            ignore=data.get("ignore", []),
+            exclude_dot_files=data.get("excludeDotFiles", False),
+            workspace_id=data.get("workspaceId", 0),
+        )
+
+    def to_dict(self) -> dict:
+        """Convert SyncPair to dictionary for JSON serialization.
+
+        Returns:
+            Dictionary representation of sync pair
+        """
+        return {
+            "local": str(self.local),
+            "remote": self.remote,
+            "syncMode": self.sync_mode.value,
+            "alias": self.alias,
+            "disableLocalTrash": self.disable_local_trash,
+            "ignore": self.ignore,
+            "excludeDotFiles": self.exclude_dot_files,
+            "workspaceId": self.workspace_id,
+        }
+
+    @classmethod
+    def parse_literal(
+        cls, literal: str, default_mode: Optional[SyncMode] = None
+    ) -> "SyncPair":
+        """Parse a literal sync pair string.
+
+        Supports various formats:
+        - /local:/remote                     # Two-way (default)
+        - /local:twoWay:/remote              # Explicit mode
+        - /local:tw:/remote                  # Abbreviated mode
+        - /local:localToCloud:/remote        # Full mode name
+
+        Args:
+            literal: Literal sync pair string
+            default_mode: Default sync mode if not specified (defaults to TWO_WAY)
+
+        Returns:
+            SyncPair instance
+
+        Raises:
+            ValueError: If literal format is invalid
+
+        Examples:
+            >>> pair = SyncPair.parse_literal("/home/user/docs:/Documents")
+            >>> pair.sync_mode
+            SyncMode.TWO_WAY
+            >>> pair = SyncPair.parse_literal("/home/user/docs:ltc:/Documents")
+            >>> pair.sync_mode
+            SyncMode.LOCAL_TO_CLOUD
+        """
+        if default_mode is None:
+            default_mode = SyncMode.TWO_WAY
+
+        parts = literal.split(":")
+        if len(parts) == 2:
+            # Format: /local:/remote (default mode)
+            local, remote = parts
+            sync_mode = default_mode
+        elif len(parts) == 3:
+            # Format: /local:mode:/remote
+            local, mode_str, remote = parts
+            sync_mode = SyncMode.from_string(mode_str)
+        else:
+            raise ValueError(
+                f"Invalid sync pair literal: {literal}. "
+                "Expected format: '/local:/remote' or '/local:mode:/remote'"
+            )
+
+        # Validate paths are not empty
+        if not local or not remote:
+            raise ValueError(
+                f"Invalid sync pair literal: {literal}. "
+                "Local and remote paths cannot be empty"
+            )
+
+        return cls(
+            local=Path(local),
+            remote=remote,
+            sync_mode=sync_mode,
+        )
+
+    def __str__(self) -> str:
+        """String representation of sync pair."""
+        if self.alias:
+            return f"{self.alias} ({self.local} ←{self.sync_mode.value}→ {self.remote})"
+        return f"{self.local} ←{self.sync_mode.value}→ {self.remote}"
+
+    def __repr__(self) -> str:
+        """Detailed representation of sync pair."""
+        return (
+            f"SyncPair(local={self.local}, remote={self.remote}, "
+            f"sync_mode={self.sync_mode}, alias={self.alias})"
+        )
