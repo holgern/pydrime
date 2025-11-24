@@ -140,7 +140,7 @@ class TestAPIRequest:
             "Connection failed"
         )
 
-        client = DrimeClient(api_key="test_key")
+        client = DrimeClient(api_key="test_key", max_retries=0)
         with pytest.raises(DrimeAPIError, match="Network error"):
             client._request("GET", "/test")
 
@@ -199,7 +199,7 @@ class TestAPIRequest:
             requests.exceptions.HTTPError(response=mock_response)
         )
 
-        client = DrimeClient(api_key="test_key")
+        client = DrimeClient(api_key="test_key", max_retries=0)
         with pytest.raises(
             DrimeAPIError,
             match="API request failed with status 500: Internal server error occurred",
@@ -236,7 +236,7 @@ class TestAPIRequest:
             requests.exceptions.HTTPError(response=mock_response)
         )
 
-        client = DrimeClient(api_key="test_key")
+        client = DrimeClient(api_key="test_key", max_retries=0)
         with pytest.raises(DrimeAPIError, match="API request failed with status 500"):
             client._request("GET", "/test")
 
