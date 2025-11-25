@@ -79,7 +79,7 @@ class TestVaultKey:
         assert decrypted == plaintext
 
     def test_encrypt_produces_different_output(self):
-        """Test that encrypting twice produces different ciphertext (due to random IV)."""
+        """Test that encrypting twice gives different ciphertext (random IV)."""
         salt = b"1234567890123456"
         key_bytes = derive_key("password", salt)
         vault_key = VaultKey(key=key_bytes, salt=salt)

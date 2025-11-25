@@ -4,7 +4,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional, cast
+from typing import Any, Optional, cast
 
 import click
 from rich.progress import (
@@ -25,7 +25,6 @@ from .exceptions import DrimeAPIError, DrimeNotFoundError
 from .file_entries_manager import FileEntriesManager
 from .models import FileEntriesResult, FileEntry, SchemaValidationWarning, UserStatus
 from .output import OutputFormatter
-from .progress import UploadProgressTracker
 from .upload_preview import display_upload_preview
 from .utils import calculate_drime_hash
 from .workspace_utils import format_workspace_display, get_folder_display_name
@@ -279,6 +278,8 @@ def upload(  # noqa: C901
 
     PATH: Local file or directory to upload
     """
+    from .sync import SyncEngine
+
     out: OutputFormatter = ctx.obj["out"]
     local_path = Path(path)
 
@@ -335,29 +336,42 @@ def upload(  # noqa: C901
 
         out.info("")  # Empty line for readability
 
-    # Collect files to upload
+    # Handle single file upload separately (not using sync engine)
     if local_path.is_file():
-        files_to_upload = [(local_path, remote_path or local_path.name)]
-    else:
-        out.info(f"Scanning directory: {local_path}")
-        # Always use parent as base_path so the folder name is included in
-        # relative paths
-        base_path = local_path.parent
-        files_to_upload = scan_directory(local_path, base_path, out)
+        _upload_single_file(
+            ctx=ctx,
+            client=client,
+            local_path=local_path,
+            remote_path=remote_path,
+            workspace=workspace,
+            current_folder_id=current_folder_id,
+            current_folder_name=current_folder_name,
+            dry_run=dry_run,
+            on_duplicate=on_duplicate,
+            no_progress=no_progress,
+            chunk_size_bytes=chunk_size_bytes,
+            multipart_threshold_bytes=multipart_threshold_bytes,
+            out=out,
+        )
+        return
 
-        # If remote_path is specified, prepend it to all relative paths
-        if remote_path:
-            files_to_upload = [
-                (file_path, f"{remote_path}/{rel_path}")
-                for file_path, rel_path in files_to_upload
-            ]
+    # Directory upload - collect files for preview and duplicate handling
+    out.info(f"Scanning directory: {local_path}")
+    # Always use parent as base_path so the folder name is included in
+    # relative paths
+    base_path = local_path.parent
+    files_to_upload = scan_directory(local_path, base_path, out)
+
+    # If remote_path is specified, prepend it to all relative paths
+    if remote_path:
+        files_to_upload = [
+            (file_path, f"{remote_path}/{rel_path}")
+            for file_path, rel_path in files_to_upload
+        ]
 
     if not files_to_upload:
         out.warning("No files found to upload.")
         return
-
-    # Calculate total size
-    total_size = sum(f[0].stat().st_size for f in files_to_upload)
 
     if dry_run:
         # Use the display_upload_preview function
@@ -396,24 +410,156 @@ def upload(  # noqa: C901
         if not dup_handler.delete_marked_entries():
             ctx.exit(1)
 
-        success_count = 0
-        error_count = 0
-        skipped_count = 0
-        uploaded_files = []
+        # Build skip set and rename map for sync engine
+        # The DuplicateHandler uses paths like "sync/test_folder/file.txt"
+        # (with folder name prefix from scan_directory using base_path=parent)
+        # but SyncEngine.upload_folder scans relative to local_path, so paths
+        # are like "test_folder/file.txt". We need to strip the folder prefix.
+        folder_prefix = f"{local_path.name}/"
+        files_to_skip = {
+            p[len(folder_prefix) :] if p.startswith(folder_prefix) else p
+            for p in dup_handler.files_to_skip
+        }
+        file_renames = {
+            (k[len(folder_prefix) :] if k.startswith(folder_prefix) else k): v
+            for k, v in dup_handler.rename_map.items()
+        }
 
-        # Prepare files for upload (filter skipped, apply renames)
-        files_to_process = []
-        for file_path, rel_path in files_to_upload:
-            if rel_path in dup_handler.files_to_skip:
-                skipped_count += 1
-                if not out.quiet:
-                    out.info(f"Skipping: {rel_path}")
-                continue
+        # Determine the remote path for the sync engine
+        # When remote_path is specified, include the local folder name
+        # e.g., uploading "test/" with remote_path="dest" -> "dest/test/..."
+        if remote_path:
+            effective_remote_path = f"{remote_path}/{local_path.name}"
+        else:
+            effective_remote_path = local_path.name
 
-            upload_path = dup_handler.apply_renames(rel_path)
-            files_to_process.append((file_path, upload_path, rel_path))
+        # Create output formatter for engine (respect no_progress)
+        engine_out = OutputFormatter(
+            json_output=out.json_output, quiet=no_progress or out.quiet
+        )
 
-        # Create progress display
+        # Create sync engine and upload using sync infrastructure
+        engine = SyncEngine(client, engine_out)
+
+        stats = engine.upload_folder(
+            local_path=local_path,
+            remote_path=effective_remote_path,
+            workspace_id=workspace,
+            parent_id=current_folder_id,
+            max_workers=workers,
+            start_delay=start_delay,
+            chunk_size=chunk_size_bytes,
+            multipart_threshold=multipart_threshold_bytes,
+            files_to_skip=files_to_skip,
+            file_renames=file_renames,
+        )
+
+        # Show summary
+        if out.json_output:
+            out.output_json(
+                {
+                    "success": stats["uploads"],
+                    "failed": stats["errors"],
+                    "skipped": stats["skips"],
+                }
+            )
+        else:
+            if engine_out.quiet:
+                # Engine didn't show summary, show it here
+                summary_items = [
+                    ("Successfully uploaded", f"{stats['uploads']} files"),
+                ]
+                if stats["skips"] > 0:
+                    summary_items.append(("Skipped", f"{stats['skips']} files"))
+                if stats["errors"] > 0:
+                    summary_items.append(("Failed", f"{stats['errors']} files"))
+
+                out.print_summary("Upload Complete", summary_items)
+
+        if stats["errors"] > 0:
+            ctx.exit(1)
+
+    except KeyboardInterrupt:
+        out.warning("\nUpload cancelled by user")
+        ctx.exit(130)  # Standard exit code for SIGINT
+    except DrimeAPIError as e:
+        out.error(f"API error: {e}")
+        ctx.exit(1)
+
+
+def _upload_single_file(
+    ctx: Any,
+    client: DrimeClient,
+    local_path: Path,
+    remote_path: Optional[str],
+    workspace: int,
+    current_folder_id: Optional[int],
+    current_folder_name: Optional[str],
+    dry_run: bool,
+    on_duplicate: str,
+    no_progress: bool,
+    chunk_size_bytes: int,
+    multipart_threshold_bytes: int,
+    out: OutputFormatter,
+) -> None:
+    """Handle single file upload (not using sync engine).
+
+    This function handles the upload of a single file, including
+    dry-run preview, duplicate handling, and progress display.
+    """
+
+    files_to_upload = [(local_path, remote_path or local_path.name)]
+
+    if dry_run:
+        display_upload_preview(
+            out,
+            client,
+            files_to_upload,
+            workspace,
+            current_folder_id,
+            current_folder_name,
+            is_dry_run=True,
+        )
+        out.warning("Dry run mode - no files were uploaded.")
+        return
+
+    # Display summary for actual upload
+    display_upload_preview(
+        out,
+        client,
+        files_to_upload,
+        workspace,
+        current_folder_id,
+        current_folder_name,
+        is_dry_run=False,
+    )
+
+    try:
+        # Handle duplicates for single file
+        dup_handler = DuplicateHandler(
+            client, out, workspace, on_duplicate, current_folder_id
+        )
+        dup_handler.validate_and_handle_duplicates(files_to_upload)
+
+        if not dup_handler.delete_marked_entries():
+            ctx.exit(1)
+
+        file_path, rel_path = files_to_upload[0]
+
+        # Check if file should be skipped
+        if rel_path in dup_handler.files_to_skip:
+            if not out.quiet:
+                out.info(f"Skipping: {rel_path}")
+            if out.json_output:
+                out.output_json({"success": 0, "failed": 0, "skipped": 1})
+            else:
+                out.print_summary("Upload Complete", [("Skipped", "1 file")])
+            return
+
+        # Apply rename if needed
+        upload_path = dup_handler.apply_renames(rel_path)
+
+        # Create progress display for single file
         if not no_progress and not out.quiet:
             progress_display = Progress(
                 "[progress.description]{task.description}",
@@ -423,311 +569,68 @@ def upload(  # noqa: C901
                 TransferSpeedColumn(),
                 TimeElapsedColumn(),
                 TimeRemainingColumn(),
-                # Update 10 times per second for smoother speed calculation
                 refresh_per_second=10,
             )
         else:
             progress_display = None
 
-        # Create progress tracker for parallel uploads
-        progress_tracker = UploadProgressTracker()
-
-        # Helper function to upload a single file with progress
-        def upload_single_file_with_progress(
-            file_path: Path, upload_path: str, task_id: Optional[Any]
-        ) -> Any:
-            callback: Optional[Callable[[int, int], None]] = None
-            if progress_display and task_id is not None:
-                # Create file-specific progress callback with individual task tracking
-                def file_progress_callback(
-                    bytes_uploaded: int, total_bytes: int
-                ) -> None:
-                    # Update individual file progress
-                    if progress_display:
-                        progress_display.update(
-                            task_id, completed=bytes_uploaded, total=total_bytes
-                        )
-
-                # Create overall progress callback using tracker
-                overall_callback = progress_tracker.create_file_callback(
-                    file_path, progress_display
+        try:
+            if progress_display:
+                progress_display.start()
+                file_size = file_path.stat().st_size
+                task_id = progress_display.add_task(
+                    f"[cyan]{file_path.name}",
+                    total=file_size,
                 )
 
-                # Combine both callbacks
-                def callback_combined(bytes_uploaded: int, total_bytes: int) -> None:
-                    file_progress_callback(bytes_uploaded, total_bytes)
-                    overall_callback(bytes_uploaded, total_bytes)
+                def progress_callback(bytes_uploaded: int, total_bytes: int) -> None:
+                    progress_display.update(
+                        task_id, completed=bytes_uploaded, total=total_bytes
+                    )
+            else:
+                task_id = None
+                progress_callback = None
+                file_size = file_path.stat().st_size
+                size_str = out.format_size(file_size)
+                out.progress_message(f"Uploading {upload_path} ({size_str})")
 
-                callback = callback_combined
-
-            return client.upload_file(
+            result = client.upload_file(
                 file_path,
                 parent_id=current_folder_id,
                 relative_path=upload_path,
                 workspace_id=workspace,
-                progress_callback=callback,
+                progress_callback=progress_callback,
                 chunk_size=chunk_size_bytes,
                 use_multipart_threshold=multipart_threshold_bytes,
             )
 
-        # Parallel or sequential upload
-        try:
-            if progress_display:
-                progress_display.start()
-
-            if workers > 1:
-                # Parallel upload with overall progress
-                total_size = sum(f[0].stat().st_size for f in files_to_process)
-                total_files = len(files_to_process)
-
-                # Define upload wrapper function (will be conditionally used)
-                upload_with_task_pool: Optional[Callable[[Path, str], Any]] = None
-                overall_task_id: Optional[Any] = None
-
-                # Add overall progress bar if progress display is enabled
-                if progress_display:
-                    overall_task_id = progress_display.add_task(
-                        f"[green]Overall Progress (0/{total_files} files)",
-                        total=total_size,
+            # Show summary
+            if out.json_output:
+                uploaded_files = []
+                if isinstance(result, dict) and "fileEntry" in result:
+                    entry = result["fileEntry"]
+                    uploaded_files.append(
+                        {
+                            "path": upload_path,
+                            "id": entry.get("id"),
+                            "hash": entry.get("hash"),
+                        }
                     )
-                    progress_tracker.set_overall_task(overall_task_id)
-
-                    # Create a limited pool of progress bars (one per worker)
-                    # to avoid cluttering the screen
-                    import queue
-
-                    progress_task_pool = []
-                    for i in range(workers):
-                        task_id = progress_display.add_task(
-                            f"[dim]Worker {i + 1}: Waiting...",
-                            total=100,
-                            visible=True,
-                        )
-                        progress_task_pool.append(task_id)
-
-                    # Track available task IDs - use thread-safe queue
-                    available_tasks_queue: queue.Queue[Any] = queue.Queue()
-                    for task_id in progress_task_pool:
-                        available_tasks_queue.put(task_id)
-
-                    # Wrapper to handle task allocation
-                    def upload_with_task_pool_impl(
-                        file_path: Path, upload_path: str
-                    ) -> Any:
-                        # Get a task ID from the pool
-                        task_id = available_tasks_queue.get()
-                        try:
-                            # Update task to show current file
-                            file_size = file_path.stat().st_size
-                            if progress_display:
-                                progress_display.update(
-                                    task_id,
-                                    description=f"[cyan]{file_path.name}",
-                                    completed=0,
-                                    total=file_size,
-                                    visible=True,
-                                )
-
-                            # Upload the file
-                            result = upload_single_file_with_progress(
-                                file_path, upload_path, task_id
-                            )
-
-                            # Mark task as complete and hide it
-                            if progress_display:
-                                progress_display.update(
-                                    task_id,
-                                    description="[dim]Worker: Waiting...",
-                                    completed=0,
-                                    total=100,
-                                    visible=False,
-                                )
-                            return result
-                        finally:
-                            # Return task ID to pool
-                            available_tasks_queue.put(task_id)
-
-                    upload_with_task_pool = upload_with_task_pool_impl
-
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    futures = {}
-
-                    for i, (file_path, upload_path, rel_path) in enumerate(
-                        files_to_process
-                    ):
-                        # Calculate staggered delay for this file
-                        thread_delay = i * start_delay
-
-                        # Create wrapper function with delay
-                        def upload_with_delay(
-                            fp: Path,
-                            up: str,
-                            delay: float = thread_delay,
-                        ) -> Any:
-                            if delay > 0:
-                                import time
-
-                                time.sleep(delay)
-                            if upload_with_task_pool:
-                                return upload_with_task_pool(fp, up)
-                            else:
-                                return upload_single_file_with_progress(fp, up, None)
-
-                        future = executor.submit(
-                            upload_with_delay, file_path, upload_path, thread_delay
-                        )
-                        futures[future] = (file_path, upload_path, rel_path)
-
-                    try:
-                        for future in as_completed(futures):
-                            file_path, upload_path, rel_path = futures[future]
-                            try:
-                                result = future.result()
-                                success_count += 1
-
-                                # Update overall progress description with file count
-                                if progress_display and overall_task_id is not None:
-                                    completed = success_count + error_count
-                                    desc = (
-                                        f"[green]Overall Progress "
-                                        f"({completed}/{total_files} files)"
-                                    )
-                                    progress_display.update(
-                                        overall_task_id,
-                                        description=desc,
-                                    )
-
-                                # Extract file entry info if available
-                                if isinstance(result, dict) and "fileEntry" in result:
-                                    entry = result["fileEntry"]
-                                    uploaded_files.append(
-                                        {
-                                            "path": upload_path,
-                                            "id": entry.get("id"),
-                                            "hash": entry.get("hash"),
-                                        }
-                                    )
-                            except (DrimeAPIError, Exception) as e:
-                                error_count += 1
-
-                                # Update overall progress description with file count
-                                if progress_display and overall_task_id is not None:
-                                    completed = success_count + error_count
-                                    desc = (
-                                        f"[green]Overall Progress "
-                                        f"({completed}/{total_files} files)"
-                                    )
-                                    progress_display.update(
-                                        overall_task_id,
-                                        description=desc,
-                                    )
-
-                                # Rollback progress for failed file
-                                if progress_display:
-                                    progress_tracker.rollback_file_progress(
-                                        file_path, progress_display
-                                    )
-
-                                if not out.quiet:
-                                    error_type = (
-                                        "API error"
-                                        if isinstance(e, DrimeAPIError)
-                                        else "Unexpected error"
-                                    )
-                                    out.error(
-                                        f"{error_type} uploading {file_path.name}: {e}"
-                                    )
-                    except KeyboardInterrupt:
-                        out.warning("\nUpload interrupted by user. Cancelling...")
-                        # Cancel all pending futures
-                        for future in futures:
-                            future.cancel()
-                        raise
+                out.output_json(
+                    {"success": 1, "failed": 0, "skipped": 0, "files": uploaded_files}
+                )
             else:
-                # Sequential upload
-                total_size = sum(f[0].stat().st_size for f in files_to_process)
+                out.print_summary(
+                    "Upload Complete", [("Successfully uploaded", "1 file")]
+                )
 
-                # Add overall progress bar if progress display is enabled
-                # and multiple files
-                if progress_display and len(files_to_process) > 1:
-                    overall_task_id = progress_display.add_task(
-                        "[green]Overall Progress", total=total_size
-                    )
-                    progress_tracker.set_overall_task(overall_task_id)
-
-                for idx, (file_path, upload_path, rel_path) in enumerate(
-                    files_to_process, 1
-                ):
-                    try:
-                        file_size = file_path.stat().st_size
-                        size_str = out.format_size(file_size)
-                        progress_str = f"[{idx}/{len(files_to_process)}]"
-
-                        display_path = (
-                            upload_path if upload_path != rel_path else rel_path
-                        )
-
-                        if progress_display:
-                            task_id = progress_display.add_task(
-                                f"[cyan]{file_path.name} {progress_str}",
-                                total=file_size,
-                            )
-                        else:
-                            task_id = None
-                            out.progress_message(
-                                f"Uploading {display_path} ({size_str}) {progress_str}"
-                            )
-
-                        result = upload_single_file_with_progress(
-                            file_path, upload_path, task_id
-                        )
-                        success_count += 1
-
-                        # Extract file entry info if available
-                        if isinstance(result, dict) and "fileEntry" in result:
-                            entry = result["fileEntry"]
-                            uploaded_files.append(
-                                {
-                                    "path": upload_path,
-                                    "id": entry.get("id"),
-                                    "hash": entry.get("hash"),
-                                }
-                            )
-
-                    except DrimeAPIError as e:
-                        out.error(f"Error uploading {upload_path}: {e}")
-                        error_count += 1
         finally:
             if progress_display:
                 progress_display.stop()
 
-        # Show summary
-        if out.json_output:
-            out.output_json(
-                {
-                    "success": success_count,
-                    "failed": error_count,
-                    "skipped": skipped_count,
-                    "files": uploaded_files,
-                }
-            )
-        else:
-            summary_items = [
-                ("Successfully uploaded", f"{success_count} files"),
-            ]
-            if skipped_count > 0:
-                summary_items.append(("Skipped", f"{skipped_count} files"))
-            if error_count > 0:
-                summary_items.append(("Failed", f"{error_count} files"))
-
-            out.print_summary("Upload Complete", summary_items)
-
-        if error_count > 0:
-            ctx.exit(1)
-
     except KeyboardInterrupt:
         out.warning("\nUpload cancelled by user")
-        ctx.exit(130)  # Standard exit code for SIGINT
+        ctx.exit(130)
     except DrimeAPIError as e:
         out.error(f"API error: {e}")
         ctx.exit(1)
