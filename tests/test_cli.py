@@ -2181,93 +2181,117 @@ class TestDownloadCommandWithIdSupport:
         assert "test (1).txt" in str(call_args[0][1])
 
 
-class TestInfoCommand:
-    """Tests for the info command."""
+class TestStatCommand:
+    """Tests for the stat command."""
 
+    @patch("pydrime.download_helpers.get_entry_from_hash")
+    @patch("pydrime.download_helpers.resolve_identifier_to_hash")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    def test_info_by_id(self, mock_config, mock_client_class, runner):
-        """Test info command with file ID."""
+    def test_stat_by_id(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_resolve,
+        mock_get_entry,
+        runner,
+    ):
+        """Test stat command with file ID."""
         mock_config.is_configured.return_value = True
         mock_client = Mock()
         mock_client_class.return_value = mock_client
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
 
-        # Mock API response
-        mock_client.get_file_entries.return_value = {
-            "data": [
-                {
-                    "id": 480424796,
-                    "name": "test.txt",
-                    "type": "file",
-                    "hash": "NDgwNDI0Nzk2fA",
-                    "file_size": 1024,
-                    "parent_id": None,
-                    "created_at": "2025-01-01T00:00:00.000000Z",
-                    "updated_at": "2025-01-01T00:00:00.000000Z",
-                    "users": [],
-                    "tags": [],
-                    "permissions": None,
-                    "public": False,
-                    "file_name": "test.txt",
-                    "mime": "text/plain",
-                    "url": "https://dri.me/test",
-                }
-            ]
-        }
+        # Mock resolve_identifier_to_hash to return a hash
+        mock_resolve.return_value = "NDgwNDI0Nzk2fA"
 
-        result = runner.invoke(main, ["info", "480424796"])
+        # Mock get_entry_from_hash to return a FileEntry
+        mock_entry = Mock()
+        mock_entry.id = 480424796
+        mock_entry.name = "test.txt"
+        mock_entry.type = "file"
+        mock_entry.hash = "NDgwNDI0Nzk2fA"
+        mock_entry.file_size = 1024
+        mock_entry.parent_id = None
+        mock_entry.created_at = "2025-01-01T00:00:00.000000Z"
+        mock_entry.updated_at = "2025-01-01T00:00:00.000000Z"
+        mock_entry.users = []
+        mock_entry.public = False
+        mock_entry.description = None
+        mock_entry.extension = "txt"
+        mock_entry.mime = "text/plain"
+        mock_entry.workspace_id = None
+        mock_get_entry.return_value = mock_entry
+
+        result = runner.invoke(main, ["stat", "480424796"])
 
         assert result.exit_code == 0
         assert "test.txt" in result.output
 
+    @patch("pydrime.download_helpers.get_entry_from_hash")
+    @patch("pydrime.download_helpers.resolve_identifier_to_hash")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    def test_info_by_hash(self, mock_config, mock_client_class, runner):
-        """Test info command with file hash."""
+    def test_stat_by_hash(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_resolve,
+        mock_get_entry,
+        runner,
+    ):
+        """Test stat command with file hash."""
         mock_config.is_configured.return_value = True
         mock_client = Mock()
         mock_client_class.return_value = mock_client
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
 
-        mock_client.get_file_entries.return_value = {
-            "data": [
-                {
-                    "id": 480424796,
-                    "name": "test.txt",
-                    "type": "file",
-                    "hash": "NDgwNDI0Nzk2fA",
-                    "file_size": 1024,
-                    "parent_id": None,
-                    "created_at": "2025-01-01T00:00:00.000000Z",
-                    "updated_at": "2025-01-01T00:00:00.000000Z",
-                    "users": [],
-                    "tags": [],
-                    "permissions": None,
-                    "public": False,
-                    "file_name": "test.txt",
-                    "mime": "text/plain",
-                    "url": "https://dri.me/test",
-                }
-            ]
-        }
+        # Mock resolve_identifier_to_hash to return the hash
+        mock_resolve.return_value = "NDgwNDI0Nzk2fA"
 
-        result = runner.invoke(main, ["info", "NDgwNDI0Nzk2fA"])
+        # Mock get_entry_from_hash to return a FileEntry
+        mock_entry = Mock()
+        mock_entry.id = 480424796
+        mock_entry.name = "test.txt"
+        mock_entry.type = "file"
+        mock_entry.hash = "NDgwNDI0Nzk2fA"
+        mock_entry.file_size = 1024
+        mock_entry.parent_id = None
+        mock_entry.created_at = "2025-01-01T00:00:00.000000Z"
+        mock_entry.updated_at = "2025-01-01T00:00:00.000000Z"
+        mock_entry.users = []
+        mock_entry.public = False
+        mock_entry.description = None
+        mock_entry.extension = "txt"
+        mock_entry.mime = "text/plain"
+        mock_entry.workspace_id = None
+        mock_get_entry.return_value = mock_entry
+
+        result = runner.invoke(main, ["stat", "NDgwNDI0Nzk2fA"])
 
         assert result.exit_code == 0
         assert "test.txt" in result.output
 
+    @patch("pydrime.download_helpers.resolve_identifier_to_hash")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    def test_info_not_found(self, mock_config, mock_client_class, runner):
-        """Test info command with non-existent ID."""
+    def test_stat_not_found(self, mock_config, mock_client_class, mock_resolve, runner):
+        """Test stat command with non-existent ID."""
         mock_config.is_configured.return_value = True
         mock_client = Mock()
         mock_client_class.return_value = mock_client
-        mock_client.get_file_entries.return_value = {"data": []}
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
 
-        result = runner.invoke(main, ["info", "999999"])
+        # Mock resolve_identifier_to_hash to return None (not found)
+        mock_resolve.return_value = None
+
+        result = runner.invoke(main, ["stat", "999999"])
 
         assert result.exit_code == 1
-        assert "no file found" in result.output.lower()
+        assert "not found" in result.output.lower()
 
 
 class TestCdCommand:
