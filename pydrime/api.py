@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional
 
-import requests
+import httpx
 
 from .config import config
 from .exceptions import (
@@ -34,6 +34,7 @@ class DrimeClient:
         api_url: Optional[str] = None,
         max_retries: int = 3,
         retry_delay: float = 1.0,
+        timeout: float = 30.0,
     ):
         """Initialize Drime API client.
 
@@ -42,40 +43,41 @@ class DrimeClient:
             api_url: Optional API URL (uses config if not provided)
             max_retries: Maximum number of retry attempts (default: 3)
             retry_delay: Initial delay between retries in seconds (default: 1.0)
+            timeout: Request timeout in seconds (default: 30.0)
         """
         self.api_key = api_key or config.api_key
         self.api_url = api_url or config.api_url
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.timeout = timeout
 
         if not self.api_key:
             raise DrimeConfigError(
                 "API key not configured. Please set DRIME_API_KEY environment variable."
             )
 
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "Authorization": f"Bearer {self.api_key}",
-            }
-        )
+        self._client: Optional[httpx.Client] = None
+
+    def _get_client(self) -> httpx.Client:
+        """Get or create the httpx client."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.Client(
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=httpx.Timeout(self.timeout),
+                follow_redirects=True,
+            )
+        return self._client
 
     def close(self) -> None:
-        """Close the session and release connections.
+        """Close the client and release connections.
 
         This ensures all pending requests are completed and connections are
         properly closed. Call this after batch uploads to ensure files are
         fully available for download.
         """
-        if self.session:
-            self.session.close()
-            # Create a fresh session for subsequent requests
-            self.session = requests.Session()
-            self.session.headers.update(
-                {
-                    "Authorization": f"Bearer {self.api_key}",
-                }
-            )
+        if self._client is not None and not self._client.is_closed:
+            self._client.close()
+            self._client = None
 
     def _should_retry(self, exception: Exception, attempt: int) -> bool:
         """Determine if a request should be retried.
@@ -100,12 +102,11 @@ class DrimeClient:
             return True
 
         # Retry on server errors (5xx status codes)
-        if isinstance(exception, requests.exceptions.HTTPError):
-            if exception.response is not None:
-                status_code = exception.response.status_code
-                # Retry on server errors (500-599)
-                if 500 <= status_code < 600:
-                    return True
+        if isinstance(exception, httpx.HTTPStatusError):
+            status_code = exception.response.status_code
+            # Retry on server errors (500-599)
+            if 500 <= status_code < 600:
+                return True
 
         # Don't retry on client errors (authentication, permission, etc.)
         return False
@@ -129,7 +130,7 @@ class DrimeClient:
         return base_delay + jitter
 
     def _handle_http_error(
-        self, e: requests.exceptions.HTTPError, attempt: int
+        self, e: httpx.HTTPStatusError, attempt: int
     ) -> tuple[Exception, bool]:
         """Handle HTTP errors and determine if retry should occur.
 
@@ -140,7 +141,7 @@ class DrimeClient:
         Returns:
             Tuple of (exception to raise, should_retry)
         """
-        status_code = e.response.status_code if e.response is not None else None
+        status_code = e.response.status_code
 
         # Handle common HTTP status codes with user-friendly messages
         if status_code == 401:
@@ -163,7 +164,7 @@ class DrimeClient:
 
             # Try to extract more details from response body
             try:
-                if e.response is not None and e.response.content:
+                if e.response.content:
                     error_data = e.response.json()
                     if isinstance(error_data, dict):
                         # Try to extract error message from common fields
@@ -181,11 +182,7 @@ class DrimeClient:
 
             error = DrimeAPIError(error_msg)
             # Retry on 5xx server errors
-            should_retry = (
-                status_code is not None
-                and 500 <= status_code < 600
-                and attempt < self.max_retries
-            )
+            should_retry = 500 <= status_code < 600 and attempt < self.max_retries
             return (error, should_retry)
 
     def _request(self, method: str, endpoint: str, **kwargs: Any) -> Any:
@@ -194,7 +191,7 @@ class DrimeClient:
         Args:
             method: HTTP method
             endpoint: API endpoint path
-            **kwargs: Additional arguments passed to requests
+            **kwargs: Additional arguments passed to httpx
 
         Returns:
             Response JSON data
@@ -204,10 +201,11 @@ class DrimeClient:
         """
         url = f"{self.api_url}/{endpoint.lstrip('/')}"
         last_exception: Optional[Exception] = None
+        client = self._get_client()
 
         for attempt in range(self.max_retries + 1):
             try:
-                response = self.session.request(method, url, **kwargs)
+                response = client.request(method, url, **kwargs)
                 response.raise_for_status()
 
                 # Check if response is JSON
@@ -235,19 +233,16 @@ class DrimeClient:
                         ) from e
                 return {}
 
-            except requests.exceptions.HTTPError as e:
+            except httpx.HTTPStatusError as e:
                 error, should_retry = self._handle_http_error(e, attempt)
                 last_exception = error
 
                 if should_retry:
                     # Special handling for rate limits: use Retry-After header
                     if isinstance(error, DrimeRateLimitError):
-                        if e.response is not None:
-                            retry_after = e.response.headers.get("Retry-After")
-                            if retry_after and retry_after.isdigit():
-                                delay = float(retry_after)
-                            else:
-                                delay = self._calculate_retry_delay(attempt)
+                        retry_after = e.response.headers.get("Retry-After")
+                        if retry_after and retry_after.isdigit():
+                            delay = float(retry_after)
                         else:
                             delay = self._calculate_retry_delay(attempt)
                     else:
@@ -259,7 +254,7 @@ class DrimeClient:
                 # Re-raise our own exceptions
                 # (don't retry authentication/permission errors)
                 raise
-            except requests.exceptions.RequestException as e:
+            except httpx.RequestError as e:
                 error = DrimeNetworkError(f"Network error: {e}")
                 last_exception = error
                 if self._should_retry(error, attempt):
@@ -482,8 +477,8 @@ class DrimeClient:
                             "Content-Length": str(len(chunk)),
                         }
 
-                        response = requests.put(
-                            signed_url, data=chunk, headers=headers, timeout=60
+                        response = httpx.put(
+                            signed_url, content=chunk, headers=headers, timeout=60
                         )
                         response.raise_for_status()
 
@@ -593,7 +588,7 @@ class DrimeClient:
         # Detect MIME type
         mime_type = self._detect_mime_type(file_path)
 
-        # For small files, progress tracking doesn't work well with requests library
+        # For small files, progress tracking doesn't work well with httpx
         # as it reads the entire file at once. Progress is only tracked for large files
         # using multipart upload.
         with open(file_path, "rb") as f:
@@ -609,13 +604,7 @@ class DrimeClient:
             if workspace_id:
                 data["workspaceId"] = workspace_id
 
-            # Remove Content-Type header for multipart/form-data
-            headers = dict(self.session.headers)
-            headers.pop("Content-Type", None)
-
-            result = self._request(
-                "POST", endpoint, files=files, data=data, headers=headers
-            )
+            result = self._request("POST", endpoint, files=files, data=data)
 
             # Call progress callback with 100% to update overall progress
             if progress_callback:
@@ -642,6 +631,8 @@ class DrimeClient:
         folder_id: Optional[str] = None,
         page_id: Optional[str] = None,
         backup: int = 0,
+        order_by: Optional[str] = None,
+        order_dir: Optional[str] = None,
     ) -> Any:
         """Get the list of all file entries you have access to.
 
@@ -659,6 +650,8 @@ class DrimeClient:
             folder_id: Display files in specified folder hash
             page_id: Display files in specified page hash (alias for folder_id)
             backup: Include backup files (default: 0)
+            order_by: Field to order by (e.g., 'updated_at', 'name', 'file_size')
+            order_dir: Order direction ('asc' or 'desc')
 
         Returns:
             List of file entry objects
@@ -688,6 +681,10 @@ class DrimeClient:
             params["pageId"] = page_id
         if backup:
             params["backup"] = backup
+        if order_by:
+            params["orderBy"] = order_by
+        if order_dir:
+            params["orderDir"] = order_dir
 
         return self._request("GET", endpoint, params=params)
 
@@ -1186,53 +1183,56 @@ class DrimeClient:
         """
         endpoint = f"/file-entries/download/{hash_value}"
         url = f"{self.api_url}/{endpoint.lstrip('/')}"
+        client = self._get_client()
 
         try:
-            response = self.session.get(url, stream=True, timeout=timeout)
-            response.raise_for_status()
+            with client.stream("GET", url, timeout=timeout) as response:
+                response.raise_for_status()
 
-            # Try to extract filename from Content-Disposition header
-            filename = None
-            content_disp = response.headers.get("Content-Disposition", "")
-            if "filename=" in content_disp:
-                # Try filename* first (RFC 5987)
-                if "filename*=" in content_disp:
-                    parts = content_disp.split("filename*=")
-                    if len(parts) > 1:
-                        encoded = parts[1].split(";")[0].strip()
-                        if "''" in encoded:
-                            filename = encoded.split("''", 1)[1]
-                # Fall back to regular filename
-                elif "filename=" in content_disp:
-                    parts = content_disp.split("filename=")
-                    if len(parts) > 1:
-                        filename = parts[1].split(";")[0].strip().strip('"').strip("'")
+                # Try to extract filename from Content-Disposition header
+                filename = None
+                content_disp = response.headers.get("Content-Disposition", "")
+                if "filename=" in content_disp:
+                    # Try filename* first (RFC 5987)
+                    if "filename*=" in content_disp:
+                        parts = content_disp.split("filename*=")
+                        if len(parts) > 1:
+                            encoded = parts[1].split(";")[0].strip()
+                            if "''" in encoded:
+                                filename = encoded.split("''", 1)[1]
+                    # Fall back to regular filename
+                    elif "filename=" in content_disp:
+                        parts = content_disp.split("filename=")
+                        if len(parts) > 1:
+                            filename = (
+                                parts[1].split(";")[0].strip().strip('"').strip("'")
+                            )
 
-            # Use provided output path or generate one
-            if output_path:
-                save_path = output_path
-            elif filename:
-                save_path = Path(filename)
-            else:
-                save_path = Path(f"drime_{hash_value}")
+                # Use provided output path or generate one
+                if output_path:
+                    save_path = output_path
+                elif filename:
+                    save_path = Path(filename)
+                else:
+                    save_path = Path(f"drime_{hash_value}")
 
-            # Write file content
-            total_size = int(response.headers.get("Content-Length", 0))
-            bytes_downloaded = 0
+                # Write file content
+                total_size = int(response.headers.get("Content-Length", 0))
+                bytes_downloaded = 0
 
-            with open(save_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        bytes_downloaded += len(chunk)
-                        if progress_callback:
-                            progress_callback(bytes_downloaded, total_size)
+                with open(save_path, "wb") as f:
+                    for chunk in response.iter_bytes(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            bytes_downloaded += len(chunk)
+                            if progress_callback:
+                                progress_callback(bytes_downloaded, total_size)
 
-            return save_path
+                return save_path
 
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             raise DrimeDownloadError(f"Download failed: {e}") from e
-        except requests.exceptions.RequestException as e:
+        except httpx.RequestError as e:
             raise DrimeNetworkError(f"Network error during download: {e}") from e
         except OSError as e:
             raise DrimeDownloadError(f"Failed to write file: {e}") from e
@@ -1439,53 +1439,56 @@ class DrimeClient:
             f"/file-entries/download/{hash_value}?workspaceId=null&encrypted=true"
         )
         url = f"{self.api_url}/{endpoint.lstrip('/')}"
+        client = self._get_client()
 
         try:
-            response = self.session.get(url, stream=True, timeout=timeout)
-            response.raise_for_status()
+            with client.stream("GET", url, timeout=timeout) as response:
+                response.raise_for_status()
 
-            # Try to extract filename from Content-Disposition header
-            filename = None
-            content_disp = response.headers.get("Content-Disposition", "")
-            if "filename=" in content_disp:
-                # Try filename* first (RFC 5987)
-                if "filename*=" in content_disp:
-                    parts = content_disp.split("filename*=")
-                    if len(parts) > 1:
-                        encoded = parts[1].split(";")[0].strip()
-                        if "''" in encoded:
-                            filename = encoded.split("''", 1)[1]
-                # Fall back to regular filename
-                elif "filename=" in content_disp:
-                    parts = content_disp.split("filename=")
-                    if len(parts) > 1:
-                        filename = parts[1].split(";")[0].strip().strip('"').strip("'")
+                # Try to extract filename from Content-Disposition header
+                filename = None
+                content_disp = response.headers.get("Content-Disposition", "")
+                if "filename=" in content_disp:
+                    # Try filename* first (RFC 5987)
+                    if "filename*=" in content_disp:
+                        parts = content_disp.split("filename*=")
+                        if len(parts) > 1:
+                            encoded = parts[1].split(";")[0].strip()
+                            if "''" in encoded:
+                                filename = encoded.split("''", 1)[1]
+                    # Fall back to regular filename
+                    elif "filename=" in content_disp:
+                        parts = content_disp.split("filename=")
+                        if len(parts) > 1:
+                            filename = (
+                                parts[1].split(";")[0].strip().strip('"').strip("'")
+                            )
 
-            # Use provided output path or generate one
-            if output_path:
-                save_path = output_path
-            elif filename:
-                save_path = Path(filename)
-            else:
-                save_path = Path(f"vault_{hash_value}")
+                # Use provided output path or generate one
+                if output_path:
+                    save_path = output_path
+                elif filename:
+                    save_path = Path(filename)
+                else:
+                    save_path = Path(f"vault_{hash_value}")
 
-            # Write file content
-            total_size = int(response.headers.get("Content-Length", 0))
-            bytes_downloaded = 0
+                # Write file content
+                total_size = int(response.headers.get("Content-Length", 0))
+                bytes_downloaded = 0
 
-            with open(save_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        bytes_downloaded += len(chunk)
-                        if progress_callback:
-                            progress_callback(bytes_downloaded, total_size)
+                with open(save_path, "wb") as f:
+                    for chunk in response.iter_bytes(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            bytes_downloaded += len(chunk)
+                            if progress_callback:
+                                progress_callback(bytes_downloaded, total_size)
 
-            return save_path
+                return save_path
 
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             raise DrimeDownloadError(f"Vault download failed: {e}") from e
-        except requests.exceptions.RequestException as e:
+        except httpx.RequestError as e:
             raise DrimeNetworkError(f"Network error during vault download: {e}") from e
         except OSError as e:
             raise DrimeDownloadError(f"Failed to write vault file: {e}") from e

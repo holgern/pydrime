@@ -1264,7 +1264,7 @@ def download(
 
     Supports file/folder paths (e.g., folder/file.txt), names (resolved in current
     directory), numeric IDs, and hashes. Folders are automatically downloaded
-    recursively with all their contents.
+    recursively with all their contents using the sync engine for reliable downloads.
 
     Examples:
         pydrime download folder/file.txt              # Download by path
@@ -1272,11 +1272,18 @@ def download(
         pydrime download 480424796                    # Download file by ID
         pydrime download NDgwNDI0Nzk2fA               # Download file by hash
         pydrime download test1.txt                    # Download file by name
-        pydrime download test_folder                  # Download folder
+        pydrime download test_folder                  # Download folder (uses sync)
         pydrime download 480424796 480424802          # Multiple files by ID
         pydrime download -o ./dest test_folder        # Download to dir
         pydrime download test_folder --on-duplicate skip    # Skip existing
     """
+    from .download_helpers import (
+        download_single_file,
+        get_entry_from_hash,
+        resolve_identifier_to_hash,
+    )
+    from .sync import SyncEngine
+
     api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
 
@@ -1287,7 +1294,7 @@ def download(
 
     try:
         client = DrimeClient(api_key=api_key)
-        downloaded_files = []
+        downloaded_files: list[dict] = []
         current_folder = config.get_current_folder()
         workspace = config.get_default_workspace() or 0
 
@@ -1296,475 +1303,122 @@ def download(
         if output and not output_dir.exists():
             output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Shared progress display and task pool for parallel downloads
-        # These will be initialized if workers > 1
-        shared_progress_display: Optional[Any] = None
-        shared_task_queue: Optional[Any] = None
-
-        def resolve_path_to_hash(path_str: str) -> Optional[str]:
-            """Resolve a path like 'folder/subfolder/file.txt' to a hash.
-
-            Returns the hash of the final component, or None if not found.
-            """
-            path_parts = path_str.split("/")
-            target_name = path_parts[-1]
-            folder_parts = path_parts[:-1]
-
-            # Start from current folder or root
-            current_parent_id = current_folder
-
-            # Navigate through each folder in the path
-            for folder_name in folder_parts:
-                # Search for the folder in current parent
-                result = client.get_file_entries(
-                    parent_ids=[current_parent_id] if current_parent_id else None,
-                    workspace_id=workspace,
-                    per_page=1000,
-                )
-                entries = result.get("data", [])
-
-                folder_found = False
-                for entry in entries:
-                    if (
-                        entry.get("type") == "folder"
-                        and entry.get("name") == folder_name
-                    ):
-                        current_parent_id = entry.get("id")
-                        folder_found = True
-                        break
-
-                if not folder_found:
-                    return None
-
-            # Now find the target file/folder in the final directory
-            result = client.get_file_entries(
-                parent_ids=[current_parent_id] if current_parent_id else None,
-                workspace_id=workspace,
-                per_page=1000,
+        def resolve_and_get_entry(identifier: str) -> Optional[FileEntry]:
+            """Resolve identifier and get the FileEntry object."""
+            hash_value = resolve_identifier_to_hash(
+                client, identifier, current_folder, workspace, out
             )
-            entries = result.get("data", [])
+            if not hash_value:
+                return None
+            return get_entry_from_hash(client, hash_value, identifier, out)
 
-            for entry in entries:
-                if entry.get("name") == target_name:
-                    entry_hash = entry.get("hash")
-                    if not out.quiet:
-                        out.info(f"Resolved '{path_str}' to hash: {entry_hash}")
-                    return entry_hash
-
-            return None
-
-        def resolve_identifier_to_hash(identifier: str) -> str:
-            """Resolve identifier (name/ID/hash/path) to hash value."""
-            # Check if it's a path (contains /)
-            if "/" in identifier:
-                hash_value = resolve_path_to_hash(identifier)
-                if hash_value:
-                    return hash_value
-                # Path not found, will be handled by caller
-                raise DrimeNotFoundError(f"Path not found: {identifier}")
-
-            try:
-                # Try resolving as entry identifier (supports names, IDs, hashes)
-                entry_id = client.resolve_entry_identifier(
-                    identifier=identifier,
-                    parent_id=current_folder,
-                    workspace_id=workspace,
-                )
-                if (
-                    not out.quiet
-                    and not identifier.isdigit()
-                    and not is_file_id(identifier)
-                ):
-                    out.info(f"Resolved '{identifier}' to entry ID: {entry_id}")
-                return normalize_to_hash(str(entry_id))
-            except DrimeNotFoundError:
-                # Not found by name, try as hash or ID directly
-                if is_file_id(identifier):
-                    hash_value = normalize_to_hash(identifier)
-                    if not out.quiet:
-                        out.info(f"Converting ID {identifier} to hash {hash_value}")
-                    return hash_value
-                return identifier  # Already a hash
-
-        def get_entry_from_hash(
-            hash_value: str, identifier: str
-        ) -> Optional[FileEntry]:
-            """Get entry object from hash value."""
-            # Try searching by query first (works for files)
-            result = client.get_file_entries(query=hash_value)
-            if result and result.get("data"):
-                file_entries = FileEntriesResult.from_api_response(result)
-                if not file_entries.is_empty:
-                    return file_entries.entries[0]
-
-            # Try using folder_id (works for folders)
-            result = client.get_file_entries(folder_id=hash_value)
-            if result and result.get("folder"):
-                folder_data = result["folder"]
-                return FileEntriesResult.from_api_response(
-                    {"data": [folder_data]}
-                ).entries[0]
-
-            out.error(f"Entry not found: {identifier}")
-            return None
-
-        def get_unique_filename(base_path: Path) -> Path:
-            """Generate a unique filename if the file already exists."""
-            if not base_path.exists():
-                return base_path
-
-            # Split name and extension
-            stem = base_path.stem
-            suffix = base_path.suffix
-            parent = base_path.parent
-            counter = 1
-
-            # Find a unique name
-            while True:
-                new_name = f"{stem} ({counter}){suffix}"
-                new_path = parent / new_name
-                if not new_path.exists():
-                    return new_path
-                counter += 1
-
-        def download_folder(
-            entry: FileEntry,
-            folder_path: Path,
-            identifier: str,
-            entry_obj: Optional[FileEntry] = None,
-        ) -> None:
-            """Download folder and its contents recursively."""
-            # Check if a file exists with the folder name
-            if folder_path.exists() and folder_path.is_file():
-                out.error(
-                    f"Cannot download folder '{entry.name}': "
-                    f"a file with this name already exists at {folder_path}"
-                )
-                return
-
-            folder_path.mkdir(parents=True, exist_ok=True)
-            if not out.quiet:
-                out.info(f"Downloading folder: {entry.name}")
-
-            try:
-                folder_result = client.get_file_entries(
-                    parent_ids=[entry.id], workspace_id=entry.workspace_id or workspace
-                )
-                folder_entries = FileEntriesResult.from_api_response(folder_result)
-
-                for sub_entry in folder_entries.entries:
-                    if sub_entry.is_folder:
-                        download_entry(sub_entry.hash, folder_path, entry_obj=sub_entry)
-                    else:
-                        # Use the download_file function which has progress support
-                        download_file(
-                            sub_entry.hash,
-                            identifier if not entry_obj else entry.hash,
-                            folder_path,
-                            sub_entry.name,
-                            show_progress=True,
-                        )
-            except DrimeAPIError as e:
-                out.error(f"Error downloading folder contents: {e}")
-
-        def download_file(
-            hash_value: str,
-            identifier: str,
-            dest_path: Optional[Path],
-            entry_name: str,
-            show_progress: bool = True,
-        ) -> None:
-            """Download a single file.
-
-            Args:
-                hash_value: Hash of the file to download
-                identifier: Original identifier used to request this file
-                dest_path: Destination path for the file
-                entry_name: Name of the file entry
-                show_progress: Whether to show progress bar
-            """
-            # Determine output path
-            if dest_path:
-                # If dest_path is a directory, join it with the filename
-                if dest_path.is_dir():
-                    output_path = dest_path / entry_name
-                else:
-                    output_path = dest_path
-            elif output and len(entry_identifiers) == 1:
-                output_path = Path(output)
-            else:
-                output_path = Path(entry_name)
-
-            # Check for duplicate (only files, not directories)
-            if output_path.exists():
-                # If a directory exists with this name, we need to rename the file
-                # (can't write a file where a directory exists)
-                if output_path.is_dir():
-                    output_path = get_unique_filename(output_path)
-                    out.info(
-                        f"Directory exists with same name, renaming file to: "
-                        f"{output_path.name}"
-                    )
-                # If a file exists, apply the duplicate strategy
-                elif on_duplicate == "skip":
-                    out.info(f"Skipped (already exists): {output_path}")
-                    downloaded_files.append(
-                        {
-                            "hash": hash_value,
-                            "path": str(output_path),
-                            "input": identifier,
-                            "skipped": True,
-                        }
-                    )
-                    return
-                elif on_duplicate == "rename":
-                    output_path = get_unique_filename(output_path)
-                    out.info(f"Renaming to avoid duplicate: {output_path.name}")
-
-            # Try to get a task from the shared queue for parallel downloads
-            task_id: Optional[Any] = None
-            if shared_task_queue is not None:
-                try:
-                    # Non-blocking get - if queue is empty, we'll create
-                    # individual progress
-                    task_id = shared_task_queue.get_nowait()
-                except:  # noqa: E722
-                    task_id = None
-
-            try:
-                # Use shared progress display if we got a task ID
-                if task_id is not None and shared_progress_display is not None:
-                    # Capture progress display for use in callback
-                    progress_display_ref = shared_progress_display
-
-                    # Update the reusable task bar with this file's info
-                    progress_display_ref.update(
-                        task_id,
-                        description=f"[cyan]{entry_name}",
-                        completed=0,
-                        total=None,
-                    )
-
-                    def progress_callback(
-                        bytes_downloaded: int, total_bytes: int
-                    ) -> None:
-                        progress_display_ref.update(
-                            task_id, completed=bytes_downloaded, total=total_bytes
-                        )
-
-                    saved_path = client.download_file(
-                        hash_value, output_path, progress_callback=progress_callback
-                    )
-
-                    # Reset the task bar
-                    progress_display_ref.update(
-                        task_id,
-                        description="[dim]Worker: Waiting...",
-                        completed=0,
-                        total=100,
-                    )
-
-                elif show_progress and not no_progress:
-                    # Create individual progress bar (for sequential downloads)
-                    with Progress(
-                        "[progress.description]{task.description}",
-                        BarColumn(),
-                        "[progress.percentage]{task.percentage:>3.0f}%",
-                        DownloadColumn(),
-                        TransferSpeedColumn(),
-                        TimeElapsedColumn(),
-                        TimeRemainingColumn(),
-                        # Update 10 times per second for smoother
-                        # speed calculation
-                        refresh_per_second=10,
-                    ) as progress:
-                        task = progress.add_task(f"[cyan]{entry_name}", total=None)
-
-                        def progress_callback(
-                            bytes_downloaded: int, total_bytes: int
-                        ) -> None:
-                            # Update with both completed and total to ensure
-                            # speed calculation works
-                            progress.update(
-                                task, completed=bytes_downloaded, total=total_bytes
-                            )
-
-                        saved_path = client.download_file(
-                            hash_value, output_path, progress_callback=progress_callback
-                        )
-                        # Don't print "Downloaded:" message when using progress bar
-                        # as it breaks the terminal output
-                else:
-                    if not no_progress:
-                        out.progress_message(f"Downloading {entry_name}...")
-                    saved_path = client.download_file(hash_value, output_path)
-                    if not out.quiet:
-                        out.success(f"Downloaded: {saved_path}")
-
-                downloaded_files.append(
-                    {"hash": hash_value, "path": str(saved_path), "input": identifier}
-                )
-            except DrimeAPIError as e:
-                out.error(f"Error downloading file: {e}")
-            finally:
-                # Return task ID to the pool if we used one
-                if task_id is not None and shared_task_queue is not None:
-                    shared_task_queue.put(task_id)
-
-        def download_entry(
+        def download_entry_with_sync(
             identifier: str,
             dest_path: Optional[Path] = None,
-            entry_obj: Optional[FileEntry] = None,
-        ) -> None:
-            """Helper function to download a single entry.
+        ) -> bool:
+            """Download entry using sync engine for folders, direct for files.
 
-            Args:
-                identifier: Entry name, hash, or ID string
-                dest_path: Destination directory path
-                entry_obj: Optional pre-fetched entry object to avoid API lookup
+            Returns:
+                True if download succeeded, False if entry not found or error occurred.
             """
-            # If we already have the entry object, use it
-            if entry_obj:
-                entry: FileEntry = entry_obj
-                hash_value = entry.hash
-            else:
-                # Resolve identifier to hash
-                hash_value = resolve_identifier_to_hash(identifier)
-                if not hash_value:
-                    return
+            entry = resolve_and_get_entry(identifier)
+            if not entry:
+                return False
 
-                # Get entry info
-                try:
-                    entry_maybe: Optional[FileEntry] = get_entry_from_hash(
-                        hash_value, identifier
-                    )
-                    if not entry_maybe:
-                        return
-                    entry = entry_maybe
-                except DrimeAPIError as e:
-                    out.error(f"Error downloading {identifier}: {e}")
-                    return
-
-            # Handle folders vs files
             if entry.is_folder:
-                # Folders are always downloaded recursively
+                # Use sync engine for folder downloads (tested, parallel support)
                 folder_path = dest_path / entry.name if dest_path else Path(entry.name)
-                download_folder(entry, folder_path, identifier, entry_obj)
-            else:
-                file_path = dest_path / entry.name if dest_path else None
-                download_file(
-                    hash_value, identifier, file_path, entry.name, show_progress=True
-                )
 
-        # Parallel or sequential download
-        if workers > 1 and len(entry_identifiers) > 1:
-            # Parallel download for multiple entries with progress pooling
-            if not out.quiet and not no_progress:
-                total_entries = len(entry_identifiers)
-                completed_entries = 0
-
-                # Create shared progress display with task pool
-                shared_progress_display = Progress(
-                    "[progress.description]{task.description}",
-                    BarColumn(),
-                    "[progress.percentage]{task.percentage:>3.0f}%",
-                    DownloadColumn(),
-                    TransferSpeedColumn(),
-                    TimeElapsedColumn(),
-                    TimeRemainingColumn(),
-                    refresh_per_second=10,
-                )
-                shared_progress_display.start()
-
-                # Add overall progress bar
-                overall_task_id = shared_progress_display.add_task(
-                    f"[green]Overall Download Progress (0/{total_entries} entries)",
-                    total=total_entries,
-                    completed=0,
-                )
-
-                # Create a limited pool of progress bars (one per worker)
-                import queue
-                import threading
-
-                progress_task_pool = []
-                for i in range(workers):
-                    task_id = shared_progress_display.add_task(
-                        f"[dim]Worker {i + 1}: Waiting...",
-                        total=100,
-                        visible=True,
+                # Check if a file exists with the folder name
+                if folder_path.exists() and folder_path.is_file():
+                    out.error(
+                        f"Cannot download folder '{entry.name}': "
+                        f"a file with this name already exists at {folder_path}"
                     )
-                    progress_task_pool.append(task_id)
+                    return False
 
-                # Track available task IDs - use thread-safe queue
-                shared_task_queue = queue.Queue()
-                for task_id in progress_task_pool:
-                    shared_task_queue.put(task_id)
+                # Create engine with appropriate output settings
+                engine_out = OutputFormatter(
+                    json_output=out.json_output,
+                    quiet=no_progress or out.quiet,
+                )
+                engine = SyncEngine(client, engine_out)
 
-                # Counter lock for thread-safe increment
-                counter_lock = threading.Lock()
+                # Use sync engine's download_folder method
+                # overwrite=True uses CLOUD_BACKUP mode (download only, no delete)
+                stats = engine.download_folder(
+                    remote_entry=entry,
+                    local_path=folder_path,
+                    workspace_id=workspace,
+                    overwrite=(on_duplicate == "overwrite"),
+                    max_workers=workers,
+                )
 
-                # Wrapper to track completion for overall progress
-                def download_with_progress_tracking(
-                    identifier: str, dest_path: Optional[Path]
-                ) -> None:
-                    nonlocal completed_entries
-                    try:
-                        download_entry(identifier, dest_path)
-                    finally:
-                        # Update overall progress with counter
-                        with counter_lock:
-                            completed_entries += 1
-                            if shared_progress_display:
-                                desc = (
-                                    f"[green]Overall Download Progress "
-                                    f"({completed_entries}/{total_entries} entries)"
-                                )
-                                shared_progress_display.update(
-                                    overall_task_id,
-                                    advance=1,
-                                    description=desc,
-                                )
-
-                try:
-                    with ThreadPoolExecutor(max_workers=workers) as executor:
-                        futures = {}
-                        for identifier in entry_identifiers:
-                            future = executor.submit(
-                                download_with_progress_tracking,
-                                identifier,
-                                output_dir if output else None,
-                            )
-                            futures[future] = identifier
-
-                        try:
-                            for future in as_completed(futures):
-                                identifier = futures[future]
-                                try:
-                                    future.result()
-                                except Exception as e:
-                                    out.error(f"Error downloading {identifier}: {e}")
-                        except KeyboardInterrupt:
-                            out.warning(
-                                "\nDownload interrupted by user. "
-                                "Cancelling pending downloads..."
-                            )
-                            # Cancel all pending futures
-                            for future in futures:
-                                future.cancel()
-                            raise
-                finally:
-                    shared_progress_display.stop()
-                    # Reset shared variables
-                    shared_progress_display = None
-                    shared_task_queue = None
+                # Track downloaded files for JSON output
+                downloaded_files.append(
+                    {
+                        "type": "folder",
+                        "name": entry.name,
+                        "path": str(folder_path),
+                        "input": identifier,
+                        "downloads": stats["downloads"],
+                        "skips": stats["skips"],
+                        "errors": stats.get("errors", 0),
+                    }
+                )
             else:
-                # No progress display - simple parallel download
+                # Use direct download for single files
+                file_path = dest_path / entry.name if dest_path else None
+                download_single_file(
+                    client=client,
+                    hash_value=entry.hash,
+                    identifier=identifier,
+                    dest_path=file_path,
+                    entry_name=entry.name,
+                    downloaded_files=downloaded_files,
+                    out=out,
+                    on_duplicate=on_duplicate,
+                    no_progress=no_progress,
+                    output_override=output if len(entry_identifiers) == 1 else None,
+                    single_file=(len(entry_identifiers) == 1),
+                    show_progress=True,
+                )
+            return True
+
+        # Process all identifiers
+        nonlocal_error_count = [0]  # Use list to allow modification in nested function
+
+        def process_identifier(identifier: str, dest: Optional[Path]) -> None:
+            """Process a single identifier, tracking errors."""
+            success = download_entry_with_sync(identifier, dest)
+            if not success:
+                nonlocal_error_count[0] += 1
+
+        if workers > 1 and len(entry_identifiers) > 1:
+            # Parallel download for multiple entries
+            # Note: For folders, each folder download already uses parallel workers
+            # internally via SyncEngine, so we use sequential here to avoid
+            # over-parallelization
+            has_folders = False
+            for identifier in entry_identifiers:
+                entry = resolve_and_get_entry(identifier)
+                if entry and entry.is_folder:
+                    has_folders = True
+                    break
+
+            if has_folders:
+                # Sequential for folder downloads (they parallelize internally)
+                for identifier in entry_identifiers:
+                    process_identifier(identifier, output_dir if output else None)
+            else:
+                # Parallel for multiple file downloads
                 with ThreadPoolExecutor(max_workers=workers) as executor:
                     futures = {}
                     for identifier in entry_identifiers:
                         future = executor.submit(
-                            download_entry, identifier, output_dir if output else None
+                            process_identifier,
+                            identifier,
+                            output_dir if output else None,
                         )
                         futures[future] = identifier
 
@@ -1775,22 +1429,26 @@ def download(
                                 future.result()
                             except Exception as e:
                                 out.error(f"Error downloading {identifier}: {e}")
+                                nonlocal_error_count[0] += 1
                     except KeyboardInterrupt:
                         out.warning(
                             "\nDownload interrupted by user. "
                             "Cancelling pending downloads..."
                         )
-                        # Cancel all pending futures
                         for future in futures:
                             future.cancel()
                         raise
         else:
             # Sequential download
             for identifier in entry_identifiers:
-                download_entry(identifier, output_dir if output else None)
+                process_identifier(identifier, output_dir if output else None)
 
         if out.json_output:
             out.output_json({"files": downloaded_files})
+
+        # Exit with error if all downloads failed
+        if nonlocal_error_count[0] == len(entry_identifiers):
+            ctx.exit(1)
 
     except KeyboardInterrupt:
         out.warning("\nDownload cancelled by user")

@@ -19,6 +19,75 @@ from .output import OutputFormatter
 from .utils import is_file_id, normalize_to_hash
 
 
+def resolve_path_to_hash(
+    client: DrimeClient,
+    path: str,
+    workspace: int,
+    out: OutputFormatter,
+) -> Optional[str]:
+    """Resolve a path (e.g., folder/subfolder/file.txt) to entry hash.
+
+    Args:
+        client: Drime API client
+        path: Path to resolve (e.g., "folder/file.txt")
+        workspace: Workspace ID
+        out: Output formatter
+
+    Returns:
+        Hash value of the final entry, or None if path not found
+    """
+    parts = path.split("/")
+    current_parent: Optional[int] = None
+
+    # Navigate through each path component
+    for i, part in enumerate(parts):
+        is_last = i == len(parts) - 1
+
+        # Search for the entry in the current folder
+        parent_ids = [current_parent] if current_parent is not None else None
+        result = client.get_file_entries(
+            workspace_id=workspace,
+            parent_ids=parent_ids,
+        )
+
+        if not result or not result.get("data"):
+            if not out.quiet:
+                out.error(f"Path not found: {'/'.join(parts[: i + 1])}")
+            return None
+
+        file_entries = FileEntriesResult.from_api_response(result)
+
+        # Find the matching entry
+        matching = [e for e in file_entries.entries if e.name == part]
+        if not matching:
+            # Try case-insensitive
+            matching = [
+                e for e in file_entries.entries if e.name.lower() == part.lower()
+            ]
+
+        if not matching:
+            if not out.quiet:
+                out.error(f"Path not found: {'/'.join(parts[: i + 1])}")
+            return None
+
+        entry = matching[0]
+
+        if is_last:
+            # Found the target entry
+            if not out.quiet:
+                out.info(f"Resolved '{path}' to hash: {entry.hash}")
+            return entry.hash
+        else:
+            # This should be a folder, continue navigating
+            if not entry.is_folder:
+                if not out.quiet:
+                    out.error(f"'{part}' is not a folder in path: {path}")
+                return None
+            current_parent = entry.id
+
+    return None
+
+
 def resolve_identifier_to_hash(
     client: DrimeClient,
     identifier: str,
@@ -26,11 +95,11 @@ def resolve_identifier_to_hash(
     workspace: int,
     out: OutputFormatter,
 ) -> Optional[str]:
-    """Resolve identifier (name/ID/hash) to hash value.
+    """Resolve identifier (name/ID/hash/path) to hash value.
 
     Args:
         client: Drime API client
-        identifier: Entry identifier (name, ID, or hash)
+        identifier: Entry identifier (name, ID, hash, or path like folder/file.txt)
         current_folder: Current folder ID
         workspace: Workspace ID
         out: Output formatter
@@ -38,6 +107,10 @@ def resolve_identifier_to_hash(
     Returns:
         Hash value or None if not found
     """
+    # Check if identifier is a path (contains /)
+    if "/" in identifier:
+        return resolve_path_to_hash(client, identifier, workspace, out)
+
     try:
         # Try resolving as entry identifier (supports names, IDs, hashes)
         entry_id = client.resolve_entry_identifier(

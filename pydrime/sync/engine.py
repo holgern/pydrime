@@ -3,17 +3,20 @@
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Callable, Optional
 
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from ..api import DrimeClient
 from ..file_entries_manager import FileEntriesManager
+from ..models import FileEntry
 from ..output import OutputFormatter
 from .comparator import FileComparator, SyncAction, SyncDecision
+from .modes import SyncMode
 from .operations import SyncOperations
 from .pair import SyncPair
-from .scanner import DirectoryScanner, RemoteFile
+from .scanner import DirectoryScanner, LocalFile, RemoteFile
 
 logger = logging.getLogger(__name__)
 
@@ -981,11 +984,11 @@ class SyncEngine:
                     logger.debug(f"Downloading {decision.relative_path}...")
                     local_path = pair.local / decision.relative_path
 
-                    # Retry download up to 7 times for transient errors
+                    # Retry download up to 3 times for transient errors
                     # This handles cases where recently uploaded files aren't
                     # immediately available for download, or server-side issues
-                    max_retries = 7
-                    retry_delay = 5.0  # Start with 5 seconds
+                    max_retries = 3
+                    retry_delay = 2.0  # Start with 2 seconds
 
                     for attempt in range(max_retries):
                         try:
@@ -997,11 +1000,11 @@ class SyncEngine:
                             break  # Success, exit retry loop
                         except Exception as e:
                             error_str = str(e)
-                            # Retry on 403 (file not ready), 429 (rate limit),
-                            # 500/502/503/504 (server errors)
+                            # Retry on 429 (rate limit), 500/502/503/504 (server errors)
+                            # Note: 403 usually means permission denied, not transient
                             is_retryable = any(
                                 code in error_str
-                                for code in ["403", "429", "500", "502", "503", "504"]
+                                for code in ["429", "500", "502", "503", "504"]
                             )
                             if is_retryable and attempt < max_retries - 1:
                                 # Transient error, wait and retry
@@ -1011,8 +1014,13 @@ class SyncEngine:
                                     f"retrying in {retry_delay:.1f}s: {e}"
                                 )
                                 logger.debug(msg)
+                                if not self.output.quiet:
+                                    self.output.warning(
+                                        f"Retrying {decision.relative_path} "
+                                        f"({attempt + 1}/{max_retries})..."
+                                    )
                                 time.sleep(retry_delay)
-                                retry_delay *= 1.5  # More gradual exponential backoff
+                                retry_delay *= 2.0  # Exponential backoff
                             else:
                                 # Not retryable or final attempt, re-raise
                                 raise
@@ -1163,3 +1171,196 @@ class SyncEngine:
                 self.output.info(f"  Deleted remotely: {stats['deletes_remote']}")
         else:
             self.output.info("No changes needed - everything is in sync!")
+
+    def download_folder(
+        self,
+        remote_entry: FileEntry,
+        local_path: Path,
+        workspace_id: int = 0,
+        overwrite: bool = True,
+        max_workers: int = 1,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> dict:
+        """Download a folder and its contents using sync infrastructure.
+
+        This method provides a sync-based alternative to recursive folder downloads,
+        reusing the tested SyncEngine infrastructure for better reliability.
+
+        Args:
+            remote_entry: The remote folder entry to download
+            local_path: Local directory path to download into
+            workspace_id: Workspace ID (0 for personal workspace)
+            overwrite: If True, overwrite existing local files (CLOUD_BACKUP mode).
+                      If False, delete local files not in cloud (CLOUD_TO_LOCAL mode).
+            max_workers: Number of parallel download workers
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            Dictionary with download statistics:
+            - downloads: Number of files downloaded
+            - skips: Number of files skipped
+            - errors: Number of failed downloads
+
+        Examples:
+            >>> engine = SyncEngine(client)
+            >>> entry = client.get_folder_entry(folder_id)
+            >>> stats = engine.download_folder(
+            ...     entry,
+            ...     Path("/local/dest"),
+            ...     overwrite=True
+            ... )
+            >>> print(f"Downloaded {stats['downloads']} files")
+        """
+        # Validate local path
+        if local_path.exists() and local_path.is_file():
+            raise ValueError(
+                f"Cannot download to {local_path}: a file with this name exists"
+            )
+
+        # Create local directory if it doesn't exist
+        local_path.mkdir(parents=True, exist_ok=True)
+
+        # Choose sync mode based on overwrite flag
+        # CLOUD_BACKUP: Download only, never delete local files
+        # CLOUD_TO_LOCAL: Mirror cloud to local (deletes local files not in cloud)
+        sync_mode = SyncMode.CLOUD_BACKUP if overwrite else SyncMode.CLOUD_TO_LOCAL
+
+        if not self.output.quiet:
+            mode_desc = "overwrite" if overwrite else "mirror (will delete local-only)"
+            self.output.info(f"Downloading folder: {remote_entry.name}")
+            self.output.info(f"Mode: {mode_desc}")
+            self.output.info(f"Destination: {local_path}")
+            self.output.print("")
+
+        # Get all remote files recursively from the folder
+        manager = FileEntriesManager(self.client, workspace_id)
+        scanner = DirectoryScanner()
+
+        # Scan remote folder
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Scanning remote folder...", total=None)
+
+            # Get all files in the remote folder recursively
+            entries_with_paths = manager.get_all_recursive(
+                folder_id=remote_entry.id,
+                path_prefix="",
+            )
+
+            progress.update(
+                task, description=f"Found {len(entries_with_paths)} remote file(s)"
+            )
+
+        # Convert to RemoteFile objects (filters out folders)
+        remote_files = scanner.scan_remote(entries_with_paths)
+
+        if not remote_files:
+            if not self.output.quiet:
+                self.output.info("No files found in remote folder")
+            return {"downloads": 0, "skips": 0, "errors": 0}
+
+        # Build remote file map
+        remote_file_map = {f.relative_path: f for f in remote_files}
+
+        # Scan local files if needed for comparison
+        local_file_map: dict[str, LocalFile] = {}
+        if sync_mode.requires_local_scan:
+            local_files = scanner.scan_local(local_path)
+            local_file_map = {f.relative_path: f for f in local_files}
+
+        # Compare and create decisions
+        comparator = FileComparator(sync_mode)
+        decisions = comparator.compare_files(local_file_map, remote_file_map)
+
+        # Filter to only download actions
+        download_decisions = [d for d in decisions if d.action == SyncAction.DOWNLOAD]
+        skip_decisions = [d for d in decisions if d.action == SyncAction.SKIP]
+
+        if not self.output.quiet:
+            self.output.info(f"Files to download: {len(download_decisions)}")
+            if skip_decisions:
+                self.output.info(
+                    f"Files to skip (already exist): {len(skip_decisions)}"
+                )
+            self.output.print("")
+
+        # Execute downloads
+        stats = {"downloads": 0, "skips": len(skip_decisions), "errors": 0}
+
+        if not download_decisions:
+            if not self.output.quiet:
+                self.output.info("All files already exist locally")
+            return stats
+
+        # Create a temporary pair for execution
+        temp_pair = SyncPair(
+            local=local_path,
+            remote="",  # Not used for download-only
+            sync_mode=sync_mode,
+            workspace_id=workspace_id,
+        )
+
+        # Execute downloads
+        if max_workers > 1 and len(download_decisions) > 1:
+            download_stats = self._execute_decisions_parallel(
+                download_decisions,
+                temp_pair,
+                chunk_size=25 * 1024 * 1024,
+                multipart_threshold=30 * 1024 * 1024,
+                progress_callback=progress_callback,
+                max_workers=max_workers,
+            )
+            stats["downloads"] = download_stats["downloads"]
+            stats["errors"] = len(download_decisions) - download_stats["downloads"]
+        else:
+            # Sequential execution with progress
+            if not self.output.quiet:
+                with Progress() as progress:
+                    task = progress.add_task(
+                        "Downloading files...", total=len(download_decisions)
+                    )
+                    for decision in download_decisions:
+                        try:
+                            self._execute_single_decision(
+                                decision,
+                                temp_pair,
+                                chunk_size=25 * 1024 * 1024,
+                                multipart_threshold=30 * 1024 * 1024,
+                                progress_callback=progress_callback,
+                            )
+                            stats["downloads"] += 1
+                        except Exception as e:
+                            stats["errors"] += 1
+                            if not self.output.quiet:
+                                self.output.error(
+                                    f"Failed to download {decision.relative_path}: {e}"
+                                )
+                        progress.update(task, advance=1)
+            else:
+                for decision in download_decisions:
+                    try:
+                        self._execute_single_decision(
+                            decision,
+                            temp_pair,
+                            chunk_size=25 * 1024 * 1024,
+                            multipart_threshold=30 * 1024 * 1024,
+                            progress_callback=progress_callback,
+                        )
+                        stats["downloads"] += 1
+                    except Exception:
+                        stats["errors"] += 1
+
+        # Display summary
+        if not self.output.quiet:
+            self.output.print("")
+            self.output.success("Download complete!")
+            self.output.info(f"  Downloaded: {stats['downloads']} file(s)")
+            if stats["skips"] > 0:
+                self.output.info(f"  Skipped: {stats['skips']} file(s)")
+            if stats["errors"] > 0:
+                self.output.warning(f"  Failed: {stats['errors']} file(s)")
+
+        return stats

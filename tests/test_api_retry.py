@@ -2,8 +2,8 @@
 
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
-import requests
 
 from pydrime.api import DrimeClient
 from pydrime.exceptions import (
@@ -31,7 +31,7 @@ class TestRetryMechanism:
         assert client.max_retries == 3
         assert client.retry_delay == 1.0
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_successful_request_no_retry(self, mock_request):
         """Test that successful requests don't trigger retries."""
         mock_response = Mock()
@@ -49,7 +49,7 @@ class TestRetryMechanism:
         assert mock_request.call_count == 1
 
     @patch("time.sleep", return_value=None)  # Skip actual sleep
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_retry_on_network_error(self, mock_request, mock_sleep):
         """Test that network errors are retried."""
         call_count = [0]
@@ -57,7 +57,7 @@ class TestRetryMechanism:
         def side_effect(*args, **kwargs):
             call_count[0] += 1
             if call_count[0] < 3:
-                raise requests.exceptions.ConnectionError("Network error")
+                raise httpx.ConnectError("Network error")
             # Success on third try
             mock_response = Mock()
             mock_response.status_code = 200
@@ -77,7 +77,7 @@ class TestRetryMechanism:
         assert mock_sleep.call_count == 2  # Slept before each retry
 
     @patch("time.sleep", return_value=None)
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_retry_on_rate_limit_429(self, mock_request, mock_sleep):
         """Test that 429 rate limit errors are retried."""
         call_count = [0]
@@ -89,9 +89,11 @@ class TestRetryMechanism:
                 mock_response = Mock()
                 mock_response.status_code = 429
                 mock_response.headers = {}
-                error = requests.exceptions.HTTPError()
-                error.response = mock_response
-                raise error
+                raise httpx.HTTPStatusError(
+                    "Rate limit exceeded",
+                    request=Mock(),
+                    response=mock_response,
+                )
             # Success on second try
             mock_response = Mock()
             mock_response.status_code = 200
@@ -111,7 +113,7 @@ class TestRetryMechanism:
         assert mock_sleep.call_count == 1
 
     @patch("time.sleep", return_value=None)
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_retry_with_retry_after_header(self, mock_request, mock_sleep):
         """Test that Retry-After header is respected for rate limits."""
         call_count = [0]
@@ -123,9 +125,11 @@ class TestRetryMechanism:
                 mock_response = Mock()
                 mock_response.status_code = 429
                 mock_response.headers = {"Retry-After": "5"}
-                error = requests.exceptions.HTTPError()
-                error.response = mock_response
-                raise error
+                raise httpx.HTTPStatusError(
+                    "Rate limit exceeded",
+                    request=Mock(),
+                    response=mock_response,
+                )
             # Success on second try
             mock_response = Mock()
             mock_response.status_code = 200
@@ -146,7 +150,7 @@ class TestRetryMechanism:
         mock_sleep.assert_called_with(5.0)
 
     @patch("time.sleep", return_value=None)
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_retry_on_server_error_500(self, mock_request, mock_sleep):
         """Test that 500 server errors are retried."""
         call_count = [0]
@@ -159,9 +163,11 @@ class TestRetryMechanism:
                 mock_response.status_code = 500
                 mock_response.headers = {}
                 mock_response.content = b""
-                error = requests.exceptions.HTTPError()
-                error.response = mock_response
-                raise error
+                raise httpx.HTTPStatusError(
+                    "Server error",
+                    request=Mock(),
+                    response=mock_response,
+                )
             # Success on third try
             mock_response = Mock()
             mock_response.status_code = 200
@@ -181,7 +187,7 @@ class TestRetryMechanism:
         assert mock_sleep.call_count == 2
 
     @patch("time.sleep", return_value=None)
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_retry_on_server_error_503(self, mock_request, mock_sleep):
         """Test that 503 service unavailable errors are retried."""
         call_count = [0]
@@ -194,9 +200,11 @@ class TestRetryMechanism:
                 mock_response.status_code = 503
                 mock_response.headers = {}
                 mock_response.content = b""
-                error = requests.exceptions.HTTPError()
-                error.response = mock_response
-                raise error
+                raise httpx.HTTPStatusError(
+                    "Service unavailable",
+                    request=Mock(),
+                    response=mock_response,
+                )
             # Success on second try
             mock_response = Mock()
             mock_response.status_code = 200
@@ -215,10 +223,10 @@ class TestRetryMechanism:
         assert call_count[0] == 2
 
     @patch("time.sleep", return_value=None)
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_retry_exhausted_on_network_error(self, mock_request, mock_sleep):
         """Test that retries are exhausted and error is raised."""
-        mock_request.side_effect = requests.exceptions.ConnectionError("Network error")
+        mock_request.side_effect = httpx.ConnectError("Network error")
 
         client = DrimeClient(api_key="test_key", max_retries=2, retry_delay=0.1)
 
@@ -230,7 +238,7 @@ class TestRetryMechanism:
         assert mock_sleep.call_count == 2
 
     @patch("time.sleep", return_value=None)
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_retry_exhausted_on_rate_limit(self, mock_request, mock_sleep):
         """Test that rate limit errors raise after retries exhausted."""
 
@@ -238,9 +246,11 @@ class TestRetryMechanism:
             mock_response = Mock()
             mock_response.status_code = 429
             mock_response.headers = {}
-            error = requests.exceptions.HTTPError()
-            error.response = mock_response
-            raise error
+            raise httpx.HTTPStatusError(
+                "Rate limit exceeded",
+                request=Mock(),
+                response=mock_response,
+            )
 
         mock_request.side_effect = side_effect
 
@@ -253,15 +263,17 @@ class TestRetryMechanism:
         assert mock_request.call_count == 3
         assert mock_sleep.call_count == 2
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_no_retry_on_401_auth_error(self, mock_request):
         """Test that 401 authentication errors are not retried."""
         mock_response = Mock()
         mock_response.status_code = 401
-        error = requests.exceptions.HTTPError()
-        error.response = mock_response
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Unauthorized",
+            request=Mock(),
+            response=mock_response,
+        )
         mock_request.return_value = mock_response
-        mock_request.return_value.raise_for_status.side_effect = error
 
         client = DrimeClient(api_key="test_key", max_retries=3)
 
@@ -271,15 +283,17 @@ class TestRetryMechanism:
         # Should not retry auth errors
         assert mock_request.call_count == 1
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_no_retry_on_403_permission_error(self, mock_request):
         """Test that 403 permission errors are not retried."""
         mock_response = Mock()
         mock_response.status_code = 403
-        error = requests.exceptions.HTTPError()
-        error.response = mock_response
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Forbidden",
+            request=Mock(),
+            response=mock_response,
+        )
         mock_request.return_value = mock_response
-        mock_request.return_value.raise_for_status.side_effect = error
 
         client = DrimeClient(api_key="test_key", max_retries=3)
 
@@ -288,15 +302,17 @@ class TestRetryMechanism:
 
         assert mock_request.call_count == 1
 
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_no_retry_on_404_not_found_error(self, mock_request):
         """Test that 404 not found errors are not retried."""
         mock_response = Mock()
         mock_response.status_code = 404
-        error = requests.exceptions.HTTPError()
-        error.response = mock_response
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Not found",
+            request=Mock(),
+            response=mock_response,
+        )
         mock_request.return_value = mock_response
-        mock_request.return_value.raise_for_status.side_effect = error
 
         client = DrimeClient(api_key="test_key", max_retries=3)
 
@@ -306,10 +322,10 @@ class TestRetryMechanism:
         assert mock_request.call_count == 1
 
     @patch("time.sleep", return_value=None)
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_exponential_backoff(self, mock_request, mock_sleep):
         """Test that retry delays increase exponentially."""
-        mock_request.side_effect = requests.exceptions.ConnectionError("Network error")
+        mock_request.side_effect = httpx.ConnectError("Network error")
 
         client = DrimeClient(api_key="test_key", max_retries=3, retry_delay=1.0)
 
@@ -324,7 +340,7 @@ class TestRetryMechanism:
         assert calls[0] < calls[1] < calls[2]
 
     @patch("time.sleep", return_value=None)
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_retry_on_timeout_error(self, mock_request, mock_sleep):
         """Test that timeout errors are retried."""
         call_count = [0]
@@ -332,7 +348,7 @@ class TestRetryMechanism:
         def side_effect(*args, **kwargs):
             call_count[0] += 1
             if call_count[0] < 2:
-                raise requests.exceptions.Timeout("Request timed out")
+                raise httpx.TimeoutException("Request timed out")
             # Success on second try
             mock_response = Mock()
             mock_response.status_code = 200
@@ -351,7 +367,7 @@ class TestRetryMechanism:
         assert call_count[0] == 2
 
     @patch("time.sleep", return_value=None)
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_no_retry_on_400_client_error(self, mock_request, mock_sleep):
         """Test that 400 client errors are not retried."""
         mock_response = Mock()
@@ -359,10 +375,12 @@ class TestRetryMechanism:
         mock_response.headers = {}
         mock_response.content = b'{"message": "Bad request"}'
         mock_response.json.return_value = {"message": "Bad request"}
-        error = requests.exceptions.HTTPError()
-        error.response = mock_response
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Bad request",
+            request=Mock(),
+            response=mock_response,
+        )
         mock_request.return_value = mock_response
-        mock_request.return_value.raise_for_status.side_effect = error
 
         client = DrimeClient(api_key="test_key", max_retries=3)
 
@@ -406,12 +424,12 @@ class TestRetryMechanism:
         assert 3.0 <= delay_2 <= 5.0  # ~4s with 25% jitter
 
     @patch("time.sleep", return_value=None)
-    @patch("pydrime.api.requests.Session.request")
+    @patch("pydrime.api.httpx.Client.request")
     def test_retry_preserves_last_exception(self, mock_request, mock_sleep):
         """Test that the last exception is preserved after retries."""
 
         def side_effect(*args, **kwargs):
-            raise requests.exceptions.ConnectionError("Network error")
+            raise httpx.ConnectError("Network error")
 
         mock_request.side_effect = side_effect
 
