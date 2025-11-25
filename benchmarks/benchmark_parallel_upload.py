@@ -286,7 +286,6 @@ def upload_file_multipart(
 
     # Calculate chunk size
     if chunk_size is None:
-        min_chunk_size = 5 * 1024 * 1024  # 5MB minimum for S3 multipart
         default_chunk_size = 25 * 1024 * 1024  # 25MB default
 
         if file_size <= default_chunk_size:

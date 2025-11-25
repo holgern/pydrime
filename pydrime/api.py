@@ -536,6 +536,105 @@ class DrimeClient:
                 pass
             raise DrimeUploadError(f"Multipart upload failed: {e}") from e
 
+    def upload_file_presign(
+        self,
+        file_path: Path,
+        relative_path: Optional[str] = None,
+        workspace_id: int = 0,
+        parent_id: Optional[int] = None,
+    ) -> Any:
+        """Upload a file using presigned S3 URL.
+
+        This method uses a 3-step process:
+        1. Get a presigned URL from the API
+        2. Upload the file directly to S3 using the presigned URL
+        3. Create the file entry in the Drime database
+
+        This approach can be faster for some files and avoids server-side
+        processing overhead.
+
+        Args:
+            file_path: Local path to the file
+            relative_path: Relative path where file should be stored
+            workspace_id: ID of the workspace (default: 0 for personal)
+            parent_id: Optional parent folder ID
+
+        Returns:
+            Upload response data with 'status' and 'fileEntry' keys
+
+        Raises:
+            DrimeUploadError: If upload fails
+            DrimeFileNotFoundError: If file doesn't exist
+        """
+        if not file_path.exists():
+            raise DrimeFileNotFoundError(str(file_path))
+
+        file_size = file_path.stat().st_size
+        mime_type = self._detect_mime_type(file_path)
+        extension = file_path.suffix.lstrip(".") if file_path.suffix else ""
+
+        # Step 1: Get presigned URL
+        presign_payload: dict[str, Any] = {
+            "filename": file_path.name,
+            "mime": mime_type,
+            "size": file_size,
+            "extension": extension,
+            "relativePath": relative_path or "",
+            "workspaceId": workspace_id,
+            "parentId": parent_id,
+        }
+
+        presign_response = self._request(
+            "POST",
+            "/s3/simple/presign",
+            json=presign_payload,
+            params={"workspaceId": workspace_id},
+        )
+
+        presigned_url = presign_response.get("url")
+        key = presign_response.get("key")
+
+        if not presigned_url or not key:
+            raise DrimeUploadError(f"Invalid presign response: {presign_response}")
+
+        # Step 2: Upload to S3 using presigned URL
+        try:
+            with open(file_path, "rb") as f:
+                file_content = f.read()
+
+            s3_headers = {
+                "Content-Type": mime_type,
+                "x-amz-acl": "private",
+            }
+
+            # Use httpx directly for S3 upload (not going through Drime API)
+            s3_response = httpx.put(
+                presigned_url,
+                content=file_content,
+                headers=s3_headers,
+                timeout=60.0,
+            )
+            s3_response.raise_for_status()
+
+        except httpx.HTTPStatusError as e:
+            raise DrimeUploadError(f"S3 upload failed: {e}") from e
+        except httpx.RequestError as e:
+            raise DrimeUploadError(f"Network error during S3 upload: {e}") from e
+
+        # Step 3: Create file entry
+        entry_payload = {
+            "clientMime": mime_type,
+            "clientName": file_path.name,
+            "filename": key.split("/")[-1],
+            "size": file_size,
+            "clientExtension": extension,
+            "relativePath": relative_path or "",
+            "workspaceId": workspace_id,
+        }
+
+        entry_response = self._request("POST", "/s3/entries", json=entry_payload)
+        return entry_response
+
     def upload_file(
         self,
         file_path: Path,

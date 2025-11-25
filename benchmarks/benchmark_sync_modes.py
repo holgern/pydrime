@@ -46,7 +46,7 @@ def run_sync_command(
     # Run with unbuffered output for real-time streaming
     cmd = [
         "pydrime",
-        "--verbose",
+        # "--verbose",
         "sync",
         sync_pair,
         "--workers",

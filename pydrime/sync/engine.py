@@ -49,6 +49,7 @@ class SyncEngine:
         batch_size: int = 50,
         use_streaming: bool = True,
         max_workers: int = 1,
+        start_delay: float = 0.0,
     ) -> dict:
         """Sync a single sync pair.
 
@@ -62,6 +63,8 @@ class SyncEngine:
             use_streaming: If True, use streaming mode to process files in batches
                           If False, scan all files upfront (original behavior)
             max_workers: Number of parallel workers for uploads/downloads (default: 1)
+            start_delay: Delay in seconds between starting each parallel operation
+                        (default: 0.0, useful for preventing server overload)
 
         Returns:
             Dictionary with sync statistics
@@ -100,6 +103,7 @@ class SyncEngine:
                 progress_callback,
                 batch_size,
                 max_workers,
+                start_delay,
             )
         else:
             # Use traditional mode (scan all files upfront)
@@ -110,6 +114,7 @@ class SyncEngine:
                 multipart_threshold,
                 progress_callback,
                 max_workers,
+                start_delay,
             )
 
     def _sync_pair_traditional(
@@ -120,6 +125,7 @@ class SyncEngine:
         multipart_threshold: int,
         progress_callback: Optional[Callable[[int, int], None]],
         max_workers: int,
+        start_delay: float = 0.0,
     ) -> dict:
         """Traditional sync: scan all files upfront, then process.
 
@@ -130,6 +136,7 @@ class SyncEngine:
             multipart_threshold: Threshold for multipart upload
             progress_callback: Optional callback for progress updates
             max_workers: Number of parallel workers
+            start_delay: Delay in seconds between starting each parallel operation
 
         Returns:
             Dictionary with sync statistics
@@ -192,6 +199,7 @@ class SyncEngine:
                 multipart_threshold,
                 progress_callback,
                 max_workers,
+                start_delay,
             )
 
         # Step 6: Display summary
@@ -208,6 +216,7 @@ class SyncEngine:
         progress_callback: Optional[Callable[[int, int], None]],
         batch_size: int,
         max_workers: int,
+        start_delay: float = 0.0,
     ) -> dict:
         """Streaming sync: process files in batches as they're discovered.
 
@@ -222,6 +231,7 @@ class SyncEngine:
             progress_callback: Optional callback for progress updates
             batch_size: Number of files per batch
             max_workers: Number of parallel workers
+            start_delay: Delay in seconds between starting each parallel operation
 
         Returns:
             Dictionary with sync statistics
@@ -253,6 +263,7 @@ class SyncEngine:
                 progress_callback=progress_callback,
                 batch_size=batch_size,
                 max_workers=max_workers,
+                start_delay=start_delay,
             )
 
         # Step 3: Handle local-only files (files that don't exist remotely)
@@ -266,6 +277,7 @@ class SyncEngine:
                 multipart_threshold=multipart_threshold,
                 progress_callback=progress_callback,
                 max_workers=max_workers,
+                start_delay=start_delay,
             )
 
         # Step 4: Display summary
@@ -369,6 +381,7 @@ class SyncEngine:
         progress_callback: Optional[Callable[[int, int], None]],
         batch_size: int,
         max_workers: int,
+        start_delay: float = 0.0,
     ) -> None:
         """Process remote files in batches for streaming sync.
 
@@ -382,6 +395,7 @@ class SyncEngine:
             progress_callback: Optional callback for progress updates
             batch_size: Number of files per batch
             max_workers: Number of parallel workers
+            start_delay: Delay in seconds between starting each parallel operation
         """
         if not self.output.quiet:
             self.output.info("Processing remote files in batches...")
@@ -427,6 +441,7 @@ class SyncEngine:
                     multipart_threshold=multipart_threshold,
                     progress_callback=progress_callback,
                     max_workers=max_workers,
+                    start_delay=start_delay,
                 )
 
                 # Update stats
@@ -460,6 +475,7 @@ class SyncEngine:
         multipart_threshold: int,
         progress_callback: Optional[Callable[[int, int], None]],
         max_workers: int,
+        start_delay: float = 0.0,
     ) -> dict:
         """Process a single batch of remote entries.
 
@@ -474,6 +490,7 @@ class SyncEngine:
             multipart_threshold: Threshold for multipart upload
             progress_callback: Optional callback for progress updates
             max_workers: Number of parallel workers
+            start_delay: Delay in seconds between starting each parallel operation
 
         Returns:
             Dictionary with batch statistics
@@ -515,6 +532,7 @@ class SyncEngine:
             multipart_threshold=multipart_threshold,
             progress_callback=progress_callback,
             max_workers=max_workers,
+            start_delay=start_delay,
         )
 
         batch_stats["processed"] = len(remote_files)
@@ -532,6 +550,7 @@ class SyncEngine:
         multipart_threshold: int,
         progress_callback: Optional[Callable[[int, int], None]],
         max_workers: int,
+        start_delay: float = 0.0,
     ) -> dict:
         """Execute a batch of sync decisions.
 
@@ -542,6 +561,7 @@ class SyncEngine:
             multipart_threshold: Threshold for multipart upload
             progress_callback: Optional callback for progress updates
             max_workers: Number of parallel workers
+            start_delay: Delay in seconds between starting each parallel operation
 
         Returns:
             Dictionary with batch statistics
@@ -563,6 +583,7 @@ class SyncEngine:
                 multipart_threshold,
                 progress_callback,
                 max_workers,
+                start_delay,
             )
             # Update stats with actual successes
             stats["uploads"] = batch_stats["uploads"]
@@ -640,6 +661,7 @@ class SyncEngine:
         multipart_threshold: int,
         progress_callback: Optional[Callable[[int, int], None]],
         max_workers: int,
+        start_delay: float = 0.0,
     ) -> None:
         """Process local-only files for streaming sync.
 
@@ -652,6 +674,7 @@ class SyncEngine:
             multipart_threshold: Threshold for multipart upload
             progress_callback: Optional callback for progress updates
             max_workers: Number of parallel workers
+            start_delay: Delay in seconds between starting each parallel operation
         """
         local_only_files = [
             f for f in local_files if f.relative_path not in seen_remote_paths
@@ -690,6 +713,7 @@ class SyncEngine:
                 multipart_threshold,
                 progress_callback,
                 max_workers,
+                start_delay,
             )
             # Update stats with actual successes
             stats["uploads"] += local_stats["uploads"]
@@ -854,6 +878,7 @@ class SyncEngine:
         multipart_threshold: int,
         progress_callback: Optional[Callable[[int, int], None]],
         max_workers: int = 1,
+        start_delay: float = 0.0,
     ) -> None:
         """Execute sync decisions.
 
@@ -864,6 +889,7 @@ class SyncEngine:
             multipart_threshold: Threshold for multipart uploads
             progress_callback: Optional progress callback
             max_workers: Number of parallel workers (default: 1 for sequential)
+            start_delay: Delay in seconds between starting each parallel operation
         """
         actionable = [
             d
@@ -884,6 +910,7 @@ class SyncEngine:
                     multipart_threshold,
                     progress_callback,
                     max_workers,
+                    start_delay,
                 )
             else:
                 for decision in actionable:
@@ -907,6 +934,7 @@ class SyncEngine:
                         multipart_threshold,
                         progress_callback,
                         max_workers,
+                        start_delay,
                     )
                     # Update progress to completion
                     completed = (
@@ -1061,6 +1089,7 @@ class SyncEngine:
         multipart_threshold: int,
         progress_callback: Optional[Callable[[int, int], None]],
         max_workers: int,
+        start_delay: float = 0.0,
     ) -> dict:
         """Execute sync decisions in parallel using ThreadPoolExecutor.
 
@@ -1071,11 +1100,16 @@ class SyncEngine:
             multipart_threshold: Threshold for multipart uploads
             progress_callback: Optional progress callback
             max_workers: Number of parallel workers
+            start_delay: Delay in seconds between starting each parallel operation
 
         Returns:
             Dictionary with stats of successful operations
         """
         logger.debug(f"Executing {len(decisions)} actions with {max_workers} workers")
+        if start_delay > 0:
+            logger.debug(
+                f"Using staggered start delay of {start_delay}s between workers"
+            )
 
         # Track stats for successful operations
         stats = {
@@ -1087,8 +1121,13 @@ class SyncEngine:
 
         def execute_with_timing(
             decision: SyncDecision,
+            worker_delay: float,
         ) -> tuple[str, float, bool, SyncAction]:
             """Execute a single decision and return timing info."""
+            # Apply staggered start delay
+            if worker_delay > 0:
+                time.sleep(worker_delay)
+
             start = time.time()
             success = True
             try:
@@ -1106,11 +1145,13 @@ class SyncEngine:
             elapsed = time.time() - start
             return decision.relative_path, elapsed, success, decision.action
 
-        # Execute in parallel
+        # Execute in parallel with staggered start delays
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(execute_with_timing, decision): decision
-                for decision in decisions
+                executor.submit(
+                    execute_with_timing, decision, i * start_delay
+                ): decision
+                for i, decision in enumerate(decisions)
             }
 
             for future in as_completed(futures):

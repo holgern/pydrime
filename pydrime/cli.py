@@ -255,6 +255,12 @@ def init(ctx: Any, api_key: str) -> None:
     default=30,
     help="File size threshold in MB for using multipart upload (default: 30MB)",
 )
+@click.option(
+    "--start-delay",
+    type=float,
+    default=0.0,
+    help="Delay in seconds between starting each parallel upload (default: 0.0)",
+)
 @click.pass_context
 def upload(  # noqa: C901
     ctx: Any,
@@ -267,6 +273,7 @@ def upload(  # noqa: C901
     no_progress: bool,
     chunk_size: int,
     multipart_threshold: int,
+    start_delay: float,
 ) -> None:
     """Upload a file or directory to Drime Cloud.
 
@@ -319,6 +326,12 @@ def upload(  # noqa: C901
 
         if remote_path:
             out.info(f"Remote path structure: {remote_path}")
+
+        # Show parallel upload settings
+        if workers > 1:
+            out.info(f"Parallel workers: {workers}")
+            if start_delay > 0:
+                out.info(f"Start delay between uploads: {start_delay}s")
 
         out.info("")  # Empty line for readability
 
@@ -539,18 +552,30 @@ def upload(  # noqa: C901
                 with ThreadPoolExecutor(max_workers=workers) as executor:
                     futures = {}
 
-                    for file_path, upload_path, rel_path in files_to_process:
-                        if upload_with_task_pool:
-                            future = executor.submit(
-                                upload_with_task_pool, file_path, upload_path
-                            )
-                        else:
-                            future = executor.submit(
-                                upload_single_file_with_progress,
-                                file_path,
-                                upload_path,
-                                None,
-                            )
+                    for i, (file_path, upload_path, rel_path) in enumerate(
+                        files_to_process
+                    ):
+                        # Calculate staggered delay for this file
+                        thread_delay = i * start_delay
+
+                        # Create wrapper function with delay
+                        def upload_with_delay(
+                            fp: Path,
+                            up: str,
+                            delay: float = thread_delay,
+                        ) -> Any:
+                            if delay > 0:
+                                import time
+
+                                time.sleep(delay)
+                            if upload_with_task_pool:
+                                return upload_with_task_pool(fp, up)
+                            else:
+                                return upload_single_file_with_progress(fp, up, None)
+
+                        future = executor.submit(
+                            upload_with_delay, file_path, upload_path, thread_delay
+                        )
                         futures[future] = (file_path, upload_path, rel_path)
 
                     try:
@@ -1508,6 +1533,12 @@ def download(
     default=1,
     help="Number of parallel workers for uploads/downloads (default: 1)",
 )
+@click.option(
+    "--start-delay",
+    type=float,
+    default=0.0,
+    help="Delay in seconds between starting each parallel operation (default: 0.0)",
+)
 @click.pass_context
 def sync(
     ctx: Any,
@@ -1521,6 +1552,7 @@ def sync(
     batch_size: int,
     no_streaming: bool,
     workers: int,
+    start_delay: float,
 ) -> None:
     """Sync files between local directory and Drime Cloud.
 
@@ -1677,6 +1709,7 @@ def sync(
             batch_size=batch_size,
             use_streaming=not no_streaming,
             max_workers=workers,
+            start_delay=start_delay,
         )
 
         # Output results
