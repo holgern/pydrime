@@ -2106,7 +2106,7 @@ def rename(
 
 @main.command()
 @click.argument("entry_identifiers", nargs=-1, type=str, required=True)
-@click.option("--permanent", is_flag=True, help="Delete permanently (cannot be undone)")
+@click.option("--no-trash", is_flag=True, help="Delete permanently (cannot be undone)")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
 @click.option(
     "--workspace",
@@ -2119,7 +2119,7 @@ def rename(
 def rm(
     ctx: Any,
     entry_identifiers: tuple[str, ...],
-    permanent: bool,
+    no_trash: bool,
     yes: bool,
     workspace: Optional[int],
 ) -> None:
@@ -2136,7 +2136,7 @@ def rm(
         pydrime rm drime_test                   # Delete folder by name
         pydrime rm test1.txt test2.txt          # Delete multiple files
         pydrime rm 480424796 drime_test         # Mix IDs and names
-        pydrime rm --permanent test1.txt        # Permanent deletion
+        pydrime rm --no-trash test1.txt         # Permanent deletion
         pydrime rm -w 5 test.txt                # Delete in workspace 5
     """
     api_key = ctx.obj.get("api_key")
@@ -2172,7 +2172,7 @@ def rm(
                 ctx.exit(1)
 
         # Confirm deletion
-        action = "permanently delete" if permanent else "move to trash"
+        action = "permanently delete" if no_trash else "move to trash"
         if (
             not yes
             and not out.quiet
@@ -2184,13 +2184,13 @@ def rm(
             return
 
         result = client.delete_file_entries(
-            entry_ids, delete_forever=permanent, workspace_id=workspace
+            entry_ids, delete_forever=no_trash, workspace_id=workspace
         )
 
         if out.json_output:
             out.output_json(result)
         else:
-            if permanent:
+            if no_trash:
                 out.success(f"✓ Permanently deleted {len(entry_ids)} item(s)")
             else:
                 out.success(f"✓ Moved {len(entry_ids)} item(s) to trash")
@@ -2434,6 +2434,110 @@ def vault(ctx: Any) -> None:
     pass
 
 
+# Environment variable name for vault password (in-memory only, not stored to disk)
+VAULT_PASSWORD_ENV_VAR = "PYDRIME_VAULT_PASSWORD"
+
+
+def get_vault_password_from_env() -> Optional[str]:
+    """Get vault password from environment variable if set."""
+    import os
+
+    return os.environ.get(VAULT_PASSWORD_ENV_VAR)
+
+
+@vault.command("unlock")
+@click.pass_context
+def vault_unlock(ctx: Any) -> None:
+    """Unlock the vault for the current shell session.
+
+    Prompts for your vault password and outputs shell commands to set
+    an environment variable. The password is stored in memory only
+    and never written to disk.
+
+    Usage (bash/zsh):
+        eval $(pydrime vault unlock)
+
+    Usage (fish):
+        pydrime vault unlock | source
+
+    After unlocking, vault commands won't prompt for password.
+    Use 'pydrime vault lock' to clear the password from your session.
+    """
+    from .vault_crypto import VaultPasswordError, unlock_vault
+
+    api_key = ctx.obj.get("api_key")
+    out: OutputFormatter = ctx.obj["out"]
+
+    if not config.is_configured() and not api_key:
+        out.error("API key not configured.")
+        out.info("Run 'pydrime init' to configure your API key")
+        ctx.exit(1)
+
+    try:
+        client = DrimeClient(api_key=api_key)
+
+        # Get vault info for password verification
+        vault_result = client.get_vault()
+        vault_info = vault_result.get("vault")
+
+        if not vault_info:
+            out.error("No vault found. You may need to set up a vault first.")
+            ctx.exit(1)
+            return
+
+        # Get encryption parameters from vault
+        salt = vault_info.get("salt")
+        check = vault_info.get("check")
+        iv = vault_info.get("iv")
+
+        if not all([salt, check, iv]):
+            out.error("Vault encryption parameters not found.")
+            ctx.exit(1)
+            return
+
+        # Prompt for password
+        password = click.prompt("Vault password", hide_input=True, err=True)
+
+        # Verify the password
+        try:
+            unlock_vault(password, salt, check, iv)
+        except VaultPasswordError:
+            out.error("Invalid vault password.")
+            ctx.exit(1)
+            return
+
+        # Output shell command to set environment variable
+        # Using click.echo to bypass OutputFormatter and write to stdout
+        click.echo(f"export {VAULT_PASSWORD_ENV_VAR}='{password}'")
+
+        # Print success message to stderr so it doesn't interfere with eval
+        click.echo("Vault unlocked. Password stored in shell session.", err=True)
+
+    except DrimeAPIError as e:
+        out.error(str(e))
+        ctx.exit(1)
+
+
+@vault.command("lock")
+@click.pass_context
+def vault_lock(ctx: Any) -> None:
+    """Lock the vault and clear password from shell session.
+
+    Outputs shell commands to unset the vault password environment variable.
+
+    Usage (bash/zsh):
+        eval $(pydrime vault lock)
+
+    Usage (fish):
+        pydrime vault lock | source
+    """
+    # Output shell command to unset environment variable
+    click.echo(f"unset {VAULT_PASSWORD_ENV_VAR}")
+
+    # Print message to stderr so it doesn't interfere with eval
+    click.echo("Vault locked. Password cleared from shell session.", err=True)
+
+
 @vault.command("show")
 @click.pass_context
 def vault_show(ctx: Any) -> None:
@@ -2653,13 +2757,20 @@ def vault_ls(
                 out.info(f"No files in vault folder '{folder_display}'")
             return
 
-        # Display files in table format
+        # Display files in table format (same as regular ls)
         table_data = []
         for entry in entries:
             entry_type = entry.get("type", "file")
             name = entry.get("name", "Unknown")
-            if entry_type == "folder":
-                name = f"[{name}]"
+
+            # Format created timestamp
+            created_at = entry.get("created_at", "")
+            created_str = ""
+            if created_at:
+                created_dt = parse_iso_timestamp(created_at)
+                created_str = (
+                    created_dt.strftime("%Y-%m-%d %H:%M:%S") if created_dt else ""
+                )
 
             table_data.append(
                 {
@@ -2667,17 +2778,25 @@ def vault_ls(
                     "name": name,
                     "type": entry_type,
                     "size": out.format_size(entry.get("file_size", 0)),
+                    "hash": entry.get("hash", ""),
+                    "parent_id": str(entry.get("parent_id", ""))
+                    if entry.get("parent_id")
+                    else "-",
+                    "created": created_str,
                 }
             )
 
         out.output_table(
             table_data,
-            ["id", "name", "type", "size"],
+            ["id", "name", "type", "size", "hash", "parent_id", "created"],
             {
                 "id": "ID",
                 "name": "Name",
                 "type": "Type",
                 "size": "Size",
+                "hash": "Hash",
+                "parent_id": "Parent ID",
+                "created": "Created",
             },
         )
 
@@ -2704,15 +2823,24 @@ def vault_ls(
     default=None,
     help="Output file path (default: current directory with original filename)",
 )
+@click.option(
+    "--password",
+    "-p",
+    type=str,
+    default=None,
+    help="Vault password (will prompt if not provided)",
+)
 @click.pass_context
 def vault_download(
     ctx: Any,
     file_identifier: str,
     output: Optional[str],
+    password: Optional[str],
 ) -> None:
     """Download a file from the vault.
 
-    Downloads an encrypted file from your vault.
+    Downloads an encrypted file from your vault and decrypts it locally.
+    You will be prompted for your vault password.
 
     FILE_IDENTIFIER: File path, name, ID, or hash to download
 
@@ -2723,6 +2851,8 @@ def vault_download(
         pydrime vault download MzQ0MzF8cGFkZA           # Download by hash
         pydrime vault download doc.pdf -o out.pdf       # Download to specific path
     """
+    from .vault_crypto import VaultPasswordError, decrypt_file_content, unlock_vault
+
     api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
 
@@ -2734,12 +2864,65 @@ def vault_download(
     try:
         client = DrimeClient(api_key=api_key)
 
+        # Get vault info for password verification
+        vault_result = client.get_vault()
+        vault_info = vault_result.get("vault")
+
+        if not vault_info:
+            out.error("No vault found. You may need to set up a vault first.")
+            ctx.exit(1)
+            return
+
+        # Get encryption parameters from vault
+        salt = vault_info.get("salt")
+        check = vault_info.get("check")
+        iv = vault_info.get("iv")
+
+        if not all([salt, check, iv]):
+            out.error("Vault encryption parameters not found.")
+            ctx.exit(1)
+            return
+
+        # Get password from: CLI option > environment variable > prompt
+        if not password:
+            password = get_vault_password_from_env()
+        if not password:
+            password = click.prompt("Vault password", hide_input=True)
+
+        # Unlock the vault (verify password)
+        if not out.quiet:
+            out.info("Verifying vault password...")
+
+        try:
+            vault_key = unlock_vault(password, salt, check, iv)
+        except VaultPasswordError:
+            out.error("Invalid vault password")
+            ctx.exit(1)
+            return
+
         # Resolve file identifier to hash
         file_hash: Optional[str] = None
+        original_filename: Optional[str] = None
+        file_iv: Optional[str] = None  # IV from file entry for decryption
 
         # Check if it's a numeric ID - convert to hash
         if file_identifier.isdigit():
             file_hash = calculate_drime_hash(int(file_identifier))
+            # Need to fetch file entry to get IV
+            search_result = client.get_vault_file_entries(per_page=1000)
+            search_entries = []
+            if isinstance(search_result, dict):
+                if "data" in search_result:
+                    search_entries = search_result["data"]
+                elif "pagination" in search_result and isinstance(
+                    search_result["pagination"], dict
+                ):
+                    search_entries = search_result["pagination"].get("data", [])
+            for entry in search_entries:
+                if str(entry.get("id")) == file_identifier:
+                    file_iv = entry.get("iv")
+                    original_filename = entry.get("name")
+                    break
         elif "/" in file_identifier:
             # Path-based resolution: Test1/subfolder/file.txt
             path_parts = file_identifier.split("/")
@@ -2797,6 +2980,8 @@ def vault_download(
             for entry in search_entries:
                 if entry.get("type") != "folder" and entry.get("name") == file_name:
                     file_hash = entry.get("hash")
+                    original_filename = entry.get("name")
+                    file_iv = entry.get("iv")
                     if not out.quiet:
                         out.info(f"Resolved '{file_identifier}' to hash: {file_hash}")
                     break
@@ -2823,6 +3008,7 @@ def vault_download(
                     search_entries = search_result["pagination"].get("data", [])
 
             found = False
+            original_filename = None
             for entry in search_entries:
                 entry_name = entry.get("name", "")
                 entry_hash = entry.get("hash", "")
@@ -2833,6 +3019,8 @@ def vault_download(
                     entry_name == file_identifier or entry_hash == file_identifier
                 ):
                     file_hash = entry_hash
+                    original_filename = entry_name
+                    file_iv = entry.get("iv")
                     found = True
                     if not out.quiet:
                         out.info(f"Resolved '{file_identifier}' to hash: {file_hash}")
@@ -2860,21 +3048,384 @@ def vault_download(
             ctx.exit(1)
             return  # Unreachable, but helps type checker
 
-        # Determine output path
-        output_path: Optional[Path] = None
-        if output:
-            output_path = Path(output)
-
-        # Download the file
+        # Download the encrypted file to a temp location
         if not out.quiet:
-            out.info("Downloading vault file...")
+            out.info("Downloading encrypted vault file...")
 
-        saved_path = client.download_vault_file(
-            hash_value=file_hash,
-            output_path=output_path,
+        # Download to a temporary file first
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            temp_path = Path(tmp_file.name)
+
+        try:
+            # Download encrypted content
+            client.download_vault_file(
+                hash_value=file_hash,
+                output_path=temp_path,
+            )
+
+            # Read encrypted content
+            encrypted_content = temp_path.read_bytes()
+
+            # Decrypt the content
+            if not out.quiet:
+                out.info("Decrypting file...")
+
+            decrypted_content = decrypt_file_content(
+                vault_key, encrypted_content, iv_b64=file_iv
+            )
+
+            # Determine output path
+            if output:
+                save_path = Path(output)
+            elif original_filename:
+                save_path = Path(original_filename)
+            else:
+                # Try to extract filename from the path identifier
+                if "/" in file_identifier:
+                    save_path = Path(file_identifier.split("/")[-1])
+                else:
+                    save_path = Path(file_identifier)
+
+            # Write decrypted content
+            save_path.write_bytes(decrypted_content)
+
+            out.success(f"Downloaded and decrypted: {save_path}")
+
+        finally:
+            # Clean up temp file
+            if temp_path.exists():
+                temp_path.unlink()
+
+    except DrimeAPIError as e:
+        out.error(str(e))
+        ctx.exit(1)
+
+
+@vault.command("upload")
+@click.argument("file_path", type=click.Path(exists=True))
+@click.option(
+    "--folder",
+    "-f",
+    type=str,
+    default=None,
+    help="Target folder name, ID, or hash in vault (default: root)",
+)
+@click.option(
+    "--password",
+    "-p",
+    type=str,
+    default=None,
+    help="Vault password (will prompt if not provided)",
+)
+@click.pass_context
+def vault_upload(
+    ctx: Any,
+    file_path: str,
+    folder: Optional[str],
+    password: Optional[str],
+) -> None:
+    """Upload a file to the vault with encryption.
+
+    Encrypts a local file and uploads it to your encrypted vault.
+    You will be prompted for your vault password.
+
+    FILE_PATH: Path to the local file to upload
+
+    Examples:
+        pydrime vault upload secret.txt                    # Upload to vault root
+        pydrime vault upload document.pdf -f MyFolder      # Upload to folder
+        pydrime vault upload photo.jpg -p mypassword       # With password option
+    """
+    from .vault_crypto import VaultPasswordError, encrypt_filename, unlock_vault
+
+    api_key = ctx.obj.get("api_key")
+    out: OutputFormatter = ctx.obj["out"]
+
+    if not config.is_configured() and not api_key:
+        out.error("API key not configured.")
+        out.info("Run 'pydrime init' to configure your API key")
+        ctx.exit(1)
+
+    try:
+        client = DrimeClient(api_key=api_key)
+
+        # Get vault info for password verification
+        vault_result = client.get_vault()
+        vault_info = vault_result.get("vault")
+
+        if not vault_info:
+            out.error("No vault found. You may need to set up a vault first.")
+            ctx.exit(1)
+            return
+
+        vault_id = vault_info.get("id")
+        if not vault_id:
+            out.error("Could not get vault ID.")
+            ctx.exit(1)
+            return
+
+        # Get encryption parameters from vault
+        salt = vault_info.get("salt")
+        check = vault_info.get("check")
+        iv = vault_info.get("iv")
+
+        if not all([salt, check, iv]):
+            out.error("Vault encryption parameters not found.")
+            ctx.exit(1)
+            return
+
+        # Get password from: CLI option > environment variable > prompt
+        if not password:
+            password = get_vault_password_from_env()
+        if not password:
+            password = click.prompt("Vault password", hide_input=True)
+
+        # Unlock the vault (verify password)
+        if not out.quiet:
+            out.info("Verifying vault password...")
+
+        try:
+            vault_key = unlock_vault(password, salt, check, iv)
+        except VaultPasswordError:
+            out.error("Invalid vault password")
+            ctx.exit(1)
+            return
+
+        # Resolve folder if specified
+        parent_id: Optional[int] = None
+        if folder:
+            # Check if it's a numeric ID
+            if folder.isdigit():
+                parent_id = int(folder)
+            else:
+                # Search for folder by name or hash
+                search_result = client.get_vault_file_entries(per_page=1000)
+
+                search_entries = []
+                if isinstance(search_result, dict):
+                    if "data" in search_result:
+                        search_entries = search_result["data"]
+                    elif "pagination" in search_result and isinstance(
+                        search_result["pagination"], dict
+                    ):
+                        search_entries = search_result["pagination"].get("data", [])
+
+                found = False
+                for entry in search_entries:
+                    entry_name = entry.get("name", "")
+                    entry_hash = entry.get("hash", "")
+                    entry_type = entry.get("type", "")
+
+                    if entry_type == "folder" and (
+                        entry_name == folder or entry_hash == folder
+                    ):
+                        parent_id = entry.get("id")
+                        found = True
+                        if not out.quiet:
+                            out.info(f"Resolved folder '{folder}' to ID: {parent_id}")
+                        break
+
+                if not found:
+                    out.error(f"Folder '{folder}' not found in vault.")
+                    ctx.exit(1)
+                    return
+
+        # Read and encrypt the file
+        local_path = Path(file_path)
+        if not out.quiet:
+            out.info(f"Encrypting {local_path.name}...")
+
+        # Read file content
+        file_content = local_path.read_bytes()
+
+        # Encrypt the filename
+        encrypted_name, name_iv = encrypt_filename(vault_key, local_path.name)
+
+        # Encrypt the file content
+        ciphertext, content_iv_bytes = vault_key.encrypt(file_content)
+
+        # Convert IV to base64
+        import base64
+
+        content_iv = base64.b64encode(content_iv_bytes).decode("ascii")
+
+        # Upload the encrypted file
+        if not out.quiet:
+            out.info("Uploading encrypted file...")
+
+        result = client.upload_vault_file(
+            file_path=local_path,
+            encrypted_content=ciphertext,
+            encrypted_name=encrypted_name,
+            name_iv=name_iv,
+            content_iv=content_iv,
+            vault_id=vault_id,
+            parent_id=parent_id,
         )
 
-        out.success(f"Downloaded: {saved_path}")
+        if out.json_output:
+            out.output_json(result)
+            return
+
+        file_entry = result.get("fileEntry", {})
+        out.success(
+            f"Uploaded and encrypted: {local_path.name} "
+            f"(ID: {file_entry.get('id', 'N/A')})"
+        )
+
+    except DrimeAPIError as e:
+        out.error(str(e))
+        ctx.exit(1)
+
+
+@vault.command("rm")
+@click.argument("file_identifier", type=str)
+@click.option(
+    "--no-trash",
+    is_flag=True,
+    default=False,
+    help="Delete permanently instead of moving to trash",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help="Skip confirmation prompt",
+)
+@click.pass_context
+def vault_rm(
+    ctx: Any,
+    file_identifier: str,
+    no_trash: bool,
+    yes: bool,
+) -> None:
+    """Delete a file or folder from the vault.
+
+    By default, files are moved to trash. Use --no-trash to delete permanently.
+
+    FILE_IDENTIFIER: File or folder name, ID, or hash to delete
+
+    Examples:
+        pydrime vault rm secret.txt                # Move to trash
+        pydrime vault rm secret.txt --no-trash     # Delete permanently
+        pydrime vault rm 34431                     # Delete by ID
+        pydrime vault rm MzQ0MzF8cGFkZA            # Delete by hash
+        pydrime vault rm MyFolder -y               # Skip confirmation
+    """
+    api_key = ctx.obj.get("api_key")
+    out: OutputFormatter = ctx.obj["out"]
+
+    if not config.is_configured() and not api_key:
+        out.error("API key not configured.")
+        out.info("Run 'pydrime init' to configure your API key")
+        ctx.exit(1)
+
+    try:
+        client = DrimeClient(api_key=api_key)
+
+        # Get vault info
+        vault_result = client.get_vault()
+        vault_info = vault_result.get("vault")
+
+        if not vault_info:
+            out.error("No vault found. You may need to set up a vault first.")
+            ctx.exit(1)
+            return
+
+        vault_id = vault_info.get("id")
+        if not vault_id:
+            out.error("Could not get vault ID.")
+            ctx.exit(1)
+            return
+
+        # Resolve file identifier to ID
+        entry_id: Optional[int] = None
+        entry_name: Optional[str] = None
+        entry_type: Optional[str] = None
+
+        # Check if it's a numeric ID
+        if file_identifier.isdigit():
+            entry_id = int(file_identifier)
+            # Fetch entry info to get name
+            search_result = client.get_vault_file_entries(per_page=1000)
+            search_entries = []
+            if isinstance(search_result, dict):
+                if "data" in search_result:
+                    search_entries = search_result["data"]
+                elif "pagination" in search_result and isinstance(
+                    search_result["pagination"], dict
+                ):
+                    search_entries = search_result["pagination"].get("data", [])
+            for entry in search_entries:
+                if entry.get("id") == entry_id:
+                    entry_name = entry.get("name")
+                    entry_type = entry.get("type")
+                    break
+        else:
+            # Search for entry by name or hash
+            search_result = client.get_vault_file_entries(per_page=1000)
+
+            search_entries = []
+            if isinstance(search_result, dict):
+                if "data" in search_result:
+                    search_entries = search_result["data"]
+                elif "pagination" in search_result and isinstance(
+                    search_result["pagination"], dict
+                ):
+                    search_entries = search_result["pagination"].get("data", [])
+
+            for entry in search_entries:
+                e_name = entry.get("name", "")
+                e_hash = entry.get("hash", "")
+
+                if e_name == file_identifier or e_hash == file_identifier:
+                    entry_id = entry.get("id")
+                    entry_name = e_name
+                    entry_type = entry.get("type")
+                    if not out.quiet:
+                        out.info(f"Resolved '{file_identifier}' to ID: {entry_id}")
+                    break
+
+        if not entry_id:
+            out.error(f"Entry '{file_identifier}' not found in vault.")
+            ctx.exit(1)
+            return
+
+        # Confirmation prompt
+        action = "permanently delete" if no_trash else "move to trash"
+        display_name = entry_name or file_identifier
+        type_str = f" ({entry_type})" if entry_type else ""
+
+        if not yes:
+            confirm = click.confirm(
+                f"Are you sure you want to {action} '{display_name}'{type_str}?"
+            )
+            if not confirm:
+                out.info("Cancelled.")
+                return
+
+        # Delete the entry
+        if not out.quiet:
+            out.info(
+                f"{'Deleting' if no_trash else 'Moving to trash'}: {display_name}..."
+            )
+
+        result = client.delete_vault_file_entries(
+            entry_ids=[entry_id],
+            delete_forever=no_trash,
+        )
+
+        if out.json_output:
+            out.output_json(result)
+            return
+
+        if no_trash:
+            out.success(f"Permanently deleted: {display_name}")
+        else:
+            out.success(f"Moved to trash: {display_name}")
 
     except DrimeAPIError as e:
         out.error(str(e))

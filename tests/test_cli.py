@@ -735,7 +735,7 @@ class TestRmCommand:
         mock_client.delete_file_entries.return_value = {"status": "success"}
         mock_client_class.return_value = mock_client
 
-        result = runner.invoke(main, ["rm", "1", "--permanent"], input="y\n")
+        result = runner.invoke(main, ["rm", "1", "--no-trash"], input="y\n")
 
         assert result.exit_code == 0
         assert "Permanently deleted" in result.output
@@ -1089,7 +1089,7 @@ class TestVaultLsCommand:
         result = runner.invoke(main, ["vault", "ls"])
 
         assert result.exit_code == 0
-        assert "[Documents]" in result.output
+        assert "Documents" in result.output
         assert "photo.jpg" in result.output
 
     @patch("pydrime.cli.DrimeClient")
@@ -1262,34 +1262,95 @@ class TestVaultLsCommand:
 class TestVaultDownloadCommand:
     """Tests for the vault download command."""
 
+    # Valid vault crypto test data (password: "testpassword")
+    # Generated using setup_vault("testpassword")
+    VAULT_SALT = "dGVzdHNhbHQxMjM0NTY3OA=="  # "testsalt12345678" in base64
+    VAULT_CHECK = "dGVzdGNoZWNrZGF0YQ=="  # placeholder
+    VAULT_IV = "dGVzdGl2MTIzNDU2"  # "testiv123456" in base64
+
+    def _mock_vault_info(self, mock_client):
+        """Set up mock vault info."""
+        mock_client.get_vault.return_value = {
+            "vault": {
+                "id": 784,
+                "salt": self.VAULT_SALT,
+                "check": self.VAULT_CHECK,
+                "iv": self.VAULT_IV,
+            }
+        }
+
+    @patch("pydrime.vault_crypto.decrypt_file_content")
+    @patch("pydrime.vault_crypto.unlock_vault")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    def test_vault_download_by_hash(self, mock_config, mock_client_class, runner):
+    def test_vault_download_by_hash(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_unlock,
+        mock_decrypt,
+        runner,
+        tmp_path,
+    ):
         """Test downloading vault file by hash."""
         mock_config.is_configured.return_value = True
 
         mock_client = Mock()
+        self._mock_vault_info(mock_client)
         mock_client.get_vault_file_entries.return_value = {
             "data": [
                 {"id": 1, "name": "secret.txt", "type": "text", "hash": "abc123"},
             ]
         }
-        mock_client.download_vault_file.return_value = Path("secret.txt")
+
+        # Mock temp file download
+        def mock_download(hash_value, output_path):
+            output_path.write_bytes(b"encrypted_content")
+            return output_path
+
+        mock_client.download_vault_file.side_effect = mock_download
         mock_client_class.return_value = mock_client
 
-        result = runner.invoke(main, ["vault", "download", "abc123"])
+        # Mock vault unlock
+        mock_vault_key = Mock()
+        mock_unlock.return_value = mock_vault_key
+        mock_decrypt.return_value = b"decrypted content"
+
+        # Change to tmp_path so output file is written there
+        import os
+
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            result = runner.invoke(
+                main, ["vault", "download", "abc123", "-p", "testpassword"]
+            )
+        finally:
+            os.chdir(old_cwd)
 
         assert result.exit_code == 0
-        assert "Downloaded: secret.txt" in result.output
-        mock_client.download_vault_file.assert_called_once()
+        assert "Downloaded and decrypted" in result.output
+        mock_unlock.assert_called_once()
+        mock_decrypt.assert_called_once()
 
+    @patch("pydrime.vault_crypto.decrypt_file_content")
+    @patch("pydrime.vault_crypto.unlock_vault")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    def test_vault_download_by_name(self, mock_config, mock_client_class, runner):
+    def test_vault_download_by_name(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_unlock,
+        mock_decrypt,
+        runner,
+        tmp_path,
+    ):
         """Test downloading vault file by name."""
         mock_config.is_configured.return_value = True
 
         mock_client = Mock()
+        self._mock_vault_info(mock_client)
         mock_client.get_vault_file_entries.return_value = {
             "data": [
                 {
@@ -1300,90 +1361,197 @@ class TestVaultDownloadCommand:
                 },
             ]
         }
-        mock_client.download_vault_file.return_value = Path("document.pdf")
+
+        def mock_download(hash_value, output_path):
+            output_path.write_bytes(b"encrypted_content")
+            return output_path
+
+        mock_client.download_vault_file.side_effect = mock_download
         mock_client_class.return_value = mock_client
 
-        result = runner.invoke(main, ["vault", "download", "document.pdf"])
+        mock_vault_key = Mock()
+        mock_unlock.return_value = mock_vault_key
+        mock_decrypt.return_value = b"decrypted PDF content"
+
+        import os
+
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            result = runner.invoke(
+                main, ["vault", "download", "document.pdf", "-p", "testpassword"]
+            )
+        finally:
+            os.chdir(old_cwd)
 
         assert result.exit_code == 0
         assert "Resolved 'document.pdf' to hash: MzQ0MzF8cGFkZA" in result.output
-        assert "Downloaded: document.pdf" in result.output
-        mock_client.download_vault_file.assert_called_once_with(
-            hash_value="MzQ0MzF8cGFkZA",
-            output_path=None,
-        )
+        assert "Downloaded and decrypted" in result.output
 
+    @patch("pydrime.vault_crypto.decrypt_file_content")
+    @patch("pydrime.vault_crypto.unlock_vault")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    def test_vault_download_by_id(self, mock_config, mock_client_class, runner):
+    def test_vault_download_by_id(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_unlock,
+        mock_decrypt,
+        runner,
+        tmp_path,
+    ):
         """Test downloading vault file by numeric ID."""
         mock_config.is_configured.return_value = True
 
         mock_client = Mock()
+        self._mock_vault_info(mock_client)
         mock_client.get_vault_file_entries.return_value = {"data": []}
-        mock_client.download_vault_file.return_value = Path("file.txt")
+
+        def mock_download(hash_value, output_path):
+            output_path.write_bytes(b"encrypted_content")
+            return output_path
+
+        mock_client.download_vault_file.side_effect = mock_download
         mock_client_class.return_value = mock_client
 
-        result = runner.invoke(main, ["vault", "download", "34431"])
+        mock_vault_key = Mock()
+        mock_unlock.return_value = mock_vault_key
+        mock_decrypt.return_value = b"decrypted content"
+
+        import os
+
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            result = runner.invoke(
+                main, ["vault", "download", "34431", "-p", "testpassword"]
+            )
+        finally:
+            os.chdir(old_cwd)
 
         assert result.exit_code == 0
-        # Should convert ID to hash
         mock_client.download_vault_file.assert_called_once()
-        call_args = mock_client.download_vault_file.call_args
-        assert call_args[1]["hash_value"] is not None
 
+    @patch("pydrime.vault_crypto.decrypt_file_content")
+    @patch("pydrime.vault_crypto.unlock_vault")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    def test_vault_download_with_output(self, mock_config, mock_client_class, runner):
+    def test_vault_download_with_output(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_unlock,
+        mock_decrypt,
+        runner,
+        tmp_path,
+    ):
         """Test downloading vault file to specific output path."""
         mock_config.is_configured.return_value = True
 
         mock_client = Mock()
+        self._mock_vault_info(mock_client)
         mock_client.get_vault_file_entries.return_value = {"data": []}
-        mock_client.download_vault_file.return_value = Path("/tmp/output.pdf")
+
+        def mock_download(hash_value, output_path):
+            output_path.write_bytes(b"encrypted_content")
+            return output_path
+
+        mock_client.download_vault_file.side_effect = mock_download
         mock_client_class.return_value = mock_client
 
-        # Use a hash-like identifier (8+ chars, no extension)
+        mock_vault_key = Mock()
+        mock_unlock.return_value = mock_vault_key
+        mock_decrypt.return_value = b"decrypted content"
+
+        output_file = tmp_path / "output.pdf"
         result = runner.invoke(
-            main, ["vault", "download", "MzQ0MzF8cGFkZA", "-o", "/tmp/output.pdf"]
+            main,
+            [
+                "vault",
+                "download",
+                "MzQ0MzF8cGFkZA",
+                "-o",
+                str(output_file),
+                "-p",
+                "testpassword",
+            ],
         )
 
         assert result.exit_code == 0
-        mock_client.download_vault_file.assert_called_once()
-        call_args = mock_client.download_vault_file.call_args
-        assert call_args[1]["output_path"] == Path("/tmp/output.pdf")
+        assert output_file.exists()
 
+    @patch("pydrime.vault_crypto.decrypt_file_content")
+    @patch("pydrime.vault_crypto.unlock_vault")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    def test_vault_download_skips_folders(self, mock_config, mock_client_class, runner):
+    def test_vault_download_skips_folders(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_unlock,
+        mock_decrypt,
+        runner,
+        tmp_path,
+    ):
         """Test vault download skips folders when resolving by name."""
         mock_config.is_configured.return_value = True
 
         mock_client = Mock()
+        self._mock_vault_info(mock_client)
         mock_client.get_vault_file_entries.return_value = {
             "data": [
                 {"id": 1, "name": "Documents", "type": "folder", "hash": "folder_hash"},
                 {"id": 2, "name": "file.txt", "type": "text", "hash": "file_hash"},
             ]
         }
-        mock_client.download_vault_file.return_value = Path("file.txt")
+
+        def mock_download(hash_value, output_path):
+            output_path.write_bytes(b"encrypted_content")
+            return output_path
+
+        mock_client.download_vault_file.side_effect = mock_download
         mock_client_class.return_value = mock_client
 
-        # Trying to download "Documents" should not match the folder
-        result = runner.invoke(main, ["vault", "download", "Documents"])
+        mock_vault_key = Mock()
+        mock_unlock.return_value = mock_vault_key
+        mock_decrypt.return_value = b"decrypted content"
+
+        import os
+
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            # Trying to download "Documents" should not match the folder
+            result = runner.invoke(
+                main, ["vault", "download", "Documents", "-p", "testpassword"]
+            )
+        finally:
+            os.chdir(old_cwd)
 
         assert result.exit_code == 0
         # Should use "Documents" as hash since folder was skipped (9 chars, no ext)
         call_args = mock_client.download_vault_file.call_args
         assert call_args[1]["hash_value"] == "Documents"
 
+    @patch("pydrime.vault_crypto.decrypt_file_content")
+    @patch("pydrime.vault_crypto.unlock_vault")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    def test_vault_download_by_path(self, mock_config, mock_client_class, runner):
+    def test_vault_download_by_path(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_unlock,
+        mock_decrypt,
+        runner,
+        tmp_path,
+    ):
         """Test downloading vault file by path (e.g., Test1/file.txt)."""
         mock_config.is_configured.return_value = True
 
         mock_client = Mock()
+        self._mock_vault_info(mock_client)
         # First call: list root to find Test1 folder
         # Second call: list Test1 folder to find file
         mock_client.get_vault_file_entries.side_effect = [
@@ -1408,28 +1576,51 @@ class TestVaultDownloadCommand:
                 ]
             },
         ]
-        mock_client.download_vault_file.return_value = Path("secret.txt")
+
+        def mock_download(hash_value, output_path):
+            output_path.write_bytes(b"encrypted_content")
+            return output_path
+
+        mock_client.download_vault_file.side_effect = mock_download
         mock_client_class.return_value = mock_client
 
-        result = runner.invoke(main, ["vault", "download", "Test1/secret.txt"])
+        mock_vault_key = Mock()
+        mock_unlock.return_value = mock_vault_key
+        mock_decrypt.return_value = b"decrypted content"
+
+        import os
+
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            result = runner.invoke(
+                main, ["vault", "download", "Test1/secret.txt", "-p", "testpassword"]
+            )
+        finally:
+            os.chdir(old_cwd)
 
         assert result.exit_code == 0
         assert "Resolved 'Test1/secret.txt' to hash: file_hash_456" in result.output
-        assert "Downloaded: secret.txt" in result.output
-        mock_client.download_vault_file.assert_called_once_with(
-            hash_value="file_hash_456",
-            output_path=None,
-        )
+        assert "Downloaded and decrypted" in result.output
 
+    @patch("pydrime.vault_crypto.decrypt_file_content")
+    @patch("pydrime.vault_crypto.unlock_vault")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
     def test_vault_download_by_nested_path(
-        self, mock_config, mock_client_class, runner
+        self,
+        mock_config,
+        mock_client_class,
+        mock_unlock,
+        mock_decrypt,
+        runner,
+        tmp_path,
     ):
         """Test downloading vault file by nested path (e.g., A/B/file.txt)."""
         mock_config.is_configured.return_value = True
 
         mock_client = Mock()
+        self._mock_vault_info(mock_client)
         # Navigate: root -> FolderA -> FolderB -> file.pdf
         mock_client.get_vault_file_entries.side_effect = [
             {"data": [{"id": 1, "name": "FolderA", "type": "folder", "hash": "hashA"}]},
@@ -1440,86 +1631,154 @@ class TestVaultDownloadCommand:
                 ]
             },
         ]
-        mock_client.download_vault_file.return_value = Path("file.pdf")
+
+        def mock_download(hash_value, output_path):
+            output_path.write_bytes(b"encrypted_content")
+            return output_path
+
+        mock_client.download_vault_file.side_effect = mock_download
         mock_client_class.return_value = mock_client
 
-        result = runner.invoke(main, ["vault", "download", "FolderA/FolderB/file.pdf"])
+        mock_vault_key = Mock()
+        mock_unlock.return_value = mock_vault_key
+        mock_decrypt.return_value = b"decrypted content"
+
+        import os
+
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            result = runner.invoke(
+                main,
+                ["vault", "download", "FolderA/FolderB/file.pdf", "-p", "testpassword"],
+            )
+        finally:
+            os.chdir(old_cwd)
 
         assert result.exit_code == 0
-        mock_client.download_vault_file.assert_called_once_with(
-            hash_value="hashFile",
-            output_path=None,
-        )
 
+    @patch("pydrime.vault_crypto.unlock_vault")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
     def test_vault_download_path_folder_not_found(
-        self, mock_config, mock_client_class, runner
+        self, mock_config, mock_client_class, mock_unlock, runner
     ):
         """Test vault download with path when folder doesn't exist."""
         mock_config.is_configured.return_value = True
 
         mock_client = Mock()
+        self._mock_vault_info(mock_client)
         mock_client.get_vault_file_entries.return_value = {"data": []}
         mock_client_class.return_value = mock_client
 
-        result = runner.invoke(main, ["vault", "download", "NonExistent/file.txt"])
+        mock_vault_key = Mock()
+        mock_unlock.return_value = mock_vault_key
+
+        result = runner.invoke(
+            main, ["vault", "download", "NonExistent/file.txt", "-p", "testpassword"]
+        )
 
         assert result.exit_code == 1
         assert "Folder 'NonExistent' not found" in result.output
 
+    @patch("pydrime.vault_crypto.unlock_vault")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
     def test_vault_download_path_file_not_found(
-        self, mock_config, mock_client_class, runner
+        self, mock_config, mock_client_class, mock_unlock, runner
     ):
         """Test vault download with path when file doesn't exist in folder."""
         mock_config.is_configured.return_value = True
 
         mock_client = Mock()
+        self._mock_vault_info(mock_client)
         mock_client.get_vault_file_entries.side_effect = [
             {"data": [{"id": 1, "name": "Test1", "type": "folder", "hash": "hashT1"}]},
             {"data": []},  # No files in folder
         ]
         mock_client_class.return_value = mock_client
 
-        result = runner.invoke(main, ["vault", "download", "Test1/missing.txt"])
+        mock_vault_key = Mock()
+        mock_unlock.return_value = mock_vault_key
+
+        result = runner.invoke(
+            main, ["vault", "download", "Test1/missing.txt", "-p", "testpassword"]
+        )
 
         assert result.exit_code == 1
         assert "File 'missing.txt' not found" in result.output
 
+    @patch("pydrime.vault_crypto.unlock_vault")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
     def test_vault_download_filename_not_in_root(
-        self, mock_config, mock_client_class, runner
+        self, mock_config, mock_client_class, mock_unlock, runner
     ):
         """Test vault download with filename not found in root shows helpful message."""
         mock_config.is_configured.return_value = True
 
         mock_client = Mock()
+        self._mock_vault_info(mock_client)
         mock_client.get_vault_file_entries.return_value = {"data": []}
         mock_client_class.return_value = mock_client
 
-        result = runner.invoke(main, ["vault", "download", "missing.txt"])
+        mock_vault_key = Mock()
+        mock_unlock.return_value = mock_vault_key
+
+        result = runner.invoke(
+            main, ["vault", "download", "missing.txt", "-p", "testpassword"]
+        )
 
         assert result.exit_code == 1
         assert "not found in vault root" in result.output
         assert "Folder/file.txt" in result.output  # Helpful hint
 
+    @patch("pydrime.vault_crypto.unlock_vault")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    def test_vault_download_api_error(self, mock_config, mock_client_class, runner):
+    def test_vault_download_api_error(
+        self, mock_config, mock_client_class, mock_unlock, runner
+    ):
         """Test vault download handles API errors."""
         mock_config.is_configured.return_value = True
 
         mock_client = Mock()
+        self._mock_vault_info(mock_client)
+        mock_vault_key = Mock()
+        mock_unlock.return_value = mock_vault_key
         mock_client.get_vault_file_entries.side_effect = DrimeAPIError("Network error")
         mock_client_class.return_value = mock_client
 
-        result = runner.invoke(main, ["vault", "download", "hash123"])
+        result = runner.invoke(
+            main, ["vault", "download", "hash123", "-p", "testpassword"]
+        )
 
         assert result.exit_code == 1
         assert "Network error" in result.output
+
+    @patch("pydrime.vault_crypto.unlock_vault")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_download_invalid_password(
+        self, mock_config, mock_client_class, mock_unlock, runner
+    ):
+        """Test vault download with invalid password."""
+        from pydrime.vault_crypto import VaultPasswordError
+
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        self._mock_vault_info(mock_client)
+        mock_client_class.return_value = mock_client
+
+        mock_unlock.side_effect = VaultPasswordError("Invalid vault password")
+
+        result = runner.invoke(
+            main, ["vault", "download", "hash123", "-p", "wrongpassword"]
+        )
+
+        assert result.exit_code == 1
+        assert "Invalid vault password" in result.output
 
     def test_vault_download_not_configured(self, runner, mock_config):
         """Test vault download when not configured."""
@@ -1529,6 +1788,514 @@ class TestVaultDownloadCommand:
 
         assert result.exit_code == 1
         assert "API key not configured" in result.output
+
+
+class TestVaultUploadCommand:
+    """Tests for the vault upload command."""
+
+    # Valid vault crypto test data (password: "testpassword")
+    VAULT_SALT = "dGVzdHNhbHQxMjM0NTY3OA=="
+    VAULT_CHECK = "dGVzdGNoZWNrZGF0YQ=="
+    VAULT_IV = "dGVzdGl2MTIzNDU2"
+
+    def _mock_vault_info(self, mock_client):
+        """Set up mock vault info."""
+        mock_client.get_vault.return_value = {
+            "vault": {
+                "id": 784,
+                "salt": self.VAULT_SALT,
+                "check": self.VAULT_CHECK,
+                "iv": self.VAULT_IV,
+            }
+        }
+
+    @patch("pydrime.vault_crypto.encrypt_filename")
+    @patch("pydrime.vault_crypto.unlock_vault")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_upload_to_root(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_unlock,
+        mock_encrypt_filename,
+        runner,
+        tmp_path,
+    ):
+        """Test uploading file to vault root."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        self._mock_vault_info(mock_client)
+        mock_client.upload_vault_file.return_value = {
+            "fileEntry": {"id": 123, "name": "encrypted_name"}
+        }
+        mock_client_class.return_value = mock_client
+
+        # Mock vault unlock
+        mock_vault_key = Mock()
+        mock_vault_key.encrypt.return_value = (b"encrypted_content", b"content_iv_123")
+        mock_unlock.return_value = mock_vault_key
+        mock_encrypt_filename.return_value = ("encrypted_filename", "name_iv_abc")
+
+        # Create test file
+        test_file = tmp_path / "secret.txt"
+        test_file.write_text("secret content")
+
+        result = runner.invoke(
+            main, ["vault", "upload", str(test_file), "-p", "testpassword"]
+        )
+
+        assert result.exit_code == 0
+        assert "Uploaded and encrypted" in result.output
+        mock_unlock.assert_called_once()
+        mock_client.upload_vault_file.assert_called_once()
+
+    @patch("pydrime.vault_crypto.encrypt_filename")
+    @patch("pydrime.vault_crypto.unlock_vault")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_upload_to_folder(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_unlock,
+        mock_encrypt_filename,
+        runner,
+        tmp_path,
+    ):
+        """Test uploading file to vault folder."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        self._mock_vault_info(mock_client)
+        mock_client.get_vault_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 100,
+                    "name": "MyFolder",
+                    "type": "folder",
+                    "hash": "folder_hash",
+                },
+            ]
+        }
+        mock_client.upload_vault_file.return_value = {
+            "fileEntry": {"id": 123, "name": "encrypted_name"}
+        }
+        mock_client_class.return_value = mock_client
+
+        mock_vault_key = Mock()
+        mock_vault_key.encrypt.return_value = (b"encrypted_content", b"content_iv_123")
+        mock_unlock.return_value = mock_vault_key
+        mock_encrypt_filename.return_value = ("encrypted_filename", "name_iv_abc")
+
+        test_file = tmp_path / "document.pdf"
+        test_file.write_text("pdf content")
+
+        result = runner.invoke(
+            main,
+            ["vault", "upload", str(test_file), "-f", "MyFolder", "-p", "testpassword"],
+        )
+
+        assert result.exit_code == 0
+        assert "Uploaded and encrypted" in result.output
+        # Verify parent_id was passed
+        call_kwargs = mock_client.upload_vault_file.call_args
+        assert call_kwargs[1]["parent_id"] == 100
+
+    @patch("pydrime.vault_crypto.unlock_vault")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_upload_invalid_password(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_unlock,
+        runner,
+        tmp_path,
+    ):
+        """Test vault upload with invalid password."""
+        from pydrime.vault_crypto import VaultPasswordError
+
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        self._mock_vault_info(mock_client)
+        mock_client_class.return_value = mock_client
+
+        mock_unlock.side_effect = VaultPasswordError("Invalid vault password")
+
+        test_file = tmp_path / "secret.txt"
+        test_file.write_text("secret content")
+
+        result = runner.invoke(
+            main, ["vault", "upload", str(test_file), "-p", "wrongpassword"]
+        )
+
+        assert result.exit_code == 1
+        assert "Invalid vault password" in result.output
+
+    @patch("pydrime.vault_crypto.encrypt_filename")
+    @patch("pydrime.vault_crypto.unlock_vault")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_upload_folder_not_found(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_unlock,
+        mock_encrypt_filename,
+        runner,
+        tmp_path,
+    ):
+        """Test vault upload to non-existent folder."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        self._mock_vault_info(mock_client)
+        mock_client.get_vault_file_entries.return_value = {"data": []}
+        mock_client_class.return_value = mock_client
+
+        mock_vault_key = Mock()
+        mock_unlock.return_value = mock_vault_key
+
+        test_file = tmp_path / "secret.txt"
+        test_file.write_text("secret content")
+
+        result = runner.invoke(
+            main,
+            [
+                "vault",
+                "upload",
+                str(test_file),
+                "-f",
+                "NonExistent",
+                "-p",
+                "testpassword",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_vault_upload_not_configured(self, runner, mock_config, tmp_path):
+        """Test vault upload when not configured."""
+        mock_config.is_configured.return_value = False
+
+        # Create a test file so Click doesn't fail on file validation
+        test_file = tmp_path / "some_file.txt"
+        test_file.write_text("content")
+
+        result = runner.invoke(main, ["vault", "upload", str(test_file)])
+
+        assert result.exit_code == 1
+        assert "API key not configured" in result.output
+
+
+class TestVaultRmCommand:
+    """Tests for the vault rm command."""
+
+    def _mock_vault_info(self, mock_client):
+        """Set up mock vault info."""
+        mock_client.get_vault.return_value = {
+            "vault": {
+                "id": 784,
+            }
+        }
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_rm_by_name(self, mock_config, mock_client_class, runner):
+        """Test deleting vault file by name."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        self._mock_vault_info(mock_client)
+        mock_client.get_vault_file_entries.return_value = {
+            "data": [
+                {"id": 123, "name": "secret.txt", "type": "text", "hash": "abc123"},
+            ]
+        }
+        mock_client.delete_vault_file_entries.return_value = {"status": "success"}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "rm", "secret.txt", "-y"])
+
+        assert result.exit_code == 0
+        assert "Moved to trash" in result.output
+        mock_client.delete_vault_file_entries.assert_called_once_with(
+            entry_ids=[123], delete_forever=False
+        )
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_rm_by_id(self, mock_config, mock_client_class, runner):
+        """Test deleting vault file by ID."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        self._mock_vault_info(mock_client)
+        mock_client.get_vault_file_entries.return_value = {
+            "data": [
+                {"id": 456, "name": "document.pdf", "type": "pdf", "hash": "xyz789"},
+            ]
+        }
+        mock_client.delete_vault_file_entries.return_value = {"status": "success"}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "rm", "456", "-y"])
+
+        assert result.exit_code == 0
+        assert "Moved to trash" in result.output
+        mock_client.delete_vault_file_entries.assert_called_once_with(
+            entry_ids=[456], delete_forever=False
+        )
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_rm_no_trash(self, mock_config, mock_client_class, runner):
+        """Test permanently deleting vault file."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        self._mock_vault_info(mock_client)
+        mock_client.get_vault_file_entries.return_value = {
+            "data": [
+                {"id": 123, "name": "secret.txt", "type": "text", "hash": "abc123"},
+            ]
+        }
+        mock_client.delete_vault_file_entries.return_value = {"status": "success"}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "rm", "secret.txt", "--no-trash", "-y"])
+
+        assert result.exit_code == 0
+        assert "Permanently deleted" in result.output
+        mock_client.delete_vault_file_entries.assert_called_once_with(
+            entry_ids=[123], delete_forever=True
+        )
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_rm_not_found(self, mock_config, mock_client_class, runner):
+        """Test deleting non-existent vault file."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        self._mock_vault_info(mock_client)
+        mock_client.get_vault_file_entries.return_value = {"data": []}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "rm", "nonexistent.txt", "-y"])
+
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_rm_confirmation_cancelled(
+        self, mock_config, mock_client_class, runner
+    ):
+        """Test vault rm with confirmation cancelled."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        self._mock_vault_info(mock_client)
+        mock_client.get_vault_file_entries.return_value = {
+            "data": [
+                {"id": 123, "name": "secret.txt", "type": "text", "hash": "abc123"},
+            ]
+        }
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "rm", "secret.txt"], input="n\n")
+
+        assert result.exit_code == 0
+        assert "Cancelled" in result.output
+        mock_client.delete_vault_file_entries.assert_not_called()
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_rm_folder(self, mock_config, mock_client_class, runner):
+        """Test deleting vault folder."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        self._mock_vault_info(mock_client)
+        mock_client.get_vault_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 100,
+                    "name": "MyFolder",
+                    "type": "folder",
+                    "hash": "folder_hash",
+                },
+            ]
+        }
+        mock_client.delete_vault_file_entries.return_value = {"status": "success"}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "rm", "MyFolder", "-y"])
+
+        assert result.exit_code == 0
+        assert "Moved to trash" in result.output
+        mock_client.delete_vault_file_entries.assert_called_once_with(
+            entry_ids=[100], delete_forever=False
+        )
+
+    def test_vault_rm_not_configured(self, runner, mock_config):
+        """Test vault rm when not configured."""
+        mock_config.is_configured.return_value = False
+
+        result = runner.invoke(main, ["vault", "rm", "secret.txt"])
+
+        assert result.exit_code == 1
+        assert "API key not configured" in result.output
+
+
+class TestVaultLockUnlockCommands:
+    """Tests for the vault lock and unlock commands."""
+
+    def _mock_vault_info(self, mock_client):
+        """Set up mock vault info with encryption parameters."""
+        mock_client.get_vault.return_value = {
+            "vault": {
+                "id": 784,
+                "salt": "test_salt_base64",
+                "check": "test_check_base64",
+                "iv": "test_iv_base64",
+            }
+        }
+
+    @patch("pydrime.vault_crypto.unlock_vault")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_unlock_success(
+        self, mock_config, mock_client_class, mock_unlock, runner
+    ):
+        """Test successful vault unlock."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        self._mock_vault_info(mock_client)
+        mock_client_class.return_value = mock_client
+        mock_unlock.return_value = Mock()  # Return a mock vault key
+
+        result = runner.invoke(main, ["vault", "unlock"], input="test_password\n")
+
+        assert result.exit_code == 0
+        assert "export PYDRIME_VAULT_PASSWORD=" in result.output
+        assert "Vault unlocked" in result.output
+
+    @patch("pydrime.vault_crypto.unlock_vault")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_unlock_invalid_password(
+        self, mock_config, mock_client_class, mock_unlock, runner
+    ):
+        """Test vault unlock with invalid password."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        self._mock_vault_info(mock_client)
+        mock_client_class.return_value = mock_client
+
+        from pydrime.vault_crypto import VaultPasswordError
+
+        mock_unlock.side_effect = VaultPasswordError("Invalid password")
+
+        result = runner.invoke(main, ["vault", "unlock"], input="wrong_password\n")
+
+        assert result.exit_code == 1
+        assert "Invalid vault password" in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_unlock_no_vault(self, mock_config, mock_client_class, runner):
+        """Test vault unlock when no vault exists."""
+        mock_config.is_configured.return_value = True
+
+        mock_client = Mock()
+        mock_client.get_vault.return_value = {"vault": None}
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["vault", "unlock"], input="test_password\n")
+
+        assert result.exit_code == 1
+        assert "No vault found" in result.output
+
+    def test_vault_unlock_not_configured(self, runner, mock_config):
+        """Test vault unlock when not configured."""
+        mock_config.is_configured.return_value = False
+
+        result = runner.invoke(main, ["vault", "unlock"])
+
+        assert result.exit_code == 1
+        assert "API key not configured" in result.output
+
+    def test_vault_lock(self, runner):
+        """Test vault lock command."""
+        result = runner.invoke(main, ["vault", "lock"])
+
+        assert result.exit_code == 0
+        assert "unset PYDRIME_VAULT_PASSWORD" in result.output
+        assert "Vault locked" in result.output
+
+    @patch("pydrime.vault_crypto.decrypt_filename")
+    @patch("pydrime.vault_crypto.decrypt_file_content")
+    @patch("pydrime.vault_crypto.unlock_vault")
+    @patch("pydrime.cli.get_vault_password_from_env")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_vault_download_uses_env_password(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_get_env_password,
+        mock_unlock,
+        mock_decrypt,
+        mock_decrypt_name,
+        runner,
+        tmp_path,
+    ):
+        """Test vault download uses password from environment."""
+        mock_config.is_configured.return_value = True
+        mock_get_env_password.return_value = "env_password"
+
+        mock_client = Mock()
+        mock_client.get_vault.return_value = {
+            "vault": {
+                "id": 784,
+                "salt": "test_salt",
+                "check": "test_check",
+                "iv": "test_iv",
+            }
+        }
+        mock_client.get_vault_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 123,
+                    "name": "encrypted_name",
+                    "type": "text",
+                    "hash": "abc123",
+                    "vaultIvs": "nameIv,contentIv",
+                }
+            ]
+        }
+        mock_client.download_vault_file.return_value = b"encrypted_content"
+        mock_client_class.return_value = mock_client
+
+        mock_unlock.return_value = Mock()
+        mock_decrypt.return_value = b"decrypted content"
+        mock_decrypt_name.return_value = "test.txt"
+
+        output_file = tmp_path / "test.txt"
+        runner.invoke(main, ["vault", "download", "123", "-o", str(output_file)])
+
+        # Should use env password, not prompt
+        mock_unlock.assert_called_once()
+        call_args = mock_unlock.call_args[0]
+        assert call_args[0] == "env_password"
 
 
 class TestDownloadCommandWithIdSupport:

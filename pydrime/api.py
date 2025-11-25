@@ -1592,6 +1592,202 @@ class DrimeClient:
         except OSError as e:
             raise DrimeDownloadError(f"Failed to write vault file: {e}") from e
 
+    def upload_vault_file(
+        self,
+        file_path: Path,
+        encrypted_content: bytes,
+        encrypted_name: str,
+        name_iv: str,
+        content_iv: str,
+        vault_id: int,
+        parent_id: Optional[int] = None,
+    ) -> Any:
+        """Upload an encrypted file to the vault using presigned URL.
+
+        The file content and filename must be encrypted client-side before calling
+        this method. Uses presigned S3 URL upload to properly include the IV values
+        in the file entry.
+
+        Args:
+            file_path: Original local file path (for size/extension info and
+                original name)
+            encrypted_content: Encrypted file content bytes
+            encrypted_name: Base64 encoded encrypted filename
+            name_iv: Base64 encoded IV used for filename encryption
+            content_iv: Base64 encoded IV used for content encryption
+            vault_id: ID of the vault
+            parent_id: Optional parent folder ID in the vault
+
+        Returns:
+            Upload response data with 'status' and 'fileEntry' keys
+
+        Raises:
+            DrimeUploadError: If upload fails
+            DrimeFileNotFoundError: If file doesn't exist
+
+        Example:
+            >>> from pydrime.vault_crypto import unlock_vault, encrypt_filename
+            >>> vault_key = unlock_vault(password, salt, check, iv)
+            >>> encrypted_name, name_iv = encrypt_filename(vault_key, "secret.txt")
+            >>> # Encrypt content and get IV
+            >>> client.upload_vault_file(
+            ...     file_path=Path("secret.txt"),
+            ...     encrypted_content=encrypted_bytes,
+            ...     encrypted_name=encrypted_name,
+            ...     name_iv=name_iv,
+            ...     content_iv=content_iv,
+            ...     vault_id=784,
+            ... )
+        """
+        if not file_path.exists():
+            raise DrimeFileNotFoundError(str(file_path))
+
+        # Use encrypted content size
+        file_size = len(encrypted_content)
+        mime_type = "application/octet-stream"  # Encrypted files are binary
+        extension = file_path.suffix.lstrip(".") if file_path.suffix else ""
+
+        # Combine IVs in the format expected by the API: ",contentIv"
+        # (nameIv is empty in presign, full IVs go in entries)
+        vault_ivs = f",{content_iv}"
+
+        # Step 1: Get presigned URL for vault upload
+        # Use ORIGINAL filename (not encrypted) for presign
+        # Format: {"filename":"original.txt","mime":"application/octet-stream",
+        #   "size":...,"extension":"...","relativePath":"","workspaceId":null,
+        #   "parentId":null,"isEncrypted":1,"vaultIvs":",contentIv","vaultId":...}
+        presign_payload: dict[str, Any] = {
+            "filename": file_path.name,  # Original filename, not encrypted
+            "mime": mime_type,
+            "size": file_size,
+            "extension": extension,
+            "relativePath": "",
+            "workspaceId": None,
+            "parentId": parent_id,
+            "isEncrypted": 1,
+            "vaultIvs": vault_ivs,
+            "vaultId": vault_id,
+        }
+
+        presign_response = self._request(
+            "POST",
+            "/s3/simple/presign",
+            json=presign_payload,
+            params={"vaultId": vault_id},
+        )
+
+        presigned_url = presign_response.get("url")
+        key = presign_response.get("key")
+
+        if not presigned_url or not key:
+            raise DrimeUploadError(f"Invalid presign response: {presign_response}")
+
+        # Step 2: Upload encrypted content to S3 using presigned URL
+        try:
+            s3_headers = {
+                "Content-Type": mime_type,
+                "x-amz-acl": "private",
+            }
+
+            s3_response = httpx.put(
+                presigned_url,
+                content=encrypted_content,
+                headers=s3_headers,
+                timeout=60.0,
+            )
+            s3_response.raise_for_status()
+
+        except httpx.HTTPStatusError as e:
+            raise DrimeUploadError(f"S3 upload failed: {e}") from e
+        except httpx.RequestError as e:
+            raise DrimeUploadError(f"Network error during S3 upload: {e}") from e
+
+        # Step 3: Create file entry with encryption info
+        # Use full IVs format: "nameIv,contentIv" for entries
+        entry_vault_ivs = f"{name_iv},{content_iv}"
+        entry_payload: dict[str, Any] = {
+            "clientMime": mime_type,
+            "clientName": file_path.name,  # Original filename, not encrypted
+            "filename": key.split("/")[-1],
+            "size": file_size,
+            "clientExtension": extension,
+            "relativePath": "",
+            "workspaceId": None,
+            "parentId": parent_id,
+            "isEncrypted": 1,
+            "vaultIvs": entry_vault_ivs,
+            "vaultId": vault_id,
+        }
+
+        entry_response = self._request("POST", "s3/entries", json=entry_payload)
+        return entry_response
+
+    def delete_vault_file_entries(
+        self,
+        entry_ids: list[int],
+        delete_forever: bool = False,
+    ) -> Any:
+        """Delete file entries from the vault.
+
+        Moves vault entries to trash or deletes them permanently.
+
+        Args:
+            entry_ids: List of entry IDs to delete
+            delete_forever: Whether to delete permanently (default: False,
+                moves to trash)
+
+        Returns:
+            Response with 'status' key
+
+        Raises:
+            DrimeAPIError: If deletion fails
+
+        Example:
+            >>> client = DrimeClient(api_key="your_key")
+            >>> # Move vault file to trash
+            >>> client.delete_vault_file_entries([123])
+            >>> # Delete vault file permanently
+            >>> client.delete_vault_file_entries([123], delete_forever=True)
+        """
+        data = {
+            "entryIds": entry_ids,
+            "deleteForever": delete_forever,
+        }
+        return self._request("POST", "vault/delete-entries", json=data)
+
+    def create_vault_folder(
+        self,
+        name: str,
+        vault_id: int,
+        parent_id: Optional[int] = None,
+    ) -> Any:
+        """Create a folder in the vault.
+
+        Args:
+            name: Folder name (can be encrypted)
+            vault_id: ID of the vault
+            parent_id: Optional parent folder ID
+
+        Returns:
+            Response with 'status' and 'folder' keys
+
+        Raises:
+            DrimeAPIError: If folder creation fails
+
+        Example:
+            >>> client = DrimeClient(api_key="your_key")
+            >>> result = client.create_vault_folder("MyFolder", vault_id=784)
+            >>> folder_id = result["folder"]["id"]
+        """
+        endpoint = "/folders"
+        data: dict[str, Any] = {
+            "name": name,
+            "vaultId": vault_id,
+        }
+        if parent_id is not None:
+            data["parentId"] = parent_id
+        return self._request("POST", endpoint, json=data)
+
     # =========================
     # Helper/Alias Methods
     # =========================

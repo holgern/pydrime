@@ -318,7 +318,7 @@ def cleanup_test_folder(remote_folder: str, base_dir: Path) -> None:
     # Delete remote folder permanently using --yes to skip confirmation
     # Use folder name without leading slash
     try:
-        cmd = ["pydrime", "--verbose", "rm", remote_folder, "--permanent", "--yes"]
+        cmd = ["pydrime", "--verbose", "rm", remote_folder, "--no-trash", "--yes"]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0:
             print(f"   ✓ Deleted remote folder: {remote_folder}")
