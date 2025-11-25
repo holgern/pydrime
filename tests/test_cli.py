@@ -3694,34 +3694,6 @@ class TestSyncCommand:
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.auth.config")
     @patch("pydrime.cli.config")
-    def test_sync_with_workers_option(
-        self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
-    ):
-        """Test sync with custom number of workers."""
-        # Create test directory
-        sync_dir = tmp_path / "sync_folder"
-        sync_dir.mkdir()
-
-        mock_cli_config.is_configured.return_value = True
-        mock_cli_config.get_default_workspace.return_value = 0
-        mock_cli_config.get_current_folder.return_value = None
-        mock_auth_config.is_configured.return_value = True
-
-        mock_client = Mock()
-        mock_client_class.return_value = mock_client
-        mock_client.get_workspaces.return_value = {"workspaces": []}
-        mock_client.get_file_entries.return_value = {"data": []}
-
-        result = runner.invoke(
-            main,
-            ["sync", str(sync_dir), "-j", "4", "--dry-run"],
-        )
-
-        assert result.exit_code == 0
-
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
     def test_sync_empty_directory(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):

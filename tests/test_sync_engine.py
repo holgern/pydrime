@@ -366,6 +366,7 @@ class TestSyncEngineIntegration:
             mock_manager = Mock()
             mock_manager.find_folder_by_name.return_value = None
             mock_manager.get_all_recursive.return_value = []
+            mock_manager.iter_all_recursive.return_value = iter([])  # Empty iterator
             mock_manager_class.return_value = mock_manager
 
             # Run sync (not dry run)
