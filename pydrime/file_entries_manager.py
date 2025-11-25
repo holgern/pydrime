@@ -314,6 +314,44 @@ class FileEntriesManager:
                 batch_size=batch_size,
             )
 
+    def get_user_folders(
+        self,
+        user_id: int,
+        use_cache: bool = True,
+    ) -> list[FileEntry]:
+        """Get all folders for a user in the workspace.
+
+        Args:
+            user_id: ID of the user
+            use_cache: Whether to use cached results
+
+        Returns:
+            List of folder entries
+        """
+        cache_key = f"user_folders:{user_id}:{self.workspace_id}"
+
+        if use_cache and cache_key in self._cache:
+            return self._cache[cache_key]
+
+        try:
+            result = self.client.get_user_folders(
+                user_id=user_id,
+                workspace_id=self.workspace_id,
+            )
+
+            # Parse folders from response
+            folders_data = result.get("folders", [])
+            folders = [FileEntry.from_dict(f) for f in folders_data]
+
+            if use_cache:
+                self._cache[cache_key] = folders
+
+            return folders
+
+        except DrimeAPIError as e:
+            logger.warning(f"API error while fetching user folders: {e}")
+            return []
+
     def clear_cache(self) -> None:
         """Clear the internal cache."""
         self._cache.clear()

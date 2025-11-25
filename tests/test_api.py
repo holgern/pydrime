@@ -700,6 +700,553 @@ class TestFolderResolution:
         assert entry_id == 888
 
 
+class TestFolderCount:
+    """Tests for folder count method."""
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_folder_count_success(self, mock_request):
+        """Test getting folder count."""
+        mock_request.return_value = {"count": 16, "status": "success", "seo": None}
+
+        client = DrimeClient(api_key="test_key")
+        count = client.get_folder_count(481967773)
+
+        assert count == 16
+        mock_request.assert_called_once_with("GET", "/folders/481967773/count")
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_folder_count_empty_folder(self, mock_request):
+        """Test getting count for empty folder."""
+        mock_request.return_value = {"count": 0, "status": "success", "seo": None}
+
+        client = DrimeClient(api_key="test_key")
+        count = client.get_folder_count(123456)
+
+        assert count == 0
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_folder_count_missing_count_key(self, mock_request):
+        """Test getting count when response missing count key."""
+        mock_request.return_value = {"status": "success"}
+
+        client = DrimeClient(api_key="test_key")
+        count = client.get_folder_count(123456)
+
+        assert count == 0  # Should default to 0
+
+
+class TestNotifications:
+    """Tests for notification methods."""
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_notifications_success(self, mock_request):
+        """Test getting notifications."""
+        mock_request.return_value = {
+            "pagination": {
+                "current_page": 1,
+                "data": [
+                    {
+                        "id": "e0d8de26-4016-489a-94f3-361bd7127b9b",
+                        "type": "App\\Notifications\\FileEntrySharedNotif",
+                        "notifiable_type": "App\\User",
+                        "notifiable_id": 18001,
+                        "data": {
+                            "mainAction": {"action": ""},
+                            "lines": [
+                                {"content": "User shared a file with you"},
+                                {
+                                    "icon": "text",
+                                    "content": "test_file.txt",
+                                    "action": {"action": "/drive/shares"},
+                                },
+                            ],
+                        },
+                        "read_at": None,
+                        "created_at": "2025-11-25T10:38:03.000000Z",
+                        "updated_at": "2025-11-25T10:38:03.000000Z",
+                    }
+                ],
+                "from": 1,
+                "last_page": 1,
+                "next_page": None,
+                "per_page": 10,
+                "prev_page": None,
+                "to": 1,
+                "total": 1,
+            },
+            "status": "success",
+            "seo": None,
+        }
+
+        client = DrimeClient(api_key="test_key")
+        result = client.get_notifications()
+
+        assert result["status"] == "success"
+        assert result["pagination"]["current_page"] == 1
+        assert len(result["pagination"]["data"]) == 1
+        assert (
+            result["pagination"]["data"][0]["id"]
+            == "e0d8de26-4016-489a-94f3-361bd7127b9b"
+        )
+        mock_request.assert_called_once_with(
+            "GET", "/notifications", params={"perPage": 10, "page": 1}
+        )
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_notifications_with_pagination(self, mock_request):
+        """Test getting notifications with custom pagination."""
+        mock_request.return_value = {
+            "pagination": {
+                "current_page": 2,
+                "data": [],
+                "from": 21,
+                "last_page": 2,
+                "next_page": None,
+                "per_page": 20,
+                "prev_page": 1,
+                "to": 25,
+                "total": 25,
+            },
+            "status": "success",
+            "seo": None,
+        }
+
+        client = DrimeClient(api_key="test_key")
+        result = client.get_notifications(per_page=20, page=2)
+
+        assert result["pagination"]["current_page"] == 2
+        assert result["pagination"]["per_page"] == 20
+        mock_request.assert_called_once_with(
+            "GET", "/notifications", params={"perPage": 20, "page": 2}
+        )
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_notifications_empty(self, mock_request):
+        """Test getting notifications when none exist."""
+        mock_request.return_value = {
+            "pagination": {
+                "current_page": 1,
+                "data": [],
+                "from": None,
+                "last_page": 1,
+                "next_page": None,
+                "per_page": 10,
+                "prev_page": None,
+                "to": None,
+                "total": 0,
+            },
+            "status": "success",
+            "seo": None,
+        }
+
+        client = DrimeClient(api_key="test_key")
+        result = client.get_notifications()
+
+        assert result["pagination"]["total"] == 0
+        assert result["pagination"]["data"] == []
+
+
+class TestVault:
+    """Tests for vault methods."""
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_vault_success(self, mock_request):
+        """Test getting vault information."""
+        mock_request.return_value = {
+            "vault": {
+                "id": 784,
+                "user_id": 18001,
+                "salt": "HQl1b8OV5ytpaQ2OeLVcmw==",
+                "check": "pGwm7bCIZLq8zSm9YOUGqDmuUu6z98/dFa5gnQ==",
+                "iv": "6tJwX855hm2TB5zG",
+                "created_at": "2025-11-24T08:58:15.000000Z",
+                "updated_at": "2025-11-24T08:58:15.000000Z",
+            },
+            "status": "success",
+            "seo": None,
+        }
+
+        client = DrimeClient(api_key="test_key")
+        result = client.get_vault()
+
+        assert result["status"] == "success"
+        assert result["vault"]["id"] == 784
+        assert result["vault"]["user_id"] == 18001
+        assert result["vault"]["salt"] == "HQl1b8OV5ytpaQ2OeLVcmw=="
+        assert result["vault"]["iv"] == "6tJwX855hm2TB5zG"
+        mock_request.assert_called_once_with("GET", "/vault")
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_vault_no_vault(self, mock_request):
+        """Test getting vault when none exists."""
+        mock_request.return_value = {
+            "vault": None,
+            "status": "success",
+            "seo": None,
+        }
+
+        client = DrimeClient(api_key="test_key")
+        result = client.get_vault()
+
+        assert result["status"] == "success"
+        assert result["vault"] is None
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_vault_file_entries_success(self, mock_request):
+        """Test getting vault file entries."""
+        mock_request.return_value = {
+            "data": [
+                {
+                    "id": 34431,
+                    "name": "encrypted_file.txt",
+                    "type": "text",
+                    "file_size": 1024,
+                    "parent_id": 34430,
+                    "is_encrypted": 1,
+                    "vault_id": 784,
+                    "hash": "abc123",
+                    "created_at": "2025-11-25T12:00:00.000000Z",
+                    "updated_at": "2025-11-25T12:00:00.000000Z",
+                }
+            ],
+            "status": "success",
+        }
+
+        client = DrimeClient(api_key="test_key")
+        result = client.get_vault_file_entries()
+
+        assert result["status"] == "success"
+        assert len(result["data"]) == 1
+        assert result["data"][0]["name"] == "encrypted_file.txt"
+        assert result["data"][0]["is_encrypted"] == 1
+        mock_request.assert_called_once_with(
+            "GET",
+            "/vault/file-entries",
+            params={
+                "page": 1,
+                "perPage": 50,
+                "orderBy": "updated_at",
+                "orderDir": "desc",
+                "backup": 0,
+            },
+        )
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_vault_file_entries_with_folder(self, mock_request):
+        """Test getting vault file entries from specific folder."""
+        mock_request.return_value = {
+            "data": [
+                {
+                    "id": 34432,
+                    "name": "secret.pdf",
+                    "type": "pdf",
+                    "is_encrypted": 1,
+                    "vault_id": 784,
+                }
+            ],
+            "status": "success",
+        }
+
+        client = DrimeClient(api_key="test_key")
+        result = client.get_vault_file_entries(
+            folder_hash="MzQ0MzB8cGFkZA",
+            page=2,
+            per_page=20,
+            order_by="name",
+            order_dir="asc",
+        )
+
+        assert len(result["data"]) == 1
+        mock_request.assert_called_once_with(
+            "GET",
+            "/vault/file-entries",
+            params={
+                "folderId": "MzQ0MzB8cGFkZA",
+                "pageId": "MzQ0MzB8cGFkZA",
+                "page": 2,
+                "perPage": 20,
+                "orderBy": "name",
+                "orderDir": "asc",
+                "backup": 0,
+            },
+        )
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_vault_file_entries_empty(self, mock_request):
+        """Test getting vault file entries when empty."""
+        mock_request.return_value = {
+            "data": [],
+            "status": "success",
+        }
+
+        client = DrimeClient(api_key="test_key")
+        result = client.get_vault_file_entries()
+
+        assert result["data"] == []
+
+
+class TestVaultDownload:
+    """Tests for vault download method."""
+
+    def test_download_vault_file_success(self, tmp_path):
+        """Test downloading a vault file successfully."""
+        from unittest.mock import Mock, patch
+
+        # Create mock response
+        mock_response = Mock()
+        mock_response.headers = {
+            "Content-Disposition": 'attachment; filename="secret.txt"',
+            "Content-Length": "12",
+        }
+        mock_response.iter_content.return_value = [b"vault content"]
+        mock_response.raise_for_status.return_value = None
+
+        with patch("pydrime.api.requests.Session") as mock_session_class:
+            mock_session = Mock()
+            mock_session.get.return_value = mock_response
+            mock_session_class.return_value = mock_session
+
+            client = DrimeClient(api_key="test_key")
+            output_path = tmp_path / "downloaded.txt"
+            result = client.download_vault_file(
+                "MzQ0MzF8cGFkZA", output_path=output_path
+            )
+
+            assert result == output_path
+            assert output_path.read_bytes() == b"vault content"
+
+            # Verify correct URL with vault parameters
+            call_args = mock_session.get.call_args
+            url = call_args[0][0]
+            assert "workspaceId=null" in url
+            assert "encrypted=true" in url
+            assert "MzQ0MzF8cGFkZA" in url
+
+    def test_download_vault_file_with_progress(self, tmp_path):
+        """Test vault download with progress callback."""
+        from unittest.mock import Mock, patch
+
+        mock_response = Mock()
+        mock_response.headers = {
+            "Content-Disposition": 'attachment; filename="file.txt"',
+            "Content-Length": "100",
+        }
+        mock_response.iter_content.return_value = [b"a" * 50, b"b" * 50]
+        mock_response.raise_for_status.return_value = None
+
+        progress_calls = []
+
+        def progress_callback(downloaded, total):
+            progress_calls.append((downloaded, total))
+
+        with patch("pydrime.api.requests.Session") as mock_session_class:
+            mock_session = Mock()
+            mock_session.get.return_value = mock_response
+            mock_session_class.return_value = mock_session
+
+            client = DrimeClient(api_key="test_key")
+            output_path = tmp_path / "file.txt"
+            client.download_vault_file(
+                "hash123", output_path=output_path, progress_callback=progress_callback
+            )
+
+            assert len(progress_calls) == 2
+            assert progress_calls[0] == (50, 100)
+            assert progress_calls[1] == (100, 100)
+
+    def test_download_vault_file_default_filename(self, tmp_path, monkeypatch):
+        """Test vault download uses default filename when none provided."""
+        from unittest.mock import Mock, patch
+
+        # Change to tmp_path so the file is created there
+        monkeypatch.chdir(tmp_path)
+
+        mock_response = Mock()
+        mock_response.headers = {"Content-Length": "5"}
+        mock_response.iter_content.return_value = [b"hello"]
+        mock_response.raise_for_status.return_value = None
+
+        with patch("pydrime.api.requests.Session") as mock_session_class:
+            mock_session = Mock()
+            mock_session.get.return_value = mock_response
+            mock_session_class.return_value = mock_session
+
+            client = DrimeClient(api_key="test_key")
+            result = client.download_vault_file("abc123")
+
+            # Should use vault_ prefix for default filename
+            assert result.name == "vault_abc123"
+
+    def test_download_vault_file_http_error(self):
+        """Test vault download handles HTTP errors."""
+        from unittest.mock import Mock, patch
+
+        import requests
+
+        from pydrime.exceptions import DrimeDownloadError
+
+        mock_response = Mock()
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            "404 Not Found"
+        )
+
+        with patch("pydrime.api.requests.Session") as mock_session_class:
+            mock_session = Mock()
+            mock_session.get.return_value = mock_response
+            mock_session_class.return_value = mock_session
+
+            client = DrimeClient(api_key="test_key")
+
+            with pytest.raises(DrimeDownloadError) as exc_info:
+                client.download_vault_file("invalid_hash")
+
+            assert "Vault download failed" in str(exc_info.value)
+
+
+class TestFolderPath:
+    """Tests for folder path method."""
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_folder_path_regular_folder(self, mock_request):
+        """Test getting path for a regular folder."""
+        mock_request.return_value = {
+            "path": [
+                {
+                    "id": 481003603,
+                    "name": "restic",
+                    "description": None,
+                    "file_name": "restic",
+                    "file_size": 414573494633,
+                    "parent_id": None,
+                    "created_at": "2025-11-21T19:21:26.000000Z",
+                    "updated_at": "2025-11-25T11:21:54.000000Z",
+                    "type": "folder",
+                    "public": False,
+                    "workspace_id": 0,
+                    "is_encrypted": 0,
+                    "vault_id": None,
+                    "owner_id": 18001,
+                    "permissions": {
+                        "files.update": True,
+                        "files.create": True,
+                        "files.download": True,
+                        "files.delete": True,
+                    },
+                    "hash": "NDgxMDAzNjAzfA",
+                    "users": [
+                        {
+                            "email": "user@example.com",
+                            "id": 18001,
+                            "owns_entry": True,
+                        }
+                    ],
+                    "tags": [],
+                }
+            ],
+            "status": "success",
+            "seo": None,
+        }
+
+        client = DrimeClient(api_key="test_key")
+        result = client.get_folder_path("NDgxMDAzNjAzfA")
+
+        assert result["status"] == "success"
+        assert len(result["path"]) == 1
+        assert result["path"][0]["id"] == 481003603
+        assert result["path"][0]["name"] == "restic"
+        assert result["path"][0]["is_encrypted"] == 0
+        assert result["path"][0]["vault_id"] is None
+        mock_request.assert_called_once_with(
+            "GET", "/folders/NDgxMDAzNjAzfA/path", params=None
+        )
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_folder_path_vault_folder(self, mock_request):
+        """Test getting path for a vault folder."""
+        mock_request.return_value = {
+            "path": [
+                {
+                    "id": 34430,
+                    "name": "Test1",
+                    "description": None,
+                    "file_name": "Test1",
+                    "mime": None,
+                    "file_size": 0,
+                    "parent_id": None,
+                    "created_at": "2025-11-25T12:37:28.000000Z",
+                    "updated_at": "2025-11-25T12:37:28.000000Z",
+                    "deleted_at": None,
+                    "path": "34430",
+                    "type": "folder",
+                    "public": False,
+                    "is_encrypted": 1,
+                    "vault_id": 784,
+                    "owner_id": 18001,
+                    "permissions": {
+                        "files.update": True,
+                        "files.create": False,
+                        "files.download": True,
+                        "files.delete": True,
+                    },
+                    "hash": "MzQ0MzB8cGFkZA",
+                    "tags": [],
+                }
+            ],
+            "status": "success",
+            "seo": None,
+        }
+
+        client = DrimeClient(api_key="test_key")
+        result = client.get_folder_path("MzQ0MzB8cGFkZA", vault_id=784)
+
+        assert result["status"] == "success"
+        assert len(result["path"]) == 1
+        assert result["path"][0]["id"] == 34430
+        assert result["path"][0]["name"] == "Test1"
+        assert result["path"][0]["is_encrypted"] == 1
+        assert result["path"][0]["vault_id"] == 784
+        assert result["path"][0]["hash"] == "MzQ0MzB8cGFkZA"
+        mock_request.assert_called_once_with(
+            "GET", "/folders/MzQ0MzB8cGFkZA/path", params={"vaultId": 784}
+        )
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_folder_path_nested(self, mock_request):
+        """Test getting folder path with nested folders."""
+        mock_request.return_value = {
+            "path": [
+                {
+                    "id": 34430,
+                    "name": "Root",
+                    "parent_id": None,
+                    "type": "folder",
+                    "is_encrypted": 0,
+                    "vault_id": None,
+                    "hash": "hash1",
+                },
+                {
+                    "id": 34431,
+                    "name": "Child",
+                    "parent_id": 34430,
+                    "type": "folder",
+                    "is_encrypted": 0,
+                    "vault_id": None,
+                    "hash": "hash2",
+                },
+            ],
+            "status": "success",
+            "seo": None,
+        }
+
+        client = DrimeClient(api_key="test_key")
+        result = client.get_folder_path("hash2")
+
+        assert len(result["path"]) == 2
+        assert result["path"][0]["name"] == "Root"
+        assert result["path"][1]["name"] == "Child"
+        assert result["path"][1]["parent_id"] == 34430
+
+
 class TestUploadValidation:
     """Tests for upload validation methods."""
 
