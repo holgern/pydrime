@@ -365,6 +365,241 @@ The client uses a ``requests.Session`` object internally, which reuses connectio
    client.upload_file(Path("file2.txt"))
    client.upload_file(Path("file3.txt"))
 
+Session Management
+------------------
+
+The client manages HTTP connections automatically. For batch operations, you can
+explicitly close the client to ensure all requests are completed:
+
+.. code-block:: python
+
+   from pydrime import DrimeClient
+   from pathlib import Path
+
+   client = DrimeClient(api_key="your_key")
+
+   # Upload multiple files
+   for file in files:
+       client.upload_file(file)
+
+   # Close the client to ensure all uploads are complete
+   client.close()
+
+   # The client can be reused after closing - it will reconnect automatically
+   client.list_files()
+
+Validate Uploads
+----------------
+
+Before uploading, check for duplicates:
+
+.. code-block:: python
+
+   # Validate files before upload
+   files = [
+       {"name": "example.txt", "size": 1024, "relativePath": "docs/"},
+       {"name": "image.jpg", "size": 51200, "relativePath": ""},
+   ]
+   result = client.validate_uploads(files, workspace_id=0)
+   duplicates = result.get("duplicates", [])
+
+   if duplicates:
+       print(f"Duplicate files found: {duplicates}")
+
+Get an available name when there's a conflict:
+
+.. code-block:: python
+
+   # Get available name for duplicate
+   new_name = client.get_available_name("document.pdf", workspace_id=0)
+   print(new_name)  # "document (1).pdf"
+
+Folder Operations
+-----------------
+
+Get Folder Count
+~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   # Get number of items in a folder
+   count = client.get_folder_count(folder_id=481967773)
+   print(f"Folder contains {count} items")
+
+Get Folder Path
+~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   # Get folder path hierarchy
+   result = client.get_folder_path("NDgxMDAzNjAzfA")
+   for folder in result["path"]:
+       print(folder["name"])
+
+   # For vault folders
+   result = client.get_folder_path("MzQ0MzB8cGFkZA", vault_id=784)
+
+Get Folder by Name
+~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   # Find folder by name
+   folder = client.get_folder_by_name("Documents")
+   print(f"Folder ID: {folder['id']}")
+
+   # Search in specific parent folder
+   folder = client.get_folder_by_name("Subfolder", parent_id=12345)
+
+   # Case-insensitive search
+   folder = client.get_folder_by_name("docs", case_sensitive=False)
+
+Resolve Identifiers
+~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   # Resolve folder by ID or name
+   folder_id = client.resolve_folder_identifier("480432024")  # Returns 480432024
+   folder_id = client.resolve_folder_identifier("Documents")  # Looks up by name
+
+   # Resolve any entry (file or folder) by ID or name
+   entry_id = client.resolve_entry_identifier("test1.txt")
+   entry_id = client.resolve_entry_identifier("480432024")
+
+Notifications
+-------------
+
+.. code-block:: python
+
+   # Get user notifications
+   result = client.get_notifications(per_page=10, page=1)
+   notifications = result["pagination"]["data"]
+
+   for notif in notifications:
+       print(notif["data"]["lines"][0]["content"])
+
+Space Usage
+-----------
+
+.. code-block:: python
+
+   # Get storage usage information
+   usage = client.get_space_usage()
+   print(f"Used: {usage}")
+
+Vault Operations
+----------------
+
+The vault provides encrypted file storage. Files are encrypted client-side before
+upload and decrypted after download.
+
+Get Vault Information
+~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   # Get vault metadata
+   result = client.get_vault()
+   vault = result["vault"]
+   print(f"Vault ID: {vault['id']}")
+
+List Vault Files
+~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   # List vault root
+   result = client.get_vault_file_entries()
+   for entry in result.get("pagination", {}).get("data", []):
+       print(entry["name"])
+
+   # List specific folder by hash
+   result = client.get_vault_file_entries(folder_hash="MzQ0MzB8cGFkZA")
+
+   # With pagination and sorting
+   result = client.get_vault_file_entries(
+       page=1,
+       per_page=50,
+       order_by="name",
+       order_dir="asc"
+   )
+
+Download Vault Files
+~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   # Download encrypted file from vault
+   path = client.download_vault_file("MzQ0MzF8cGFkZA")
+   print(f"Downloaded to: {path}")
+
+   # Download to specific path
+   path = client.download_vault_file(
+       "MzQ0MzF8cGFkZA",
+       output_path=Path("/path/to/save/file.txt")
+   )
+
+Upload Vault Files
+~~~~~~~~~~~~~~~~~~
+
+Vault uploads require client-side encryption:
+
+.. code-block:: python
+
+   from pydrime.vault_crypto import unlock_vault, encrypt_file, encrypt_filename
+
+   # Get vault info and unlock
+   vault = client.get_vault()["vault"]
+   vault_key = unlock_vault(
+       password="your_password",
+       salt=vault["salt"],
+       check=vault["check"],
+       iv=vault["iv"]
+   )
+
+   # Encrypt file content and name
+   encrypted_content, content_iv = encrypt_file(vault_key, file_path)
+   encrypted_name, name_iv = encrypt_filename(vault_key, "secret.txt")
+
+   # Upload to vault
+   result = client.upload_vault_file(
+       file_path=Path("secret.txt"),
+       encrypted_content=encrypted_content,
+       encrypted_name=encrypted_name,
+       name_iv=name_iv,
+       content_iv=content_iv,
+       vault_id=vault["id"],
+       parent_id=None  # Upload to root
+   )
+
+Delete Vault Files
+~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   # Move vault file to trash
+   client.delete_vault_file_entries([123])
+
+   # Delete vault file permanently
+   client.delete_vault_file_entries([123], delete_forever=True)
+
+Create Vault Folder
+~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+   # Create folder in vault
+   result = client.create_vault_folder("MyFolder", vault_id=784)
+   folder_id = result["folder"]["id"]
+
+   # Create subfolder
+   result = client.create_vault_folder(
+       "Subfolder",
+       vault_id=784,
+       parent_id=folder_id
+   )
+
 Type Hints
 ----------
 

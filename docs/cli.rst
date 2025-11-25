@@ -388,12 +388,14 @@ Download file(s) or folder(s) from Drime Cloud.
 
 **Arguments:**
 
-* ``ENTRY_IDENTIFIERS`` - One or more file/folder names, hashes, or numeric IDs
+* ``ENTRY_IDENTIFIERS`` - One or more file/folder paths, names, hashes, or numeric IDs
 
 **Options:**
 
 * ``-o, --output TEXT`` - Output directory path (for folders or multiple files)
 * ``-d, --on-duplicate [skip|overwrite|rename]`` - Action when file exists locally (default: overwrite)
+* ``-j, --workers INTEGER`` - Number of parallel workers (default: 1, use 4-8 for parallel downloads)
+* ``--no-progress`` - Disable progress bars
 * ``-k, --api-key TEXT`` - Drime Cloud API key
 
 **Description:**
@@ -741,6 +743,7 @@ Validate that local files/folders are correctly uploaded to Drime Cloud.
 **Options:**
 
 * ``-w, --workspace INTEGER`` - Workspace ID (default: 0 for personal space)
+* ``-r, --remote-path TEXT`` - Remote destination path
 * ``-k, --api-key TEXT`` - Drime Cloud API key
 
 **Description:**
@@ -773,8 +776,463 @@ Exit codes:
    # Validate in specific workspace
    pydrime validate my_folder --workspace 123
 
+   # Validate with remote path
+   pydrime validate /path/to/local -r remote_folder
+
    # Output as JSON for scripting
    pydrime --json validate my_folder
 
    # Use in CI/CD (check exit code)
    pydrime validate uploaded_files && echo "Validation passed"
+
+sync
+~~~~
+
+Sync files between local directory and Drime Cloud.
+
+.. code-block:: bash
+
+   pydrime sync [OPTIONS] PATH
+
+**Arguments:**
+
+* ``PATH`` - Local directory to sync OR literal sync pair in format ``/local/path:syncMode:/remote/path``
+
+**Options:**
+
+* ``-r, --remote-path TEXT`` - Remote destination path
+* ``-w, --workspace INTEGER`` - Workspace ID (uses default workspace if not specified)
+* ``--dry-run`` - Show what would be synced without syncing
+* ``--no-progress`` - Disable progress bars
+* ``-c, --chunk-size INTEGER`` - Chunk size in MB for multipart uploads (default: 25MB)
+* ``-m, --multipart-threshold INTEGER`` - File size threshold in MB for using multipart upload (default: 30MB)
+* ``-b, --batch-size INTEGER`` - Number of remote files to process per batch in streaming mode (default: 50)
+* ``--no-streaming`` - Disable streaming mode (scan all files upfront instead of batch processing)
+* ``--workers INTEGER`` - Number of parallel workers for uploads/downloads (default: 1)
+* ``--start-delay FLOAT`` - Delay in seconds between starting each parallel operation (default: 0.0)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Sync Modes:**
+
+* ``twoWay`` (``tw``) - Mirror every action in both directions
+* ``localToCloud`` (``ltc``) - Mirror local actions to cloud only
+* ``localBackup`` (``lb``) - Upload to cloud, never delete
+* ``cloudToLocal`` (``ctl``) - Mirror cloud actions to local only
+* ``cloudBackup`` (``cb``) - Download from cloud, never delete
+
+**Description:**
+
+Synchronizes files between a local directory and Drime Cloud. Supports multiple
+sync modes for different use cases. Can be specified as a simple directory path
+(uses two-way sync by default) or as a literal sync pair with explicit mode.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Directory path with default two-way sync
+   pydrime sync ./my_folder
+   pydrime sync ./docs -r remote_docs
+
+   # Literal sync pairs with explicit modes
+   pydrime sync /home/user/docs:twoWay:/Documents
+   pydrime sync /home/user/pics:localToCloud:/Pictures
+   pydrime sync ./local:localBackup:/Backup
+   pydrime sync ./data:cloudToLocal:/CloudData
+   pydrime sync ./archive:cloudBackup:/Archive
+
+   # With abbreviations
+   pydrime sync /home/user/pics:tw:/Pictures
+   pydrime sync ./backup:ltc:/CloudBackup
+   pydrime sync ./local:lb:/Backup
+
+   # Other options
+   pydrime sync . -w 5                          # Sync in workspace 5
+   pydrime sync ./data --dry-run                # Preview sync changes
+   pydrime sync ./data -b 100                   # Process 100 files per batch
+   pydrime sync ./data --no-streaming           # Scan all files upfront
+
+stat
+~~~~
+
+Show detailed statistics for a file or folder.
+
+.. code-block:: bash
+
+   pydrime stat [OPTIONS] IDENTIFIER
+
+**Arguments:**
+
+* ``IDENTIFIER`` - File/folder path, name, hash, or numeric ID
+
+**Options:**
+
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Displays detailed metadata for a file or folder including size, type, timestamps,
+owner, and other properties. Supports paths, names (resolved in current directory),
+numeric IDs, and hashes.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # By name in current folder
+   pydrime stat my-file.txt
+
+   # By path
+   pydrime stat myfolder/my-file.txt
+
+   # By numeric ID
+   pydrime stat 480424796
+
+   # By hash
+   pydrime stat NDgwNDI0Nzk2fA
+
+   # Folder by name
+   pydrime stat "My Documents"
+
+folders
+~~~~~~~
+
+List all folders in a workspace.
+
+.. code-block:: bash
+
+   pydrime folders [OPTIONS]
+
+**Options:**
+
+* ``-w, --workspace INTEGER`` - Workspace ID (default: 0 for personal workspace)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Shows folder ID, name, parent ID, and path for all folders accessible to the
+current user in the specified workspace.
+
+**Example:**
+
+.. code-block:: bash
+
+   pydrime folders
+   pydrime folders --workspace 5
+
+usage
+~~~~~
+
+Display storage space usage information.
+
+.. code-block:: bash
+
+   pydrime usage [OPTIONS]
+
+**Options:**
+
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Shows how much storage you've used and how much is available, including
+a percentage usage indicator.
+
+**Example:**
+
+.. code-block:: bash
+
+   pydrime usage
+
+find-duplicates
+~~~~~~~~~~~~~~~
+
+Find and optionally delete duplicate files.
+
+.. code-block:: bash
+
+   pydrime find-duplicates [OPTIONS]
+
+**Options:**
+
+* ``-w, --workspace INTEGER`` - Workspace ID (0 for personal workspace)
+* ``-f, --folder TEXT`` - Folder ID or name to scan (omit for root folder)
+* ``-r, --recursive`` - Scan recursively into subfolders
+* ``--dry-run`` - Show duplicates without deleting (default)
+* ``--delete`` - Actually delete duplicate files (moves to trash)
+* ``--keep-newest`` - Keep newest file instead of oldest (default: keep oldest)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Duplicates are identified by having identical filename, size, and parent folder.
+By default, the oldest file (lowest ID) is kept and newer duplicates are deleted.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Dry run (show duplicates without deleting)
+   pydrime find-duplicates
+
+   # Find duplicates in a specific folder by ID
+   pydrime find-duplicates --folder 12345
+
+   # Find duplicates in a specific folder by name
+   pydrime find-duplicates --folder "My Documents"
+
+   # Find duplicates recursively
+   pydrime find-duplicates --recursive
+
+   # Actually delete duplicates (moves to trash)
+   pydrime find-duplicates --delete
+
+   # Keep newest file instead of oldest
+   pydrime find-duplicates --delete --keep-newest
+
+Vault Commands
+--------------
+
+The vault provides encrypted file storage. Access vault commands via ``pydrime vault``.
+
+vault show
+~~~~~~~~~~
+
+Show vault information.
+
+.. code-block:: bash
+
+   pydrime vault show [OPTIONS]
+
+**Options:**
+
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Displays metadata about your encrypted vault including ID and timestamps.
+
+**Example:**
+
+.. code-block:: bash
+
+   pydrime vault show
+
+vault unlock
+~~~~~~~~~~~~
+
+Unlock the vault for the current shell session.
+
+.. code-block:: bash
+
+   pydrime vault unlock [OPTIONS]
+
+**Options:**
+
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Prompts for your vault password and outputs shell commands to set an environment
+variable. The password is stored in memory only and never written to disk.
+
+**Usage:**
+
+.. code-block:: bash
+
+   # bash/zsh
+   eval $(pydrime vault unlock)
+
+   # fish
+   pydrime vault unlock | source
+
+After unlocking, vault commands won't prompt for password.
+Use ``pydrime vault lock`` to clear the password from your session.
+
+vault lock
+~~~~~~~~~~
+
+Lock the vault and clear password from shell session.
+
+.. code-block:: bash
+
+   pydrime vault lock
+
+**Description:**
+
+Outputs shell commands to unset the vault password environment variable.
+
+**Usage:**
+
+.. code-block:: bash
+
+   # bash/zsh
+   eval $(pydrime vault lock)
+
+   # fish
+   pydrime vault lock | source
+
+vault ls
+~~~~~~~~
+
+List files and folders in the vault.
+
+.. code-block:: bash
+
+   pydrime vault ls [OPTIONS] [FOLDER_IDENTIFIER]
+
+**Arguments:**
+
+* ``FOLDER_IDENTIFIER`` - Folder name, ID, or hash to list (default: root)
+
+**Options:**
+
+* ``-p, --page INTEGER`` - Page number (default: 1)
+* ``--page-size INTEGER`` - Number of items per page (default: 50)
+* ``--order-by [updated_at|created_at|name|file_size]`` - Field to order by (default: updated_at)
+* ``--order [asc|desc]`` - Order direction (default: desc)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Examples:**
+
+.. code-block:: bash
+
+   # List root vault folder
+   pydrime vault ls
+
+   # List folder by name
+   pydrime vault ls Test1
+
+   # List folder by ID
+   pydrime vault ls 34430
+
+   # List folder by hash
+   pydrime vault ls MzQ0MzB8cGFkZA
+
+   # Show page 2 of results
+   pydrime vault ls --page 2
+
+   # Sort by name
+   pydrime vault ls --order-by name
+
+vault download
+~~~~~~~~~~~~~~
+
+Download a file from the vault.
+
+.. code-block:: bash
+
+   pydrime vault download [OPTIONS] FILE_IDENTIFIER
+
+**Arguments:**
+
+* ``FILE_IDENTIFIER`` - File path, name, ID, or hash to download
+
+**Options:**
+
+* ``-o, --output PATH`` - Output file path (default: current directory with original filename)
+* ``-p, --password TEXT`` - Vault password (will prompt if not provided)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Downloads an encrypted file from your vault and decrypts it locally.
+You will be prompted for your vault password if not provided.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Download from root
+   pydrime vault download document.pdf
+
+   # Download from subfolder
+   pydrime vault download Test1/document.pdf
+
+   # Download by ID
+   pydrime vault download 34431
+
+   # Download by hash
+   pydrime vault download MzQ0MzF8cGFkZA
+
+   # Download to specific path
+   pydrime vault download doc.pdf -o out.pdf
+
+vault upload
+~~~~~~~~~~~~
+
+Upload a file to the vault with encryption.
+
+.. code-block:: bash
+
+   pydrime vault upload [OPTIONS] FILE_PATH
+
+**Arguments:**
+
+* ``FILE_PATH`` - Path to the local file to upload
+
+**Options:**
+
+* ``-f, --folder TEXT`` - Target folder name, ID, or hash in vault (default: root)
+* ``-p, --password TEXT`` - Vault password (will prompt if not provided)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Encrypts a local file and uploads it to your encrypted vault.
+You will be prompted for your vault password if not provided.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Upload to vault root
+   pydrime vault upload secret.txt
+
+   # Upload to folder
+   pydrime vault upload document.pdf -f MyFolder
+
+   # With password option
+   pydrime vault upload photo.jpg -p mypassword
+
+vault rm
+~~~~~~~~
+
+Delete a file or folder from the vault.
+
+.. code-block:: bash
+
+   pydrime vault rm [OPTIONS] FILE_IDENTIFIER
+
+**Arguments:**
+
+* ``FILE_IDENTIFIER`` - File or folder name, ID, or hash to delete
+
+**Options:**
+
+* ``--no-trash`` - Delete permanently instead of moving to trash
+* ``-y, --yes`` - Skip confirmation prompt
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+By default, files are moved to trash. Use ``--no-trash`` to delete permanently.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Move to trash
+   pydrime vault rm secret.txt
+
+   # Delete permanently
+   pydrime vault rm secret.txt --no-trash
+
+   # Delete by ID
+   pydrime vault rm 34431
+
+   # Delete by hash
+   pydrime vault rm MzQ0MzF8cGFkZA
+
+   # Skip confirmation
+   pydrime vault rm MyFolder -y
