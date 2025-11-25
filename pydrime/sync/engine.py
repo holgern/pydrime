@@ -227,6 +227,59 @@ class SyncEngine:
         logger.debug(f"Starting streaming sync at {start_time:.2f}")
 
         # Step 1: Scan local files if needed
+        local_files = self._scan_local_files_streaming(pair)
+
+        # Build dictionary for comparison
+        local_file_map = {f.relative_path: f for f in local_files}
+
+        # Track statistics
+        stats = self._create_empty_stats()
+
+        # Track which remote files we've seen (for delete detection)
+        seen_remote_paths: set[str] = set()
+
+        # Step 2: Process remote files in batches
+        if pair.sync_mode.requires_remote_scan:
+            self._process_remote_batches_streaming(
+                pair=pair,
+                local_file_map=local_file_map,
+                seen_remote_paths=seen_remote_paths,
+                stats=stats,
+                chunk_size=chunk_size,
+                multipart_threshold=multipart_threshold,
+                progress_callback=progress_callback,
+                batch_size=batch_size,
+                max_workers=max_workers,
+            )
+
+        # Step 3: Handle local-only files (files that don't exist remotely)
+        if pair.sync_mode.requires_local_scan:
+            self._process_local_only_files_streaming(
+                pair=pair,
+                local_files=local_files,
+                seen_remote_paths=seen_remote_paths,
+                stats=stats,
+                chunk_size=chunk_size,
+                multipart_threshold=multipart_threshold,
+                progress_callback=progress_callback,
+                max_workers=max_workers,
+            )
+
+        # Step 4: Display summary
+        if not self.output.quiet:
+            self._display_summary(stats, dry_run=False)
+
+        return stats
+
+    def _scan_local_files_streaming(self, pair: SyncPair) -> list:
+        """Scan local files for streaming sync mode.
+
+        Args:
+            pair: Sync pair configuration
+
+        Returns:
+            List of local files
+        """
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -247,14 +300,16 @@ class SyncEngine:
                 logger.debug(
                     f"Local scan took {scan_elapsed:.2f}s for {len(local_files)} files"
                 )
-            else:
-                local_files = []
+                return local_files
+            return []
 
-        # Build dictionary for comparison
-        local_file_map = {f.relative_path: f for f in local_files}
+    def _create_empty_stats(self) -> dict:
+        """Create an empty statistics dictionary.
 
-        # Track statistics
-        stats = {
+        Returns:
+            Dictionary with zero counts for all stat categories
+        """
+        return {
             "uploads": 0,
             "downloads": 0,
             "deletes_local": 0,
@@ -263,236 +318,389 @@ class SyncEngine:
             "conflicts": 0,
         }
 
-        # Track which remote files we've seen (for delete detection)
-        seen_remote_paths: set[str] = set()
+    def _resolve_remote_folder_id(
+        self, pair: SyncPair, manager: FileEntriesManager
+    ) -> Optional[int]:
+        """Resolve remote path to folder ID.
 
-        # Step 2: Process remote files in batches
-        if pair.sync_mode.requires_remote_scan:
-            if not self.output.quiet:
-                self.output.info("Processing remote files in batches...")
+        Args:
+            pair: Sync pair configuration
+            manager: File entries manager
 
-            manager = FileEntriesManager(self.client, pair.workspace_id)
-            scanner = DirectoryScanner(
-                ignore_patterns=pair.ignore,
-                exclude_dot_files=pair.exclude_dot_files,
-            )
+        Returns:
+            Folder ID if found, None otherwise
+        """
+        resolve_start = time.time()
+        remote_folder_id = None
 
-            # Resolve remote path to folder ID
-            resolve_start = time.time()
-            remote_folder_id = None
-            if pair.remote and pair.remote != "/":
-                try:
-                    # Strip leading slash for folder lookup
-                    folder_name = pair.remote.lstrip("/")
-                    logger.debug("Resolving folder: %s", folder_name)
+        if pair.remote and pair.remote != "/":
+            try:
+                # Strip leading slash for folder lookup
+                folder_name = pair.remote.lstrip("/")
+                logger.debug("Resolving folder: %s", folder_name)
 
-                    # Search in root folder (parent_id=0 for root)
-                    folder_entry = manager.find_folder_by_name(folder_name, parent_id=0)
-                    if folder_entry:
-                        remote_folder_id = folder_entry.id
+                # Search in root folder (parent_id=0 for root)
+                folder_entry = manager.find_folder_by_name(folder_name, parent_id=0)
+                if folder_entry:
+                    remote_folder_id = folder_entry.id
+            except Exception as e:
+                # Remote folder doesn't exist yet
+                logger.debug("Folder resolution failed: %s", e)
 
-                except Exception as e:
-                    # Remote folder doesn't exist yet
-                    logger.debug("Folder resolution failed: %s", e)
-            resolve_elapsed = time.time() - resolve_start
-            logger.debug(
-                "Remote folder resolution took %.2fs (folder_id=%s)",
-                resolve_elapsed,
-                remote_folder_id,
-            )
+        resolve_elapsed = time.time() - resolve_start
+        logger.debug(
+            "Remote folder resolution took %.2fs (folder_id=%s)",
+            resolve_elapsed,
+            remote_folder_id,
+        )
+        return remote_folder_id
 
-            # If we're syncing to a specific remote folder and it doesn't exist yet,
-            # skip remote scan (no files to download/compare yet)
-            if pair.remote and pair.remote != "/" and remote_folder_id is None:
-                logger.debug("Remote folder not found, skipping remote scan")
-                # Remote folder doesn't exist yet, nothing to process
-                pass
-            else:
-                # Process batches
-                batch_num = 0
-                total_processed = 0
+    def _process_remote_batches_streaming(
+        self,
+        pair: SyncPair,
+        local_file_map: dict,
+        seen_remote_paths: set[str],
+        stats: dict,
+        chunk_size: int,
+        multipart_threshold: int,
+        progress_callback: Optional[Callable[[int, int], None]],
+        batch_size: int,
+        max_workers: int,
+    ) -> None:
+        """Process remote files in batches for streaming sync.
 
-                try:
-                    # When syncing to a specific folder, don't use it as
-                    # path_prefix. The files inside should be compared with
-                    # local files without the folder prefix. path_prefix should
-                    # be empty so relative paths are just filename.
-                    path_prefix = ""
-
-                    for entries_batch in manager.iter_all_recursive(
-                        folder_id=remote_folder_id,
-                        path_prefix=path_prefix,
-                        batch_size=batch_size,
-                    ):
-                        batch_num += 1
-                        logger.debug(
-                            "Received batch %d with %d entries",
-                            batch_num,
-                            len(entries_batch),
-                        )
-
-                        # Convert to RemoteFile objects
-                        remote_files = scanner.scan_remote(entries_batch)
-
-                        if not self.output.quiet:
-                            total_processed += len(remote_files)
-                            self.output.info(
-                                f"Batch {batch_num}: Processing "
-                                f"{len(remote_files)} file(s) "
-                                f"(total: {total_processed})"
-                            )
-                        sample_paths = [f.relative_path for f in remote_files[:3]]
-                        logger.debug("Sample remote paths: %s", sample_paths)
-                        if len(entries_batch) != len(remote_files):
-                            filtered = len(entries_batch) - len(remote_files)
-                            logger.debug("Filtered out %d folders from batch", filtered)
-
-                        # Compare batch with local files
-                        comparator = FileComparator(pair.sync_mode)
-                        batch_decisions = []
-
-                        for remote_file in remote_files:
-                            seen_remote_paths.add(remote_file.relative_path)
-                            local_file = local_file_map.get(remote_file.relative_path)
-
-                            # Compare this single file
-                            decision = comparator._compare_single_file(
-                                remote_file.relative_path, local_file, remote_file
-                            )
-                            batch_decisions.append(decision)
-
-                        # Execute batch decisions - parallel if max_workers > 1
-                        actionable_decisions = [
-                            d
-                            for d in batch_decisions
-                            if d.action not in [SyncAction.SKIP, SyncAction.CONFLICT]
-                        ]
-
-                        if max_workers > 1 and len(actionable_decisions) > 1:
-                            # Parallel execution - returns success count per action type
-                            batch_stats = self._execute_decisions_parallel(
-                                actionable_decisions,
-                                pair,
-                                chunk_size,
-                                multipart_threshold,
-                                progress_callback,
-                                max_workers,
-                            )
-                            # Update stats with actual successes
-                            stats["uploads"] += batch_stats["uploads"]
-                            stats["downloads"] += batch_stats["downloads"]
-                            stats["deletes_local"] += batch_stats["deletes_local"]
-                            stats["deletes_remote"] += batch_stats["deletes_remote"]
-                        else:
-                            # Sequential execution
-                            for decision in actionable_decisions:
-                                try:
-                                    self._execute_single_decision(
-                                        decision,
-                                        pair,
-                                        chunk_size,
-                                        multipart_threshold,
-                                        progress_callback,
-                                    )
-                                    # Only increment stats on success
-                                    if decision.action == SyncAction.UPLOAD:
-                                        stats["uploads"] += 1
-                                    elif decision.action == SyncAction.DOWNLOAD:
-                                        stats["downloads"] += 1
-                                    elif decision.action == SyncAction.DELETE_LOCAL:
-                                        stats["deletes_local"] += 1
-                                    elif decision.action == SyncAction.DELETE_REMOTE:
-                                        stats["deletes_remote"] += 1
-                                except Exception as e:
-                                    if not self.output.quiet:
-                                        path = decision.relative_path
-                                        self.output.error(f"Failed to sync {path}: {e}")
-
-                        # Count skips and conflicts
-                        for decision in batch_decisions:
-                            if decision.action == SyncAction.CONFLICT:
-                                stats["conflicts"] += 1
-                            elif decision.action == SyncAction.SKIP:
-                                stats["skips"] += 1
-
-                        # Debug: print when batch is complete
-                        logger.debug(
-                            "Batch %d complete, waiting for next batch...",
-                            batch_num,
-                        )
-
-                except KeyboardInterrupt:
-                    if not self.output.quiet:
-                        self.output.warning("\nSync cancelled by user")
-                    raise
-
-        # Step 3: Handle local-only files (files that don't exist remotely)
-        if pair.sync_mode.requires_local_scan:
-            local_only_files = [
-                f for f in local_files if f.relative_path not in seen_remote_paths
-            ]
-
-            if local_only_files:
-                if not self.output.quiet:
-                    self.output.info(
-                        f"\nProcessing {len(local_only_files)} local-only file(s)..."
-                    )
-
-                comparator = FileComparator(pair.sync_mode)
-                local_decisions = []
-
-                for local_file in local_only_files:
-                    # Handle local-only file
-                    decision = comparator._compare_single_file(
-                        local_file.relative_path, local_file, None
-                    )
-
-                    # Count skips
-                    if decision.action == SyncAction.SKIP:
-                        stats["skips"] += 1
-
-                    if decision.action not in [SyncAction.SKIP, SyncAction.CONFLICT]:
-                        local_decisions.append(decision)
-
-                # Execute local-only file actions - parallel if max_workers > 1
-                if max_workers > 1 and len(local_decisions) > 1:
-                    local_stats = self._execute_decisions_parallel(
-                        local_decisions,
-                        pair,
-                        chunk_size,
-                        multipart_threshold,
-                        progress_callback,
-                        max_workers,
-                    )
-                    # Update stats with actual successes
-                    stats["uploads"] += local_stats["uploads"]
-                    stats["deletes_local"] += local_stats["deletes_local"]
-                else:
-                    for decision in local_decisions:
-                        try:
-                            self._execute_single_decision(
-                                decision,
-                                pair,
-                                chunk_size,
-                                multipart_threshold,
-                                progress_callback,
-                            )
-                            # Only increment stats on success
-                            if decision.action == SyncAction.UPLOAD:
-                                stats["uploads"] += 1
-                            elif decision.action == SyncAction.DELETE_LOCAL:
-                                stats["deletes_local"] += 1
-                        except Exception as e:
-                            if not self.output.quiet:
-                                self.output.error(
-                                    f"Failed to sync {decision.relative_path}: {e}"
-                                )
-
-        # Step 4: Display summary
+        Args:
+            pair: Sync pair configuration
+            local_file_map: Dictionary of local files by relative path
+            seen_remote_paths: Set to track seen remote paths (modified in place)
+            stats: Statistics dictionary (modified in place)
+            chunk_size: Chunk size for multipart uploads
+            multipart_threshold: Threshold for multipart upload
+            progress_callback: Optional callback for progress updates
+            batch_size: Number of files per batch
+            max_workers: Number of parallel workers
+        """
         if not self.output.quiet:
-            self._display_summary(stats, dry_run=False)
+            self.output.info("Processing remote files in batches...")
+
+        manager = FileEntriesManager(self.client, pair.workspace_id)
+        scanner = DirectoryScanner(
+            ignore_patterns=pair.ignore,
+            exclude_dot_files=pair.exclude_dot_files,
+        )
+
+        remote_folder_id = self._resolve_remote_folder_id(pair, manager)
+
+        # If we're syncing to a specific remote folder and it doesn't exist yet,
+        # skip remote scan (no files to download/compare yet)
+        if pair.remote and pair.remote != "/" and remote_folder_id is None:
+            logger.debug("Remote folder not found, skipping remote scan")
+            return
+
+        # Process batches
+        batch_num = 0
+        total_processed = 0
+
+        try:
+            # When syncing to a specific folder, don't use it as
+            # path_prefix. The files inside should be compared with
+            # local files without the folder prefix.
+            path_prefix = ""
+
+            for entries_batch in manager.iter_all_recursive(
+                folder_id=remote_folder_id,
+                path_prefix=path_prefix,
+                batch_size=batch_size,
+            ):
+                batch_num += 1
+                batch_stats = self._process_single_remote_batch(
+                    entries_batch=entries_batch,
+                    batch_num=batch_num,
+                    scanner=scanner,
+                    pair=pair,
+                    local_file_map=local_file_map,
+                    seen_remote_paths=seen_remote_paths,
+                    chunk_size=chunk_size,
+                    multipart_threshold=multipart_threshold,
+                    progress_callback=progress_callback,
+                    max_workers=max_workers,
+                )
+
+                # Update stats
+                for key in ["uploads", "downloads", "deletes_local", "deletes_remote"]:
+                    stats[key] += batch_stats.get(key, 0)
+                stats["skips"] += batch_stats.get("skips", 0)
+                stats["conflicts"] += batch_stats.get("conflicts", 0)
+
+                if not self.output.quiet:
+                    total_processed += batch_stats.get("processed", 0)
+                    self.output.info(
+                        f"Batch {batch_num}: Processing "
+                        f"{batch_stats.get('processed', 0)} file(s) "
+                        f"(total: {total_processed})"
+                    )
+
+        except KeyboardInterrupt:
+            if not self.output.quiet:
+                self.output.warning("\nSync cancelled by user")
+            raise
+
+    def _process_single_remote_batch(
+        self,
+        entries_batch: list,
+        batch_num: int,
+        scanner: DirectoryScanner,
+        pair: SyncPair,
+        local_file_map: dict,
+        seen_remote_paths: set[str],
+        chunk_size: int,
+        multipart_threshold: int,
+        progress_callback: Optional[Callable[[int, int], None]],
+        max_workers: int,
+    ) -> dict:
+        """Process a single batch of remote entries.
+
+        Args:
+            entries_batch: Batch of remote entries
+            batch_num: Batch number for logging
+            scanner: Directory scanner instance
+            pair: Sync pair configuration
+            local_file_map: Dictionary of local files by relative path
+            seen_remote_paths: Set to track seen remote paths (modified in place)
+            chunk_size: Chunk size for multipart uploads
+            multipart_threshold: Threshold for multipart upload
+            progress_callback: Optional callback for progress updates
+            max_workers: Number of parallel workers
+
+        Returns:
+            Dictionary with batch statistics
+        """
+        logger.debug(
+            "Received batch %d with %d entries",
+            batch_num,
+            len(entries_batch),
+        )
+
+        # Convert to RemoteFile objects
+        remote_files = scanner.scan_remote(entries_batch)
+
+        sample_paths = [f.relative_path for f in remote_files[:3]]
+        logger.debug("Sample remote paths: %s", sample_paths)
+        if len(entries_batch) != len(remote_files):
+            filtered = len(entries_batch) - len(remote_files)
+            logger.debug("Filtered out %d folders from batch", filtered)
+
+        # Compare batch with local files
+        comparator = FileComparator(pair.sync_mode)
+        batch_decisions = []
+
+        for remote_file in remote_files:
+            seen_remote_paths.add(remote_file.relative_path)
+            local_file = local_file_map.get(remote_file.relative_path)
+
+            # Compare this single file
+            decision = comparator._compare_single_file(
+                remote_file.relative_path, local_file, remote_file
+            )
+            batch_decisions.append(decision)
+
+        # Execute batch decisions
+        batch_stats = self._execute_batch_decisions(
+            batch_decisions=batch_decisions,
+            pair=pair,
+            chunk_size=chunk_size,
+            multipart_threshold=multipart_threshold,
+            progress_callback=progress_callback,
+            max_workers=max_workers,
+        )
+
+        batch_stats["processed"] = len(remote_files)
+
+        # Debug: print when batch is complete
+        logger.debug("Batch %d complete, waiting for next batch...", batch_num)
+
+        return batch_stats
+
+    def _execute_batch_decisions(
+        self,
+        batch_decisions: list[SyncDecision],
+        pair: SyncPair,
+        chunk_size: int,
+        multipart_threshold: int,
+        progress_callback: Optional[Callable[[int, int], None]],
+        max_workers: int,
+    ) -> dict:
+        """Execute a batch of sync decisions.
+
+        Args:
+            batch_decisions: List of sync decisions
+            pair: Sync pair configuration
+            chunk_size: Chunk size for multipart uploads
+            multipart_threshold: Threshold for multipart upload
+            progress_callback: Optional callback for progress updates
+            max_workers: Number of parallel workers
+
+        Returns:
+            Dictionary with batch statistics
+        """
+        stats = self._create_empty_stats()
+
+        actionable_decisions = [
+            d
+            for d in batch_decisions
+            if d.action not in [SyncAction.SKIP, SyncAction.CONFLICT]
+        ]
+
+        if max_workers > 1 and len(actionable_decisions) > 1:
+            # Parallel execution - returns success count per action type
+            batch_stats = self._execute_decisions_parallel(
+                actionable_decisions,
+                pair,
+                chunk_size,
+                multipart_threshold,
+                progress_callback,
+                max_workers,
+            )
+            # Update stats with actual successes
+            stats["uploads"] = batch_stats["uploads"]
+            stats["downloads"] = batch_stats["downloads"]
+            stats["deletes_local"] = batch_stats["deletes_local"]
+            stats["deletes_remote"] = batch_stats["deletes_remote"]
+        else:
+            # Sequential execution
+            for decision in actionable_decisions:
+                self._execute_decision_with_stats(
+                    decision=decision,
+                    pair=pair,
+                    chunk_size=chunk_size,
+                    multipart_threshold=multipart_threshold,
+                    progress_callback=progress_callback,
+                    stats=stats,
+                )
+
+        # Count skips and conflicts
+        for decision in batch_decisions:
+            if decision.action == SyncAction.CONFLICT:
+                stats["conflicts"] += 1
+            elif decision.action == SyncAction.SKIP:
+                stats["skips"] += 1
 
         return stats
+
+    def _execute_decision_with_stats(
+        self,
+        decision: SyncDecision,
+        pair: SyncPair,
+        chunk_size: int,
+        multipart_threshold: int,
+        progress_callback: Optional[Callable[[int, int], None]],
+        stats: dict,
+    ) -> None:
+        """Execute a single decision and update stats.
+
+        Args:
+            decision: Sync decision to execute
+            pair: Sync pair configuration
+            chunk_size: Chunk size for multipart uploads
+            multipart_threshold: Threshold for multipart upload
+            progress_callback: Optional callback for progress updates
+            stats: Statistics dictionary (modified in place)
+        """
+        try:
+            self._execute_single_decision(
+                decision,
+                pair,
+                chunk_size,
+                multipart_threshold,
+                progress_callback,
+            )
+            # Only increment stats on success
+            if decision.action == SyncAction.UPLOAD:
+                stats["uploads"] += 1
+            elif decision.action == SyncAction.DOWNLOAD:
+                stats["downloads"] += 1
+            elif decision.action == SyncAction.DELETE_LOCAL:
+                stats["deletes_local"] += 1
+            elif decision.action == SyncAction.DELETE_REMOTE:
+                stats["deletes_remote"] += 1
+        except Exception as e:
+            if not self.output.quiet:
+                self.output.error(f"Failed to sync {decision.relative_path}: {e}")
+
+    def _process_local_only_files_streaming(
+        self,
+        pair: SyncPair,
+        local_files: list,
+        seen_remote_paths: set[str],
+        stats: dict,
+        chunk_size: int,
+        multipart_threshold: int,
+        progress_callback: Optional[Callable[[int, int], None]],
+        max_workers: int,
+    ) -> None:
+        """Process local-only files for streaming sync.
+
+        Args:
+            pair: Sync pair configuration
+            local_files: List of local files
+            seen_remote_paths: Set of remote paths already seen
+            stats: Statistics dictionary (modified in place)
+            chunk_size: Chunk size for multipart uploads
+            multipart_threshold: Threshold for multipart upload
+            progress_callback: Optional callback for progress updates
+            max_workers: Number of parallel workers
+        """
+        local_only_files = [
+            f for f in local_files if f.relative_path not in seen_remote_paths
+        ]
+
+        if not local_only_files:
+            return
+
+        if not self.output.quiet:
+            self.output.info(
+                f"\nProcessing {len(local_only_files)} local-only file(s)..."
+            )
+
+        comparator = FileComparator(pair.sync_mode)
+        local_decisions = []
+
+        for local_file in local_only_files:
+            # Handle local-only file
+            decision = comparator._compare_single_file(
+                local_file.relative_path, local_file, None
+            )
+
+            # Count skips
+            if decision.action == SyncAction.SKIP:
+                stats["skips"] += 1
+
+            if decision.action not in [SyncAction.SKIP, SyncAction.CONFLICT]:
+                local_decisions.append(decision)
+
+        # Execute local-only file actions - parallel if max_workers > 1
+        if max_workers > 1 and len(local_decisions) > 1:
+            local_stats = self._execute_decisions_parallel(
+                local_decisions,
+                pair,
+                chunk_size,
+                multipart_threshold,
+                progress_callback,
+                max_workers,
+            )
+            # Update stats with actual successes
+            stats["uploads"] += local_stats["uploads"]
+            stats["deletes_local"] += local_stats["deletes_local"]
+        else:
+            for decision in local_decisions:
+                self._execute_decision_with_stats(
+                    decision=decision,
+                    pair=pair,
+                    chunk_size=chunk_size,
+                    multipart_threshold=multipart_threshold,
+                    progress_callback=progress_callback,
+                    stats=stats,
+                )
 
     def _scan_remote(self, pair: SyncPair) -> list[RemoteFile]:
         """Scan remote directory for files.

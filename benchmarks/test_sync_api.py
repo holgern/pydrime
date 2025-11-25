@@ -27,8 +27,6 @@ import time
 import uuid
 from pathlib import Path
 
-from pydrime.cli import workspace
-
 # Configure logging BEFORE imports to capture all debug messages
 logging.basicConfig(
     level=logging.DEBUG,
@@ -39,15 +37,15 @@ logging.basicConfig(
 # Enable debug for all pydrime modules
 logging.getLogger("pydrime").setLevel(logging.DEBUG)
 
-from pydrime.api import DrimeClient
-from pydrime.file_entries_manager import FileEntriesManager
-from pydrime.models import FileEntriesResult
-from pydrime.output import OutputFormatter
-from pydrime.sync.comparator import FileComparator, SyncAction
-from pydrime.sync.engine import SyncEngine
-from pydrime.sync.modes import SyncMode
-from pydrime.sync.pair import SyncPair
-from pydrime.sync.scanner import DirectoryScanner
+from pydrime.api import DrimeClient  # noqa: E402
+from pydrime.file_entries_manager import FileEntriesManager  # noqa: E402
+from pydrime.models import FileEntriesResult  # noqa: E402
+from pydrime.output import OutputFormatter  # noqa: E402
+from pydrime.sync.comparator import FileComparator, SyncAction  # noqa: E402
+from pydrime.sync.engine import SyncEngine  # noqa: E402
+from pydrime.sync.modes import SyncMode  # noqa: E402
+from pydrime.sync.pair import SyncPair  # noqa: E402
+from pydrime.sync.scanner import DirectoryScanner  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -532,8 +530,9 @@ def run_sync_engine(
         return {"error": str(e)}
 
 
-def cleanup_remote_folder(client: DrimeClient, folder_name: str, workspace_id:
-                          int) -> bool:
+def cleanup_remote_folder(
+    client: DrimeClient, folder_name: str, workspace_id: int
+) -> bool:
     """Delete remote folder permanently.
 
     Args:
@@ -553,8 +552,9 @@ def cleanup_remote_folder(client: DrimeClient, folder_name: str, workspace_id:
             for entry in entries.entries:
                 if entry.name == folder_name:
                     print_info(f"Found folder id={entry.id}, deleting permanently...")
-                    client.delete_file_entries([entry.id], delete_forever=True,
-                                               workspace_id=workspace_id)
+                    client.delete_file_entries(
+                        [entry.id], delete_forever=True, workspace_id=workspace_id
+                    )
                     print_success("Folder deleted")
                     return True
         print_warning("Folder not found for cleanup")
