@@ -12,6 +12,12 @@ from ..api import DrimeClient
 from ..file_entries_manager import FileEntriesManager
 from ..models import FileEntry
 from ..output import OutputFormatter
+from ..utils import (
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_MULTIPART_THRESHOLD,
+    DEFAULT_RETRY_DELAY,
+)
 from .comparator import FileComparator, SyncAction, SyncDecision
 from .modes import SyncMode
 from .operations import SyncOperations
@@ -43,8 +49,8 @@ class SyncEngine:
         self,
         pair: SyncPair,
         dry_run: bool = False,
-        chunk_size: int = 25 * 1024 * 1024,
-        multipart_threshold: int = 30 * 1024 * 1024,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        multipart_threshold: int = DEFAULT_MULTIPART_THRESHOLD,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         batch_size: int = 50,
         use_streaming: bool = True,
@@ -1012,11 +1018,11 @@ class SyncEngine:
                     logger.debug(f"Downloading {decision.relative_path}...")
                     local_path = pair.local / decision.relative_path
 
-                    # Retry download up to 3 times for transient errors
+                    # Retry download for transient errors
                     # This handles cases where recently uploaded files aren't
                     # immediately available for download, or server-side issues
-                    max_retries = 3
-                    retry_delay = 2.0  # Start with 2 seconds
+                    max_retries = DEFAULT_MAX_RETRIES
+                    retry_delay = DEFAULT_RETRY_DELAY
 
                     for attempt in range(max_retries):
                         try:
@@ -1274,9 +1280,9 @@ class SyncEngine:
             Dictionary with 'downloads' and 'errors' counts
         """
         stats = {"downloads": 0, "errors": 0}
-        # Standard chunk sizes for downloads
-        chunk_size = 25 * 1024 * 1024
-        multipart_threshold = 30 * 1024 * 1024
+        # Use default constants for chunk sizes
+        chunk_size = DEFAULT_CHUNK_SIZE
+        multipart_threshold = DEFAULT_MULTIPART_THRESHOLD
 
         if max_workers > 1 and len(decisions) > 1:
             # Parallel execution
@@ -1524,8 +1530,8 @@ class SyncEngine:
         max_workers: int = 1,
         start_delay: float = 0.0,
         progress_callback: Optional[Callable[[int, int], None]] = None,
-        chunk_size: int = 25 * 1024 * 1024,
-        multipart_threshold: int = 30 * 1024 * 1024,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        multipart_threshold: int = DEFAULT_MULTIPART_THRESHOLD,
         files_to_skip: Optional[set[str]] = None,
         file_renames: Optional[dict[str, str]] = None,
     ) -> dict:

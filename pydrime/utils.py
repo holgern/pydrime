@@ -1,6 +1,99 @@
 """Utility functions for Drime Cloud."""
 
 import base64
+from datetime import datetime
+from typing import Optional
+
+# =============================================================================
+# Constants for file operations
+# =============================================================================
+
+# Chunk size for multipart uploads (25 MB)
+DEFAULT_CHUNK_SIZE: int = 25 * 1024 * 1024
+
+# Threshold for using multipart upload (30 MB)
+DEFAULT_MULTIPART_THRESHOLD: int = 30 * 1024 * 1024
+
+# Retry configuration for transient errors
+DEFAULT_MAX_RETRIES: int = 3
+DEFAULT_RETRY_DELAY: float = 2.0  # seconds
+
+# Batch size for bulk delete operations
+DEFAULT_DELETE_BATCH_SIZE: int = 10
+
+
+# =============================================================================
+# Timestamp parsing utilities
+# =============================================================================
+
+
+def parse_iso_timestamp(timestamp_str: Optional[str]) -> Optional[datetime]:
+    """Parse ISO format timestamp from Drime API.
+
+    Args:
+        timestamp_str: ISO format timestamp string (e.g., "2025-01-15T10:30:00.000000Z")
+
+    Returns:
+        datetime object in local timezone or None if parsing fails
+    """
+    if not timestamp_str:
+        return None
+
+    try:
+        # Handle various ISO formats
+        # The 'Z' suffix indicates UTC time
+        if timestamp_str.endswith("Z"):
+            timestamp_str = timestamp_str[:-1] + "+00:00"
+
+        # Try parsing with timezone
+        try:
+            dt = datetime.fromisoformat(timestamp_str)
+            # Convert to local time (naive datetime in local timezone)
+            if dt.tzinfo is not None:
+                # Convert to timestamp (UTC) then to local naive datetime
+                timestamp = dt.timestamp()
+                return datetime.fromtimestamp(timestamp)
+            return dt
+        except ValueError:
+            # Try without microseconds
+            if "." in timestamp_str:
+                timestamp_str = timestamp_str.split(".")[0] + "+00:00"
+            dt = datetime.fromisoformat(timestamp_str)
+            if dt.tzinfo is not None:
+                timestamp = dt.timestamp()
+                return datetime.fromtimestamp(timestamp)
+            return dt
+    except (ValueError, AttributeError):
+        return None
+
+
+# =============================================================================
+# Size formatting utilities
+# =============================================================================
+
+
+def format_size(size_bytes: int) -> str:
+    """Format file size in human-readable format.
+
+    Args:
+        size_bytes: Size in bytes
+
+    Returns:
+        Formatted size string (e.g., "1.5 MB", "256 B")
+    """
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / 1024 / 1024:.1f} MB"
+    else:
+        return f"{size_bytes / 1024 / 1024 / 1024:.1f} GB"
+
+
+# =============================================================================
+# Hash calculation utilities
+# =============================================================================
 
 
 def calculate_drime_hash(file_id: int) -> str:

@@ -194,19 +194,3 @@ class DirectoryScanner:
                 remote_files.append(remote_file)
 
         return remote_files
-
-
-def scan_directory_simple(path: Path, base_path: Path) -> list[tuple[Path, str]]:
-    """Simple recursive directory scan (legacy function for backward compatibility).
-
-    Args:
-        path: Directory to scan
-        base_path: Base path for calculating relative paths
-
-    Returns:
-        List of tuples containing file paths and their relative paths
-        (paths use forward slashes for cross-platform compatibility)
-    """
-    scanner = DirectoryScanner()
-    local_files = scanner.scan_local(path, base_path)
-    return [(f.path, f.relative_path) for f in local_files]

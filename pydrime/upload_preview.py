@@ -78,10 +78,12 @@ def display_upload_preview(
     # Extract and show folders that will be created
     folders_to_create = set()
     for _, rel_path in files_to_upload:
-        path_parts = PurePosixPath(rel_path).parts
+        # Strip leading slashes to avoid including root "/" as a folder
+        normalized_path = rel_path.lstrip("/")
+        path_parts = PurePosixPath(normalized_path).parts
         # Build all parent folder paths
         for i in range(len(path_parts) - 1):  # Exclude the filename
-            folder_path = str(PurePosixPath(*path_parts[: i + 1]))
+            folder_path = "/" + str(PurePosixPath(*path_parts[: i + 1]))
             folders_to_create.add(folder_path)
 
     if folders_to_create:
