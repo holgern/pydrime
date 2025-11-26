@@ -826,6 +826,88 @@ Synchronizes files between a local directory and Drime Cloud. Supports multiple
 sync modes for different use cases. Can be specified as a simple directory path
 (uses two-way sync by default) or as a literal sync pair with explicit mode.
 
+**Ignore Files (.pydrignore):**
+
+You can exclude files from sync by placing a ``.pydrignore`` file in any directory.
+This works similarly to Kopia's ``.kopiaignore`` or Git's ``.gitignore``.
+
+The ``.pydrignore`` file uses gitignore-style pattern matching:
+
+.. code-block:: text
+
+   # Comment lines start with #
+   *.log           # Ignore all .log files anywhere
+   /logs           # Ignore 'logs' only at root directory
+   temp/           # Ignore directories named 'temp'
+   !important.log  # Un-ignore important.log (negation)
+   *.db*           # Ignore files with .db in extension
+   **/cache/**     # Ignore any 'cache' directory and contents
+   [a-z]*.tmp      # Character ranges and wildcards
+   ?tmp.db         # ? matches exactly one character
+
+**Pattern Syntax:**
+
++---------------+-----------------------------------------------------------+
+| Pattern       | Description                                               |
++===============+===========================================================+
+| ``#``         | Comment line (ignored)                                    |
++---------------+-----------------------------------------------------------+
+| ``!``         | Negates a rule (un-ignores previously ignored path)       |
++---------------+-----------------------------------------------------------+
+| ``*``         | Wildcard matching any characters (except ``/``)           |
++---------------+-----------------------------------------------------------+
+| ``**``        | Double wildcard matching any path components              |
++---------------+-----------------------------------------------------------+
+| ``?``         | Matches exactly one character                             |
++---------------+-----------------------------------------------------------+
+| ``[abc]``     | Matches one of ``a``, ``b``, or ``c``                     |
++---------------+-----------------------------------------------------------+
+| ``[a-z]``     | Matches characters in range ``a`` to ``z``                |
++---------------+-----------------------------------------------------------+
+| ``/`` (start) | Anchored to root directory only                           |
++---------------+-----------------------------------------------------------+
+| ``/`` (end)   | Matches directories only                                  |
++---------------+-----------------------------------------------------------+
+
+**Hierarchical Ignore Files:**
+
+``.pydrignore`` files in subdirectories only apply to that subtree and can
+override parent rules using negation (``!``). For example:
+
+.. code-block:: text
+
+   # Root .pydrignore
+   *.log
+
+   # subdir/.pydrignore
+   !debug.log    # Un-ignore debug.log in this subdirectory
+
+**Example .pydrignore file:**
+
+.. code-block:: text
+
+   # Ignore temporary files
+   *.tmp
+   *.log
+   *.bak
+
+   # Ignore cache and build directories
+   **/cache/**
+   **/node_modules/**
+   build/
+   dist/
+
+   # Ignore database files
+   *.db
+   *.sqlite
+
+   # But keep important logs
+   !important.log
+
+   # Ignore only at root level
+   /logs/*
+   /.git/
+
 **Examples:**
 
 .. code-block:: bash

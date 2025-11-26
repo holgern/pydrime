@@ -236,6 +236,18 @@ def upload(  # noqa: C901
     """Upload a file or directory to Drime Cloud.
 
     PATH: Local file or directory to upload
+
+    Ignore Files (.pydrignore):
+      When uploading a directory, you can place a .pydrignore file in any
+      directory to exclude files from upload. Uses gitignore-style patterns.
+
+      Example .pydrignore:
+        # Ignore all log files
+        *.log
+        # Ignore temp directories
+        temp/
+        # But include important.log
+        !important.log
     """
     from .sync import SyncEngine
 
@@ -1370,7 +1382,7 @@ def download(
 
 
 @main.command()
-@click.argument("path", type=str)
+@click.argument("path", type=str, required=False, default=None)
 @click.option("--remote-path", "-r", help="Remote destination path")
 @click.option(
     "--workspace",
@@ -1378,6 +1390,13 @@ def download(
     type=int,
     default=None,
     help="Workspace ID (uses default workspace if not specified)",
+)
+@click.option(
+    "--config",
+    "-C",
+    "config_file",
+    type=click.Path(exists=True),
+    help="JSON config file with list of sync pairs",
 )
 @click.option(
     "--dry-run", is_flag=True, help="Show what would be synced without syncing"
@@ -1428,9 +1447,10 @@ def download(
 @click.pass_context
 def sync(
     ctx: Any,
-    path: str,
+    path: Optional[str],
     remote_path: Optional[str],
     workspace: Optional[int],
+    config_file: Optional[str],
     dry_run: bool,
     no_progress: bool,
     chunk_size: int,
@@ -1452,6 +1472,39 @@ def sync(
       - cloudToLocal (ctl): Mirror cloud actions to local only
       - cloudBackup (cb): Download from cloud, never delete
 
+    Ignore Files (.pydrignore):
+      Place a .pydrignore file in any directory to exclude files from sync.
+      Uses gitignore-style patterns (similar to Kopia's .kopiaignore).
+
+      Supported patterns:
+        # Comment lines start with #
+        *.log           - Ignore all .log files anywhere
+        /logs           - Ignore 'logs' only at root directory
+        temp/           - Ignore directories named 'temp'
+        !important.log  - Un-ignore important.log (negation)
+        *.db*           - Ignore files with .db in extension
+        **/cache/**     - Ignore any 'cache' directory and contents
+        [a-z]*.tmp      - Character ranges and wildcards
+        ?tmp.db         - ? matches exactly one character
+
+      Hierarchical: .pydrignore files in subdirectories only apply to that
+      subtree and can override parent rules using negation (!).
+
+    JSON Config Format (--config):
+      A JSON file containing a list of sync pair objects:
+      [
+        {
+          "workspace": 0,              // optional, default: 0
+          "local": "/path/to/local",   // required
+          "remote": "remote/path",     // required
+          "syncMode": "twoWay",        // required
+          "disableLocalTrash": false,  // optional, default: false
+          "ignore": ["*.tmp"],         // optional, CLI patterns
+                                       //(in addition to .pydrignore)
+          "excludeDotFiles": false     // optional, default: false
+        }
+      ]
+
     Examples:
         # Directory path with default two-way sync
         pydrime sync ./my_folder
@@ -1469,39 +1522,25 @@ def sync(
         pydrime sync ./backup:ltc:/CloudBackup
         pydrime sync ./local:lb:/Backup
 
+        # JSON config file with multiple sync pairs
+        pydrime sync --config sync_pairs.json
+        pydrime sync -C sync_pairs.json --dry-run
+
         # Other options
         pydrime sync . -w 5                          # Sync in workspace 5
         pydrime sync ./data --dry-run                # Preview sync changes
         pydrime sync ./data -b 100                   # Process 100 files per batch
         pydrime sync ./data --no-streaming           # Scan all files upfront
     """
-    from .sync import SyncEngine, SyncMode, SyncPair
+    from .sync import (
+        SyncConfigError,
+        SyncEngine,
+        SyncMode,
+        SyncPair,
+        load_sync_pairs_from_json,
+    )
 
     out: OutputFormatter = ctx.obj["out"]
-
-    # Detect if path is a literal sync pair format
-    # Format: /local:mode:/remote (3 parts) or /local:/remote (2 parts)
-    # On Windows, paths like C:\Users\... have a colon after drive letter,
-    # so we need to handle this case specially.
-    # A literal pair must have colons that are NOT drive letter colons.
-    # We detect this by checking if the path looks like a Windows drive path.
-    import re
-
-    # Check if path starts with a Windows drive letter (e.g., C:, D:)
-    # If so, only consider colons after the drive letter for splitting
-    windows_drive_match = re.match(r"^([A-Za-z]:)", path)
-    if windows_drive_match:
-        # Windows path: split only on colons after the drive letter
-        drive = windows_drive_match.group(1)
-        rest_of_path = path[len(drive) :]
-        parts = rest_of_path.split(":")
-        # Prepend the drive to the first part
-        if parts:
-            parts[0] = drive + parts[0]
-    else:
-        parts = path.split(":")
-
-    is_literal_pair = len(parts) >= 2 and len(parts) <= 3
 
     # Validate and convert MB to bytes
     if chunk_size < 5:
@@ -1529,12 +1568,161 @@ def sync(
     # Use auth helper
     api_key = require_api_key(ctx, out)
 
+    # Initialize client
+    client = DrimeClient(api_key=api_key)
+
+    # Check if using JSON config file
+    if config_file is not None:
+        # Load sync pairs from JSON config file
+        if path is not None or remote_path is not None:
+            out.error(
+                "Cannot use --config with PATH or --remote-path arguments. "
+                "All sync pairs must be defined in the config file."
+            )
+            ctx.exit(1)
+
+        config_path = Path(config_file)
+        try:
+            sync_pairs_data = load_sync_pairs_from_json(config_path)
+        except SyncConfigError as e:
+            out.error(str(e))
+            ctx.exit(1)
+            return  # For type checker
+
+        if not out.quiet:
+            out.info(f"Loaded {len(sync_pairs_data)} sync pair(s) from {config_path}")
+            out.info("")
+
+        # Process each sync pair from JSON
+        all_stats: list[dict[str, Any]] = []
+        total_conflicts = 0
+
+        for i, pair_data in enumerate(sync_pairs_data):
+            # Create SyncPair from dict data
+            pair = SyncPair(
+                local=Path(pair_data["local"]),
+                remote=pair_data["remote"],
+                sync_mode=SyncMode.from_string(pair_data["syncMode"]),
+                workspace_id=pair_data["workspace"],
+                disable_local_trash=pair_data["disableLocalTrash"],
+                ignore=pair_data["ignore"],
+                exclude_dot_files=pair_data["excludeDotFiles"],
+            )
+
+            if not out.quiet:
+                out.info("=" * 60)
+                out.info(f"Sync Pair {i + 1}/{len(sync_pairs_data)}")
+                out.info("=" * 60)
+                workspace_display, _ = format_workspace_display(
+                    client, pair.workspace_id
+                )
+                out.info(f"Workspace: {workspace_display}")
+                out.info(f"Sync mode: {pair.sync_mode.value}")
+                out.info(f"Local path: {pair.local}")
+                out.info(f"Remote path: {pair.remote}")
+                if pair.ignore:
+                    out.info(f"Ignore patterns: {pair.ignore}")
+                if pair.exclude_dot_files:
+                    out.info("Excluding dot files")
+                if pair.disable_local_trash:
+                    out.info("Local trash disabled")
+                out.info("")
+
+            try:
+                # Create output formatter for engine (respect no_progress)
+                engine_out = OutputFormatter(
+                    json_output=out.json_output, quiet=no_progress or out.quiet
+                )
+
+                # Create sync engine
+                engine = SyncEngine(client, engine_out)
+
+                # Execute sync
+                stats = engine.sync_pair(
+                    pair,
+                    dry_run=dry_run,
+                    chunk_size=chunk_size_bytes,
+                    multipart_threshold=multipart_threshold_bytes,
+                    batch_size=batch_size,
+                    use_streaming=not no_streaming,
+                    max_workers=workers,
+                    start_delay=start_delay,
+                )
+
+                # Add pair info to stats
+                stats["pair_index"] = i
+                stats["local"] = str(pair.local)
+                stats["remote"] = pair.remote
+                all_stats.append(stats)
+                total_conflicts += stats.get("conflicts", 0)
+
+            except DrimeAPIError as e:
+                out.error(f"API error for pair {i + 1}: {e}")
+                all_stats.append(
+                    {
+                        "pair_index": i,
+                        "local": str(pair.local),
+                        "remote": pair.remote,
+                        "error": str(e),
+                    }
+                )
+            except Exception as e:
+                out.error(f"Error for pair {i + 1}: {e}")
+                all_stats.append(
+                    {
+                        "pair_index": i,
+                        "local": str(pair.local),
+                        "remote": pair.remote,
+                        "error": str(e),
+                    }
+                )
+
+        # Output combined results
+        if out.json_output:
+            out.output_json({"pairs": all_stats, "total_pairs": len(sync_pairs_data)})
+
+        # Exit with warning if there were conflicts
+        if total_conflicts > 0 and not out.quiet:
+            out.warning(
+                f"\n{total_conflicts} conflict(s) were skipped across all pairs. "
+                "Please resolve conflicts manually."
+            )
+
+        return
+
+    # Single path mode (original behavior)
+    if path is None:
+        out.error("Either PATH argument or --config option is required")
+        ctx.exit(1)
+        return  # For type checker
+
+    # Detect if path is a literal sync pair format
+    # Format: /local:mode:/remote (3 parts) or /local:/remote (2 parts)
+    # On Windows, paths like C:\Users\... have a colon after drive letter,
+    # so we need to handle this case specially.
+    # A literal pair must have colons that are NOT drive letter colons.
+    # We detect this by checking if the path looks like a Windows drive path.
+    import re
+
+    # Check if path starts with a Windows drive letter (e.g., C:, D:)
+    # If so, only consider colons after the drive letter for splitting
+    windows_drive_match = re.match(r"^([A-Za-z]:)", path)
+    if windows_drive_match:
+        # Windows path: split only on colons after the drive letter
+        drive = windows_drive_match.group(1)
+        rest_of_path = path[len(drive) :]
+        parts = rest_of_path.split(":")
+        # Prepend the drive to the first part
+        if parts:
+            parts[0] = drive + parts[0]
+    else:
+        parts = path.split(":")
+
+    is_literal_pair = len(parts) >= 2 and len(parts) <= 3
+
     # Use default workspace if none specified
     if workspace is None:
         workspace = config.get_default_workspace() or 0
-
-    # Initialize client
-    client = DrimeClient(api_key=api_key)
 
     # Parse path and create sync pair
     pair: SyncPair  # Type hint to satisfy type checker

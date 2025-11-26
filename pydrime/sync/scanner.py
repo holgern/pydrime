@@ -1,10 +1,14 @@
 """Directory scanning utilities for sync operations."""
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 from ..models import FileEntry
+from .ignore import IGNORE_FILE_NAME, IgnoreFileManager
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -119,47 +123,88 @@ class RemoteFile:
 
 
 class DirectoryScanner:
-    """Scans directories and builds file lists."""
+    """Scans directories and builds file lists.
+
+    Supports .pydrignore files for gitignore-style pattern matching.
+    When scanning a directory, any .pydrignore file in that directory
+    or its subdirectories will be loaded and applied hierarchically.
+
+    Examples:
+        >>> scanner = DirectoryScanner()
+        >>> files = scanner.scan_local(Path("/sync/folder"))
+        >>> # Files matching patterns in .pydrignore are excluded
+
+        >>> # With CLI patterns
+        >>> scanner = DirectoryScanner(ignore_patterns=["*.tmp", "cache/*"])
+        >>> files = scanner.scan_local(Path("/sync/folder"))
+    """
 
     def __init__(
         self,
         ignore_patterns: Optional[list[str]] = None,
         exclude_dot_files: bool = False,
+        use_ignore_files: bool = True,
     ):
         """Initialize directory scanner.
 
         Args:
             ignore_patterns: List of glob patterns to ignore (e.g., ["*.log", "temp/*"])
             exclude_dot_files: Whether to exclude files/folders starting with dot
+            use_ignore_files: Whether to load .pydrignore files from directories
         """
         self.ignore_patterns = ignore_patterns or []
         self.exclude_dot_files = exclude_dot_files
+        self.use_ignore_files = use_ignore_files
+        self._ignore_manager: Optional[IgnoreFileManager] = None
 
-    def should_ignore(self, path: Path, base_path: Path) -> bool:
+    def _init_ignore_manager(self, base_path: Path) -> IgnoreFileManager:
+        """Initialize the ignore file manager for a scan.
+
+        Args:
+            base_path: Root directory of the scan
+
+        Returns:
+            IgnoreFileManager instance
+        """
+        manager = IgnoreFileManager(base_path=base_path)
+
+        # Load CLI patterns first (they apply globally)
+        if self.ignore_patterns:
+            manager.load_cli_patterns(self.ignore_patterns)
+
+        return manager
+
+    def should_ignore(
+        self,
+        path: Path,
+        base_path: Path,
+        is_dir: bool = False,
+    ) -> bool:
         """Check if a path should be ignored based on patterns.
 
         Args:
             path: Path to check
             base_path: Base path for relative path calculation
+            is_dir: Whether the path is a directory
 
         Returns:
             True if path should be ignored
         """
-        # Check dot files
+        # Never ignore the ignore file itself from scanning perspective
+        # (but it won't be synced as it starts with .)
+        if path.name == IGNORE_FILE_NAME:
+            return True
+
+        # Check dot files (but allow .pydrignore to be read)
         if self.exclude_dot_files and path.name.startswith("."):
             return True
 
-        # Check ignore patterns
-        if self.ignore_patterns:
-            import fnmatch
-
+        # Check using ignore manager if available
+        if self._ignore_manager is not None:
             relative_path = path.relative_to(base_path).as_posix()
-            for pattern in self.ignore_patterns:
-                if fnmatch.fnmatch(relative_path, pattern):
-                    return True
-                # Also match against just the filename
-                if fnmatch.fnmatch(path.name, pattern):
-                    return True
+            if self._ignore_manager.is_ignored(relative_path, is_dir=is_dir):
+                logger.debug(f"Ignoring (from rules): {relative_path}")
+                return True
 
         return False
 
@@ -168,22 +213,47 @@ class DirectoryScanner:
     ) -> list[LocalFile]:
         """Recursively scan a local directory.
 
+        This method scans a directory tree, loading .pydrignore files from
+        each directory and applying their rules hierarchically. Rules from
+        parent directories apply to all descendants, while rules from
+        subdirectories only apply within that subtree.
+
         Args:
             directory: Directory to scan
             base_path: Base path for calculating relative paths (defaults to directory)
 
         Returns:
             List of LocalFile objects
+
+        Examples:
+            >>> scanner = DirectoryScanner()
+            >>> files = scanner.scan_local(Path("/home/user/documents"))
+            >>> for f in files:
+            ...     print(f.relative_path)
         """
         if base_path is None:
             base_path = directory
+            # Initialize ignore manager for new scan
+            if self.use_ignore_files:
+                self._ignore_manager = self._init_ignore_manager(base_path)
+            else:
+                self._ignore_manager = None
+                # Still need to apply CLI patterns
+                if self.ignore_patterns:
+                    self._ignore_manager = IgnoreFileManager(base_path=base_path)
+                    self._ignore_manager.load_cli_patterns(self.ignore_patterns)
 
         files: list[LocalFile] = []
 
         try:
+            # Load .pydrignore from this directory if it exists
+            if self.use_ignore_files and self._ignore_manager is not None:
+                self._ignore_manager.load_from_directory(directory)
+
             for item in directory.iterdir():
                 # Check if should be ignored
-                if self.should_ignore(item, base_path):
+                is_dir = item.is_dir()
+                if self.should_ignore(item, base_path, is_dir=is_dir):
                     continue
 
                 if item.is_file():
@@ -193,7 +263,7 @@ class DirectoryScanner:
                     except (OSError, PermissionError):
                         # Skip files we can't read
                         continue
-                elif item.is_dir():
+                elif is_dir:
                     # Recursively scan subdirectories
                     files.extend(self.scan_local(item, base_path))
         except PermissionError:
