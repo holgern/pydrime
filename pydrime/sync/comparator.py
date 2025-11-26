@@ -222,9 +222,19 @@ class FileComparator:
                 remote_file=None,
                 relative_path=path,
             )
+        elif self.sync_mode.allows_local_delete:
+            # File was deleted from cloud and should be deleted locally
+            # (for cloudToLocal mode)
+            return SyncDecision(
+                action=SyncAction.DELETE_LOCAL,
+                reason="File deleted from cloud",
+                local_file=local_file,
+                remote_file=None,
+                relative_path=path,
+            )
         else:
             reason = (
-                f"Local-only file but sync mode {self.sync_mode.value} prevents upload"
+                f"Local-only file but sync mode {self.sync_mode.value} prevents action"
             )
             return SyncDecision(
                 action=SyncAction.SKIP,

@@ -2039,11 +2039,18 @@ def rm(
         entry_ids = []
         for identifier in entry_identifiers:
             try:
-                entry_id = client.resolve_entry_identifier(
-                    identifier=identifier,
-                    parent_id=current_folder,
-                    workspace_id=workspace,
-                )
+                # Check if identifier is a path (contains /)
+                if "/" in identifier:
+                    entry_id = client.resolve_path_to_id(
+                        path=identifier,
+                        workspace_id=workspace,
+                    )
+                else:
+                    entry_id = client.resolve_entry_identifier(
+                        identifier=identifier,
+                        parent_id=current_folder,
+                        workspace_id=workspace,
+                    )
                 if not out.quiet and not identifier.isdigit():
                     out.info(f"Resolved '{identifier}' to entry ID: {entry_id}")
                 entry_ids.append(entry_id)

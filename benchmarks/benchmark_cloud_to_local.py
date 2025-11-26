@@ -227,13 +227,19 @@ def test_initial_state(local_dir: Path, staging_dir: Path, remote_folder: str) -
 
     # Create test files in staging directory and upload to cloud
     print("\n[SETUP] Creating files in staging directory and uploading to cloud...")
-    create_test_files(staging_dir, count=5, size_kb=1)
+    created_files = create_test_files(staging_dir, count=5, size_kb=1)
 
-    # Upload staging files to cloud
-    exit_code, _ = run_upload_command(staging_dir, f"/{remote_folder}")
-    if exit_code != 0:
-        print(f"[FAIL] Upload failed with exit code {exit_code}")
-        return False
+    # Upload each file directly to the remote folder (not the staging dir)
+    # This avoids creating a "staging" subfolder in the remote
+    # The remote path must include the filename for single file uploads
+    for file_path in created_files:
+        remote_path = f"/{remote_folder}/{file_path.name}"
+        exit_code, _ = run_upload_command(file_path, remote_path)
+        if exit_code != 0:
+            print(
+                f"[FAIL] Upload failed for {file_path.name} with exit code {exit_code}"
+            )
+            return False
 
     print("[INFO] Files uploaded to cloud successfully")
 
@@ -300,8 +306,9 @@ def test_add_file(local_dir: Path, staging_dir: Path, remote_folder: str) -> boo
     )
     print(f"\n[ADD] Created new file in staging: {new_file.name}")
 
-    # Upload the new file to cloud
-    exit_code, _ = run_upload_command(new_file, f"/{remote_folder}")
+    # Upload the new file to cloud (include filename in remote path)
+    remote_path = f"/{remote_folder}/{new_file.name}"
+    exit_code, _ = run_upload_command(new_file, remote_path)
     if exit_code != 0:
         print(f"[FAIL] Upload failed with exit code {exit_code}")
         return False
@@ -410,8 +417,9 @@ def test_modify_file(local_dir: Path, staging_dir: Path, remote_folder: str) -> 
         print(f"[WARN] File not found in staging: {file_to_modify.name}")
         return False
 
-    # Upload the modified file to cloud (replace existing)
-    exit_code, _ = run_upload_command(file_to_modify, f"/{remote_folder}")
+    # Upload the modified file to cloud (replace existing, include filename in path)
+    remote_path = f"/{remote_folder}/{file_to_modify.name}"
+    exit_code, _ = run_upload_command(file_to_modify, remote_path)
     if exit_code != 0:
         print(f"[FAIL] Upload failed with exit code {exit_code}")
         return False
