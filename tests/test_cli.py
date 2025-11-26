@@ -654,6 +654,87 @@ class TestDuCommand:
         call_kwargs = mock_client.get_file_entries.call_args.kwargs
         assert call_kwargs["parent_ids"] == [123]
 
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_du_pagination(self, mock_config, mock_client_class, runner):
+        """Test du command fetches all pages of results."""
+        mock_config.is_configured.return_value = True
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+
+        mock_client = Mock()
+
+        # Simulate 3 pages of results
+        page1_response = {
+            "data": [
+                {
+                    "id": 1,
+                    "name": "file1.txt",
+                    "type": "file",
+                    "file_size": 1000,
+                    "hash": "hash1",
+                    "created_at": "2024-01-01T00:00:00Z",
+                    "file_name": "file1.txt",
+                    "mime": "text/plain",
+                    "parent_id": None,
+                    "url": "",
+                },
+            ],
+            "current_page": 1,
+            "last_page": 3,
+        }
+        page2_response = {
+            "data": [
+                {
+                    "id": 2,
+                    "name": "file2.txt",
+                    "type": "file",
+                    "file_size": 2000,
+                    "hash": "hash2",
+                    "created_at": "2024-01-01T00:00:00Z",
+                    "file_name": "file2.txt",
+                    "mime": "text/plain",
+                    "parent_id": None,
+                    "url": "",
+                },
+            ],
+            "current_page": 2,
+            "last_page": 3,
+        }
+        page3_response = {
+            "data": [
+                {
+                    "id": 3,
+                    "name": "file3.txt",
+                    "type": "file",
+                    "file_size": 3000,
+                    "hash": "hash3",
+                    "created_at": "2024-01-01T00:00:00Z",
+                    "file_name": "file3.txt",
+                    "mime": "text/plain",
+                    "parent_id": None,
+                    "url": "",
+                },
+            ],
+            "current_page": 3,
+            "last_page": 3,
+        }
+
+        mock_client.get_file_entries.side_effect = [
+            page1_response,
+            page2_response,
+            page3_response,
+        ]
+        mock_client_class.return_value = mock_client
+
+        result = runner.invoke(main, ["du"])
+
+        assert result.exit_code == 0
+        # Verify all 3 pages were fetched
+        assert mock_client.get_file_entries.call_count == 3
+        # Verify output includes file info
+        assert "file" in result.output  # Shows file count
+
 
 class TestMkdirCommand:
     """Tests for the mkdir command."""
@@ -4018,6 +4099,7 @@ class TestValidateCommand:
                     "type": "text",
                     "file_size": 100,
                     "hash": "abc123",
+                    "users": [{"id": 1, "email": "test@test.com", "owns_entry": True}],
                 }
             ],
             "pagination": None,
@@ -4107,6 +4189,7 @@ class TestValidateCommand:
                     "type": "text",
                     "file_size": 100,
                     "hash": "abc123",
+                    "users": [{"id": 1, "email": "test@test.com", "owns_entry": True}],
                 }
             ],
             "pagination": None,
@@ -4122,6 +4205,41 @@ class TestValidateCommand:
             assert '"total": 1' in result.output
             assert '"valid": 1' in result.output
             assert '"missing": 0' in result.output
+            assert '"incomplete": 0' in result.output
+
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_validate_incomplete_file(self, mock_config, mock_client_class, runner):
+        """Test validating a file with correct size but no users field (incomplete)."""
+        mock_config.is_configured.return_value = True
+        mock_config.get_default_workspace.return_value = None
+        mock_config.get_current_folder.return_value = None
+
+        mock_client = Mock()
+        # Mock file entry with correct size but empty users list
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 123,
+                    "name": "test.txt",
+                    "type": "text",
+                    "file_size": 100,
+                    "hash": "abc123",
+                    "users": [],  # Empty users = incomplete upload
+                }
+            ],
+            "pagination": None,
+        }
+        mock_client_class.return_value = mock_client
+
+        with runner.isolated_filesystem():
+            Path("test.txt").write_text("x" * 100)
+
+            result = runner.invoke(main, ["validate", "test.txt"])
+
+            assert result.exit_code == 1
+            assert "Incomplete: 1 file(s)" in result.output
+            assert "incomplete upload" in result.output
 
     @patch("pydrime.cli.config")
     def test_validate_without_api_key(self, mock_config, runner):

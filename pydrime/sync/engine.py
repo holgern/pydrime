@@ -23,7 +23,11 @@ from .modes import SyncMode
 from .operations import SyncOperations
 from .pair import SyncPair
 from .scanner import DirectoryScanner, LocalFile, RemoteFile
-from .state import SyncStateManager
+from .state import (
+    SyncStateManager,
+    build_local_tree_from_files,
+    build_remote_tree_from_files,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -242,10 +246,29 @@ class SyncEngine:
                         current_synced_files.add(decision.relative_path)
                     # DELETE_LOCAL/DELETE_REMOTE are NOT added (no longer exist)
 
+                # Build full tree state for v2 format
+                # Filter to only include files that are now synced
+                synced_local_files = [
+                    f for f in local_files if f.relative_path in current_synced_files
+                ]
+                synced_remote_files = [
+                    f for f in remote_files if f.relative_path in current_synced_files
+                ]
+
+                local_tree = build_local_tree_from_files(synced_local_files)
+                remote_tree = build_remote_tree_from_files(synced_remote_files)
+
                 self.state_manager.save_state(
-                    pair.local, pair.remote, current_synced_files
+                    pair.local,
+                    pair.remote,
+                    synced_files=current_synced_files,
+                    local_tree=local_tree,
+                    remote_tree=remote_tree,
                 )
-                logger.debug(f"Saved sync state with {len(current_synced_files)} files")
+                logger.debug(
+                    f"Saved sync state with {len(current_synced_files)} files "
+                    f"(local_tree: {local_tree.size}, remote_tree: {remote_tree.size})"
+                )
 
         # Step 6: Display summary
         if not self.output.quiet:
@@ -310,6 +333,10 @@ class SyncEngine:
         # Track successfully synced files for state saving
         synced_files: set[str] = set()
 
+        # Track synced file objects for building trees
+        synced_local_file_map: dict[str, LocalFile] = {}
+        synced_remote_file_map: dict[str, RemoteFile] = {}
+
         # Step 2: Process remote files in batches
         if pair.sync_mode.requires_remote_scan:
             self._process_remote_batches_streaming(
@@ -325,6 +352,8 @@ class SyncEngine:
                 start_delay=start_delay,
                 previous_synced_files=previous_synced_files,
                 synced_files=synced_files,
+                synced_local_file_map=synced_local_file_map,
+                synced_remote_file_map=synced_remote_file_map,
             )
 
         # Step 3: Handle local-only files (files that don't exist remotely)
@@ -341,12 +370,30 @@ class SyncEngine:
                 start_delay=start_delay,
                 previous_synced_files=previous_synced_files,
                 synced_files=synced_files,
+                synced_local_file_map=synced_local_file_map,
             )
 
         # Step 4: Save sync state after successful sync (for TWO_WAY mode)
         if pair.sync_mode == SyncMode.TWO_WAY:
-            self.state_manager.save_state(pair.local, pair.remote, synced_files)
-            logger.debug(f"Saved sync state with {len(synced_files)} files")
+            # Build full tree state from tracked file objects
+            local_tree = build_local_tree_from_files(
+                list(synced_local_file_map.values())
+            )
+            remote_tree = build_remote_tree_from_files(
+                list(synced_remote_file_map.values())
+            )
+
+            self.state_manager.save_state(
+                pair.local,
+                pair.remote,
+                synced_files=synced_files,
+                local_tree=local_tree,
+                remote_tree=remote_tree,
+            )
+            logger.debug(
+                f"Saved sync state with {len(synced_files)} files "
+                f"(local_tree: {local_tree.size}, remote_tree: {remote_tree.size})"
+            )
 
         # Step 5: Display summary
         if not self.output.quiet:
@@ -452,6 +499,8 @@ class SyncEngine:
         start_delay: float = 0.0,
         previous_synced_files: Optional[set[str]] = None,
         synced_files: Optional[set[str]] = None,
+        synced_local_file_map: Optional[dict[str, LocalFile]] = None,
+        synced_remote_file_map: Optional[dict[str, RemoteFile]] = None,
     ) -> None:
         """Process remote files in batches for streaming sync.
 
@@ -468,6 +517,8 @@ class SyncEngine:
             start_delay: Delay in seconds between starting each parallel operation
             previous_synced_files: Set of previously synced files (for TWO_WAY mode)
             synced_files: Set to track successfully synced files (modified in place)
+            synced_local_file_map: Dict to track synced local files (in place)
+            synced_remote_file_map: Dict to track synced remote files (in place)
         """
         if not self.output.quiet:
             self.output.info("Processing remote files in batches...")
@@ -502,7 +553,12 @@ class SyncEngine:
                 batch_size=batch_size,
             ):
                 batch_num += 1
-                batch_stats, batch_synced = self._process_single_remote_batch(
+                (
+                    batch_stats,
+                    batch_synced,
+                    batch_local_files,
+                    batch_remote_files,
+                ) = self._process_single_remote_batch(
                     entries_batch=entries_batch,
                     batch_num=batch_num,
                     scanner=scanner,
@@ -526,6 +582,12 @@ class SyncEngine:
                 # Track synced files
                 if synced_files is not None:
                     synced_files.update(batch_synced)
+
+                # Track synced file objects for tree building
+                if synced_local_file_map is not None:
+                    synced_local_file_map.update(batch_local_files)
+                if synced_remote_file_map is not None:
+                    synced_remote_file_map.update(batch_remote_files)
 
                 if not self.output.quiet:
                     total_processed += batch_stats.get("processed", 0)
@@ -554,7 +616,7 @@ class SyncEngine:
         max_workers: int,
         start_delay: float = 0.0,
         previous_synced_files: Optional[set[str]] = None,
-    ) -> tuple[dict, set[str]]:
+    ) -> tuple[dict, set[str], dict[str, LocalFile], dict[str, RemoteFile]]:
         """Process a single batch of remote entries.
 
         Args:
@@ -572,7 +634,7 @@ class SyncEngine:
             previous_synced_files: Set of previously synced files (for TWO_WAY mode)
 
         Returns:
-            Tuple of (dictionary with batch statistics, set of synced file paths)
+            Tuple of (batch stats, synced paths, synced local files, synced remotes)
         """
         logger.debug(
             "Received batch %d with %d entries",
@@ -616,24 +678,53 @@ class SyncEngine:
 
         batch_stats["processed"] = len(remote_files)
 
-        # Track successfully synced files
+        # Track successfully synced files and their objects
         synced_in_batch: set[str] = set()
+        synced_local_in_batch: dict[str, LocalFile] = {}
+        synced_remote_in_batch: dict[str, RemoteFile] = {}
+
+        # Build remote file map for this batch
+        remote_file_map = {f.relative_path: f for f in remote_files}
+
         for decision in batch_decisions:
             if decision.action == SyncAction.SKIP:
                 # Files that were already in sync
                 synced_in_batch.add(decision.relative_path)
+                if decision.local_file:
+                    synced_local_in_batch[decision.relative_path] = decision.local_file
+                if decision.relative_path in remote_file_map:
+                    synced_remote_in_batch[decision.relative_path] = remote_file_map[
+                        decision.relative_path
+                    ]
             elif decision.action == SyncAction.UPLOAD:
                 # Files uploaded to remote (now exist in both)
                 synced_in_batch.add(decision.relative_path)
+                if decision.local_file:
+                    synced_local_in_batch[decision.relative_path] = decision.local_file
+                # Note: remote file doesn't exist yet in this batch context
             elif decision.action == SyncAction.DOWNLOAD:
                 # Files downloaded to local (now exist in both)
                 synced_in_batch.add(decision.relative_path)
+                if decision.relative_path in remote_file_map:
+                    synced_remote_in_batch[decision.relative_path] = remote_file_map[
+                        decision.relative_path
+                    ]
+                # Note: local file exists in local_file_map if it's an update
+                if decision.relative_path in local_file_map:
+                    synced_local_in_batch[decision.relative_path] = local_file_map[
+                        decision.relative_path
+                    ]
             # DELETE_LOCAL and DELETE_REMOTE are NOT added (they no longer exist)
 
         # Debug: print when batch is complete
         logger.debug("Batch %d complete, waiting for next batch...", batch_num)
 
-        return batch_stats, synced_in_batch
+        return (
+            batch_stats,
+            synced_in_batch,
+            synced_local_in_batch,
+            synced_remote_in_batch,
+        )
 
     def _execute_batch_decisions(
         self,
@@ -668,6 +759,13 @@ class SyncEngine:
         ]
 
         if max_workers > 1 and len(actionable_decisions) > 1:
+            # Pre-create remote folders before parallel uploads to avoid race conditions
+            upload_count = sum(
+                1 for d in actionable_decisions if d.action == SyncAction.UPLOAD
+            )
+            if upload_count > 1:
+                self._ensure_remote_folders_exist(actionable_decisions, pair)
+
             # Parallel execution - returns success count per action type
             batch_stats = self._execute_decisions_parallel(
                 actionable_decisions,
@@ -757,6 +855,7 @@ class SyncEngine:
         start_delay: float = 0.0,
         previous_synced_files: Optional[set[str]] = None,
         synced_files: Optional[set[str]] = None,
+        synced_local_file_map: Optional[dict[str, LocalFile]] = None,
     ) -> None:
         """Process local-only files for streaming sync.
 
@@ -772,6 +871,7 @@ class SyncEngine:
             start_delay: Delay in seconds between starting each parallel operation
             previous_synced_files: Set of previously synced files (for TWO_WAY mode)
             synced_files: Set to track successfully synced files (modified in place)
+            synced_local_file_map: Dict to track synced local files (modified in place)
         """
         local_only_files = [
             f for f in local_files if f.relative_path not in seen_remote_paths
@@ -803,6 +903,13 @@ class SyncEngine:
 
         # Execute local-only file actions - parallel if max_workers > 1
         if max_workers > 1 and len(local_decisions) > 1:
+            # Pre-create remote folders before parallel uploads to avoid race conditions
+            upload_count = sum(
+                1 for d in local_decisions if d.action == SyncAction.UPLOAD
+            )
+            if upload_count > 1:
+                self._ensure_remote_folders_exist(local_decisions, pair)
+
             local_stats = self._execute_decisions_parallel(
                 local_decisions,
                 pair,
@@ -821,6 +928,10 @@ class SyncEngine:
                 for decision in local_decisions:
                     if decision.action == SyncAction.UPLOAD:
                         synced_files.add(decision.relative_path)
+                        if synced_local_file_map is not None and decision.local_file:
+                            synced_local_file_map[decision.relative_path] = (
+                                decision.local_file
+                            )
         else:
             for decision in local_decisions:
                 self._execute_decision_with_stats(
@@ -834,6 +945,10 @@ class SyncEngine:
                 # Track synced files (uploaded files)
                 if synced_files is not None and decision.action == SyncAction.UPLOAD:
                     synced_files.add(decision.relative_path)
+                    if synced_local_file_map is not None and decision.local_file:
+                        synced_local_file_map[decision.relative_path] = (
+                            decision.local_file
+                        )
 
     def _scan_remote(self, pair: SyncPair) -> list[RemoteFile]:
         """Scan remote directory for files.
@@ -1005,6 +1120,13 @@ class SyncEngine:
 
         if not actionable:
             return
+
+        # Pre-create remote folders before parallel uploads to avoid race conditions
+        # when multiple uploads try to create the same parent folder simultaneously
+        if max_workers > 1:
+            upload_count = sum(1 for d in actionable if d.action == SyncAction.UPLOAD)
+            if upload_count > 1:
+                self._ensure_remote_folders_exist(actionable, pair)
 
         if self.output.quiet:
             # Execute without progress display
@@ -1187,6 +1309,84 @@ class SyncEngine:
                 self.output.error(f"Error syncing {decision.relative_path}: {e}")
             raise  # Re-raise for parallel executor to track failure
 
+    def _ensure_remote_folders_exist(
+        self,
+        decisions: list[SyncDecision],
+        pair: SyncPair,
+    ) -> None:
+        """Pre-create remote folders before parallel uploads.
+
+        This prevents race conditions when multiple parallel uploads try to
+        create the same parent folder simultaneously, which can result in
+        only one file being properly associated with the folder.
+
+        Args:
+            decisions: List of sync decisions (only UPLOAD actions are considered)
+            pair: Sync pair configuration
+        """
+        # Collect unique parent folder paths from upload decisions
+        upload_decisions = [d for d in decisions if d.action == SyncAction.UPLOAD]
+        if not upload_decisions:
+            return
+
+        # Build set of unique folder paths that need to exist
+        folders_to_create: set[str] = set()
+        for decision in upload_decisions:
+            # Construct full remote path
+            if pair.remote:
+                full_path = f"{pair.remote}/{decision.relative_path}"
+            else:
+                full_path = decision.relative_path
+
+            # Get parent folder path (everything except the filename)
+            parent_path = "/".join(full_path.split("/")[:-1])
+            if parent_path:
+                folders_to_create.add(parent_path)
+
+        if not folders_to_create:
+            return
+
+        logger.debug(
+            f"Pre-creating {len(folders_to_create)} remote folder(s) "
+            f"before parallel uploads"
+        )
+
+        # Sort folders by depth to create parents before children
+        sorted_folders = sorted(folders_to_create, key=lambda p: p.count("/"))
+
+        for folder_path in sorted_folders:
+            # Get the folder name (last component)
+            folder_name = folder_path.split("/")[-1]
+            # Get parent path
+            parent_path = "/".join(folder_path.split("/")[:-1])
+
+            try:
+                # Find parent folder ID if parent exists
+                parent_id = None
+                if parent_path:
+                    manager = FileEntriesManager(self.client, pair.workspace_id)
+                    parent_entry = manager.find_folder_by_name(
+                        parent_path.lstrip("/").split("/")[-1]
+                    )
+                    if parent_entry:
+                        parent_id = parent_entry.id
+
+                # Create the folder
+                result = self.client.create_folder(
+                    name=folder_name, parent_id=parent_id
+                )
+                if result.get("status") == "success":
+                    logger.debug(f"Created folder: {folder_path}")
+                else:
+                    logger.debug(
+                        f"Folder creation returned: {result.get('status')} "
+                        f"for {folder_path}"
+                    )
+            except Exception as e:
+                # Folder might already exist or other error
+                # Continue anyway - upload will handle any issues
+                logger.debug(f"Could not pre-create folder {folder_path}: {e}")
+
     def _execute_decisions_parallel(
         self,
         decisions: list[SyncDecision],
@@ -1312,6 +1512,9 @@ class SyncEngine:
         stats = {"uploads": 0, "errors": 0}
 
         if max_workers > 1 and len(decisions) > 1:
+            # Pre-create remote folders before parallel uploads to avoid race conditions
+            self._ensure_remote_folders_exist(decisions, pair)
+
             # Parallel execution
             upload_stats = self._execute_decisions_parallel(
                 decisions,
