@@ -3,8 +3,6 @@
 from pathlib import Path
 from unittest.mock import Mock
 
-import pytest
-
 from pydrime.models import FileEntry
 from pydrime.sync.comparator import FileComparator, SyncAction
 from pydrime.sync.modes import SyncMode
