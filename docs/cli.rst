@@ -1027,6 +1027,131 @@ numeric IDs, and hashes.
    # Folder by name
    pydrime stat "My Documents"
 
+cat
+~~~
+
+Print file contents to standard output.
+
+.. code-block:: bash
+
+   pydrime cat [OPTIONS] IDENTIFIER
+
+**Arguments:**
+
+* ``IDENTIFIER`` - File path, name, hash, or numeric ID
+
+**Options:**
+
+* ``-n, --number`` - Number all output lines
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Displays the entire contents of a cloud file. Similar to Unix ``cat`` command.
+For binary files, use the download command instead.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # By name
+   pydrime cat readme.txt
+
+   # By path
+   pydrime cat folder/config.json
+
+   # By numeric ID
+   pydrime cat 480424796
+
+   # By hash
+   pydrime cat NDgwNDI0Nzk2fA
+
+   # With line numbers
+   pydrime cat readme.txt -n
+
+   # Output as JSON
+   pydrime --json cat readme.txt
+
+head
+~~~~
+
+Print first lines of a file.
+
+.. code-block:: bash
+
+   pydrime head [OPTIONS] IDENTIFIER
+
+**Arguments:**
+
+* ``IDENTIFIER`` - File path, name, hash, or numeric ID
+
+**Options:**
+
+* ``-n, --lines INTEGER`` - Number of lines to show (default: 10)
+* ``-c, --bytes INTEGER`` - Number of bytes to show (overrides -n)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Displays the first N lines (default: 10) or bytes of a cloud file.
+Similar to Unix ``head`` command.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # First 10 lines (default)
+   pydrime head readme.txt
+
+   # First 20 lines
+   pydrime head readme.txt -n 20
+
+   # First 100 bytes
+   pydrime head config.json -c 100
+
+   # By path
+   pydrime head folder/file.txt
+
+tail
+~~~~
+
+Print last lines of a file.
+
+.. code-block:: bash
+
+   pydrime tail [OPTIONS] IDENTIFIER
+
+**Arguments:**
+
+* ``IDENTIFIER`` - File path, name, hash, or numeric ID
+
+**Options:**
+
+* ``-n, --lines INTEGER`` - Number of lines to show (default: 10)
+* ``-c, --bytes INTEGER`` - Number of bytes to show (overrides -n)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Displays the last N lines (default: 10) or bytes of a cloud file.
+Similar to Unix ``tail`` command.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Last 10 lines (default)
+   pydrime tail logfile.log
+
+   # Last 20 lines
+   pydrime tail readme.txt -n 20
+
+   # Last 500 bytes
+   pydrime tail logfile.log -c 500
+
+   # By path
+   pydrime tail folder/file.txt
+
 folders
 ~~~~~~~
 

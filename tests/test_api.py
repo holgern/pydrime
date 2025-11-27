@@ -8,6 +8,7 @@ import pytest
 from pydrime.api import DrimeClient
 from pydrime.exceptions import (
     DrimeAPIError,
+    DrimeDownloadError,
     DrimeFileNotFoundError,
     DrimeRateLimitError,
 )
@@ -1265,8 +1266,6 @@ class TestVaultDownload:
 
         import httpx
 
-        from pydrime.exceptions import DrimeDownloadError
-
         mock_response = Mock()
         mock_response.status_code = 404
         mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
@@ -1289,6 +1288,85 @@ class TestVaultDownload:
                 client.download_vault_file("invalid_hash")
 
             assert "Vault download failed" in str(exc_info.value)
+
+
+class TestGetFileContent:
+    """Tests for get_file_content method."""
+
+    def test_get_file_content_full_file(self):
+        """Test getting entire file content."""
+        from contextlib import contextmanager
+        from unittest.mock import Mock, patch
+
+        mock_response = Mock()
+        mock_response.read.return_value = b"Hello World!"
+        mock_response.raise_for_status.return_value = None
+
+        @contextmanager
+        def mock_stream(*args, **kwargs):
+            yield mock_response
+
+        with patch("pydrime.api.httpx.Client") as mock_client_class:
+            mock_client = Mock()
+            mock_client.stream = mock_stream
+            mock_client.is_closed = False
+            mock_client_class.return_value = mock_client
+
+            client = DrimeClient(api_key="test_key")
+            content = client.get_file_content("testhash")
+
+            assert content == b"Hello World!"
+
+    def test_get_file_content_with_max_bytes(self):
+        """Test getting file content with byte limit."""
+        from contextlib import contextmanager
+        from unittest.mock import Mock, patch
+
+        mock_response = Mock()
+        mock_response.iter_bytes.return_value = [b"Hello", b" World!"]
+        mock_response.raise_for_status.return_value = None
+
+        @contextmanager
+        def mock_stream(*args, **kwargs):
+            yield mock_response
+
+        with patch("pydrime.api.httpx.Client") as mock_client_class:
+            mock_client = Mock()
+            mock_client.stream = mock_stream
+            mock_client.is_closed = False
+            mock_client_class.return_value = mock_client
+
+            client = DrimeClient(api_key="test_key")
+            content = client.get_file_content("testhash", max_bytes=5)
+
+            assert content == b"Hello"
+
+    def test_get_file_content_http_error(self):
+        """Test get_file_content raises error on HTTP failure."""
+        from contextlib import contextmanager
+        from unittest.mock import Mock, patch
+
+        mock_response = Mock()
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Not Found", request=Mock(), response=Mock()
+        )
+
+        @contextmanager
+        def mock_stream(*args, **kwargs):
+            yield mock_response
+
+        with patch("pydrime.api.httpx.Client") as mock_client_class:
+            mock_client = Mock()
+            mock_client.stream = mock_stream
+            mock_client.is_closed = False
+            mock_client_class.return_value = mock_client
+
+            client = DrimeClient(api_key="test_key")
+
+            with pytest.raises(DrimeDownloadError) as exc_info:
+                client.get_file_content("invalid_hash")
+
+            assert "Download failed" in str(exc_info.value)
 
 
 class TestFolderPath:

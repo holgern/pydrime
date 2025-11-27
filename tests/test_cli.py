@@ -3223,6 +3223,307 @@ class TestStatCommand:
         assert "not found" in result.output.lower()
 
 
+class TestCatCommand:
+    """Tests for the cat command."""
+
+    @patch("pydrime.cli._get_file_content_lines")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_cat_file(self, mock_config, mock_client_class, mock_get_lines, runner):
+        """Test cat command displays file content."""
+        mock_config.is_configured.return_value = True
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+
+        # Mock _get_file_content_lines to return lines
+        mock_get_lines.return_value = (
+            ["line 1", "line 2", "line 3"],
+            "test.txt",
+        )
+
+        result = runner.invoke(main, ["cat", "test.txt"])
+
+        assert result.exit_code == 0
+        assert "line 1" in result.output
+        assert "line 2" in result.output
+        assert "line 3" in result.output
+
+    @patch("pydrime.cli._get_file_content_lines")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_cat_with_line_numbers(
+        self, mock_config, mock_client_class, mock_get_lines, runner
+    ):
+        """Test cat command with -n flag shows line numbers."""
+        mock_config.is_configured.return_value = True
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+
+        mock_get_lines.return_value = (
+            ["first line", "second line"],
+            "test.txt",
+        )
+
+        result = runner.invoke(main, ["cat", "-n", "test.txt"])
+
+        assert result.exit_code == 0
+        assert "1" in result.output
+        assert "2" in result.output
+        assert "first line" in result.output
+
+    @patch("pydrime.cli._get_file_content_lines")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_cat_file_not_found(
+        self, mock_config, mock_client_class, mock_get_lines, runner
+    ):
+        """Test cat command with non-existent file."""
+        mock_config.is_configured.return_value = True
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+
+        mock_get_lines.return_value = (None, None)
+
+        result = runner.invoke(main, ["cat", "nonexistent.txt"])
+
+        assert result.exit_code == 1
+
+    @patch("pydrime.cli._get_file_content_lines")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_cat_json_output(
+        self, mock_config, mock_client_class, mock_get_lines, runner
+    ):
+        """Test cat command with JSON output."""
+        mock_config.is_configured.return_value = True
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+
+        mock_get_lines.return_value = (
+            ["line 1", "line 2"],
+            "test.txt",
+        )
+
+        result = runner.invoke(main, ["--json", "cat", "test.txt"])
+
+        assert result.exit_code == 0
+        assert '"filename"' in result.output
+        assert '"lines"' in result.output
+
+
+class TestHeadCommand:
+    """Tests for the head command."""
+
+    @patch("pydrime.cli._get_file_content_lines")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_head_default_lines(
+        self, mock_config, mock_client_class, mock_get_lines, runner
+    ):
+        """Test head command shows first 10 lines by default."""
+        mock_config.is_configured.return_value = True
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+
+        # Create 20 lines
+        lines = [f"line {i}" for i in range(1, 21)]
+        mock_get_lines.return_value = (lines, "test.txt")
+
+        result = runner.invoke(main, ["head", "test.txt"])
+
+        assert result.exit_code == 0
+        assert "line 1" in result.output
+        assert "line 10" in result.output
+        assert "line 11" not in result.output
+
+    @patch("pydrime.cli._get_file_content_lines")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_head_custom_lines(
+        self, mock_config, mock_client_class, mock_get_lines, runner
+    ):
+        """Test head command with custom line count."""
+        mock_config.is_configured.return_value = True
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+
+        lines = [f"line {i}" for i in range(1, 21)]
+        mock_get_lines.return_value = (lines, "test.txt")
+
+        result = runner.invoke(main, ["head", "-n", "5", "test.txt"])
+
+        assert result.exit_code == 0
+        assert "line 5" in result.output
+        assert "line 6" not in result.output
+
+    @patch("pydrime.download_helpers.get_entry_from_hash")
+    @patch("pydrime.download_helpers.resolve_identifier_to_hash")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_head_bytes_mode(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_resolve,
+        mock_get_entry,
+        runner,
+    ):
+        """Test head command with -c (bytes) option."""
+        mock_config.is_configured.return_value = True
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+
+        mock_resolve.return_value = "testhash"
+
+        mock_entry = Mock()
+        mock_entry.type = "file"
+        mock_entry.name = "test.txt"
+        mock_get_entry.return_value = mock_entry
+
+        mock_client.get_file_content.return_value = b"Hello World!"
+
+        result = runner.invoke(main, ["head", "-c", "5", "test.txt"])
+
+        assert result.exit_code == 0
+        assert "Hello" in result.output
+
+    @patch("pydrime.cli._get_file_content_lines")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_head_file_not_found(
+        self, mock_config, mock_client_class, mock_get_lines, runner
+    ):
+        """Test head command with non-existent file."""
+        mock_config.is_configured.return_value = True
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+
+        mock_get_lines.return_value = (None, None)
+
+        result = runner.invoke(main, ["head", "nonexistent.txt"])
+
+        assert result.exit_code == 1
+
+
+class TestTailCommand:
+    """Tests for the tail command."""
+
+    @patch("pydrime.cli._get_file_content_lines")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_tail_default_lines(
+        self, mock_config, mock_client_class, mock_get_lines, runner
+    ):
+        """Test tail command shows last 10 lines by default."""
+        mock_config.is_configured.return_value = True
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+
+        # Create 20 lines
+        lines = [f"line {i}" for i in range(1, 21)]
+        mock_get_lines.return_value = (lines, "test.txt")
+
+        result = runner.invoke(main, ["tail", "test.txt"])
+
+        assert result.exit_code == 0
+        assert "line 11" in result.output
+        assert "line 20" in result.output
+        assert "line 10" not in result.output
+
+    @patch("pydrime.cli._get_file_content_lines")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_tail_custom_lines(
+        self, mock_config, mock_client_class, mock_get_lines, runner
+    ):
+        """Test tail command with custom line count."""
+        mock_config.is_configured.return_value = True
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+
+        lines = [f"line {i}" for i in range(1, 21)]
+        mock_get_lines.return_value = (lines, "test.txt")
+
+        result = runner.invoke(main, ["tail", "-n", "3", "test.txt"])
+
+        assert result.exit_code == 0
+        assert "line 18" in result.output
+        assert "line 20" in result.output
+        assert "line 17" not in result.output
+
+    @patch("pydrime.download_helpers.get_entry_from_hash")
+    @patch("pydrime.download_helpers.resolve_identifier_to_hash")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_tail_bytes_mode(
+        self,
+        mock_config,
+        mock_client_class,
+        mock_resolve,
+        mock_get_entry,
+        runner,
+    ):
+        """Test tail command with -c (bytes) option."""
+        mock_config.is_configured.return_value = True
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+
+        mock_resolve.return_value = "testhash"
+
+        mock_entry = Mock()
+        mock_entry.type = "file"
+        mock_entry.name = "test.txt"
+        mock_get_entry.return_value = mock_entry
+
+        mock_client.get_file_content.return_value = b"Hello World!"
+
+        result = runner.invoke(main, ["tail", "-c", "6", "test.txt"])
+
+        assert result.exit_code == 0
+        assert "World!" in result.output
+
+    @patch("pydrime.cli._get_file_content_lines")
+    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.config")
+    def test_tail_file_not_found(
+        self, mock_config, mock_client_class, mock_get_lines, runner
+    ):
+        """Test tail command with non-existent file."""
+        mock_config.is_configured.return_value = True
+        mock_client = Mock()
+        mock_client_class.return_value = mock_client
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
+
+        mock_get_lines.return_value = (None, None)
+
+        result = runner.invoke(main, ["tail", "nonexistent.txt"])
+
+        assert result.exit_code == 1
+
+
 class TestCdCommand:
     """Tests for the cd command."""
 

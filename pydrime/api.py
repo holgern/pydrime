@@ -1341,6 +1341,51 @@ class DrimeClient:
         except OSError as e:
             raise DrimeDownloadError(f"Failed to write file: {e}") from e
 
+    def get_file_content(
+        self,
+        hash_value: str,
+        max_bytes: int | None = None,
+        timeout: int = 60,
+    ) -> bytes:
+        """Get file content from Drime Cloud without saving to disk.
+
+        Args:
+            hash_value: Hash of the file to download
+            max_bytes: Maximum number of bytes to read (None for entire file)
+            timeout: Request timeout in seconds (default: 60)
+
+        Returns:
+            File content as bytes
+
+        Raises:
+            DrimeAPIError: If download fails
+        """
+        endpoint = f"/file-entries/download/{hash_value}"
+        url = f"{self.api_url}/{endpoint.lstrip('/')}"
+        client = self._get_client()
+
+        try:
+            with client.stream("GET", url, timeout=timeout) as response:
+                response.raise_for_status()
+
+                if max_bytes is None:
+                    # Read entire file
+                    return response.read()
+                else:
+                    # Read only up to max_bytes
+                    content = b""
+                    for chunk in response.iter_bytes(chunk_size=8192):
+                        if chunk:
+                            content += chunk
+                            if len(content) >= max_bytes:
+                                return content[:max_bytes]
+                    return content
+
+        except httpx.HTTPStatusError as e:
+            raise DrimeDownloadError(f"Download failed: {e}") from e
+        except httpx.RequestError as e:
+            raise DrimeNetworkError(f"Network error during download: {e}") from e
+
     # =========================
     # Workspace Operations
     # =========================
