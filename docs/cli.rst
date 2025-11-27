@@ -17,6 +17,7 @@ Options:
 * ``-k, --api-key TEXT`` - Drime Cloud API key
 * ``-q, --quiet`` - Suppress non-essential output
 * ``--json`` - Output in JSON format
+* ``-v, --verbose`` - Enable verbose/debug logging output
 * ``--validate-schema`` - Enable API schema validation warnings (for debugging)
 * ``--version`` - Show version and exit
 * ``--help`` - Show help message
@@ -802,6 +803,7 @@ Sync files between local directory and Drime Cloud.
 
 * ``-r, --remote-path TEXT`` - Remote destination path
 * ``-w, --workspace INTEGER`` - Workspace ID (uses default workspace if not specified)
+* ``-C, --config PATH`` - JSON config file with list of sync pairs
 * ``--dry-run`` - Show what would be synced without syncing
 * ``--no-progress`` - Disable progress bars
 * ``-c, --chunk-size INTEGER`` - Chunk size in MB for multipart uploads (default: 25MB)
@@ -908,6 +910,51 @@ override parent rules using negation (``!``). For example:
    /logs/*
    /.git/
 
+**JSON Config File (--config):**
+
+You can define multiple sync pairs in a JSON configuration file. This is useful for
+setting up complex sync configurations or running multiple sync operations at once.
+
+.. code-block:: json
+
+   [
+     {
+       "workspace": 0,
+       "local": "/path/to/local",
+       "remote": "remote/path",
+       "syncMode": "twoWay",
+       "disableLocalTrash": false,
+       "ignore": ["*.tmp"],
+       "excludeDotFiles": false
+     },
+     {
+       "workspace": 5,
+       "local": "/home/user/docs",
+       "remote": "Documents",
+       "syncMode": "localBackup"
+     }
+   ]
+
+**Config File Fields:**
+
++----------------------+-----------------------------------------------------------+
+| Field                | Description                                               |
++======================+===========================================================+
+| ``workspace``        | Workspace ID (optional, default: 0)                       |
++----------------------+-----------------------------------------------------------+
+| ``local``            | Local directory path (required)                           |
++----------------------+-----------------------------------------------------------+
+| ``remote``           | Remote destination path (required)                        |
++----------------------+-----------------------------------------------------------+
+| ``syncMode``         | Sync mode: twoWay, localToCloud, localBackup, etc.        |
++----------------------+-----------------------------------------------------------+
+| ``disableLocalTrash``| If true, permanently delete local files (default: false)  |
++----------------------+-----------------------------------------------------------+
+| ``ignore``           | List of additional ignore patterns (optional)             |
++----------------------+-----------------------------------------------------------+
+| ``excludeDotFiles``  | If true, exclude all dotfiles (default: false)            |
++----------------------+-----------------------------------------------------------+
+
 **Examples:**
 
 .. code-block:: bash
@@ -933,6 +980,10 @@ override parent rules using negation (``!``). For example:
    pydrime sync ./data --dry-run                # Preview sync changes
    pydrime sync ./data -b 100                   # Process 100 files per batch
    pydrime sync ./data --no-streaming           # Scan all files upfront
+
+   # JSON config file with multiple sync pairs
+   pydrime sync --config sync_pairs.json
+   pydrime sync -C sync_pairs.json --dry-run
 
 stat
 ~~~~

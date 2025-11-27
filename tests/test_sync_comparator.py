@@ -369,7 +369,7 @@ class TestCompareFilesWithPreviousState:
         )
 
     def test_local_only_was_previously_synced_deletes_local(self):
-        """File that was previously synced but now only exists locally should be deleted."""
+        """Previously synced file only in local should be deleted."""
         previous_synced = {"test.txt"}
         comparator = FileComparator(
             SyncMode.TWO_WAY, previous_synced_files=previous_synced
@@ -386,7 +386,7 @@ class TestCompareFilesWithPreviousState:
         assert "deleted from cloud" in decisions[0].reason
 
     def test_remote_only_was_previously_synced_deletes_remote(self):
-        """File that was previously synced but now only exists remotely should be deleted."""
+        """Previously synced file only in remote should be deleted."""
         previous_synced = {"test.txt"}
         comparator = FileComparator(
             SyncMode.TWO_WAY, previous_synced_files=previous_synced
