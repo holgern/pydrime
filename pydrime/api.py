@@ -547,6 +547,7 @@ class DrimeClient:
         relative_path: str | None = None,
         workspace_id: int = 0,
         parent_id: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> Any:
         """Upload a file using presigned S3 URL.
 
@@ -563,6 +564,8 @@ class DrimeClient:
             relative_path: Relative path where file should be stored
             workspace_id: ID of the workspace (default: 0 for personal)
             parent_id: Optional parent folder ID
+            progress_callback: Optional callback function(bytes_uploaded,
+                total_bytes) for tracking upload progress
 
         Returns:
             Upload response data with 'status' and 'fileEntry' keys
@@ -602,20 +605,32 @@ class DrimeClient:
         if not presigned_url or not key:
             raise DrimeUploadError(f"Invalid presign response: {presign_response}")
 
-        # Step 2: Upload to S3 using presigned URL
+        # Step 2: Upload to S3 using presigned URL with progress tracking
         try:
-            with open(file_path, "rb") as f:
-                file_content = f.read()
-
             s3_headers = {
                 "Content-Type": mime_type,
+                "Content-Length": str(file_size),
                 "x-amz-acl": "private",
             }
+
+            # Create a generator for streaming upload with progress tracking
+            def file_reader() -> Any:
+                bytes_uploaded = 0
+                chunk_size = 64 * 1024  # 64KB chunks for progress updates
+                with open(file_path, "rb") as f:
+                    while True:
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        bytes_uploaded += len(chunk)
+                        if progress_callback:
+                            progress_callback(bytes_uploaded, file_size)
+                        yield chunk
 
             # Use httpx directly for S3 upload (not going through Drime API)
             s3_response = httpx.put(
                 presigned_url,
-                content=file_content,
+                content=file_reader(),
                 headers=s3_headers,
                 timeout=60.0,
             )
@@ -640,6 +655,70 @@ class DrimeClient:
         entry_response = self._request("POST", "/s3/entries", json=entry_payload)
         return entry_response
 
+    def _verify_upload(
+        self,
+        entry_id: int,
+        expected_size: int,
+        workspace_id: int = 0,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
+    ) -> tuple[bool, str]:
+        """Verify that an uploaded file has valid size and users fields.
+
+        Args:
+            entry_id: ID of the uploaded file entry
+            expected_size: Expected file size in bytes
+            workspace_id: Workspace ID
+            max_retries: Maximum number of retries to fetch the entry
+            retry_delay: Delay between retries in seconds
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        import time
+
+        for attempt in range(max_retries):
+            try:
+                entry = self.get_file_entry(entry_id, workspace_id=workspace_id)
+
+                # Check if we got a valid response
+                if not entry:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    return False, "Failed to retrieve file entry after upload"
+
+                # Extract file entry data (may be nested under 'fileEntry' key)
+                entry_data = entry.get("fileEntry", entry)
+
+                # Check file_size
+                file_size = entry_data.get("file_size", 0)
+                if file_size != expected_size:
+                    return (
+                        False,
+                        f"File size mismatch: expected {expected_size}, "
+                        f"got {file_size}",
+                    )
+
+                # Check users field - it should be a non-empty list
+                users = entry_data.get("users", [])
+                if not users:
+                    if attempt < max_retries - 1:
+                        # Users field may be populated asynchronously, retry
+                        time.sleep(retry_delay)
+                        continue
+                    return False, "Users field is empty (incomplete upload)"
+
+                return True, ""
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+                return False, f"Error verifying upload: {e}"
+
+        return False, "Verification failed after maximum retries"
+
     def upload_file(
         self,
         file_path: Path,
@@ -649,10 +728,15 @@ class DrimeClient:
         use_multipart_threshold: int = 30 * 1024 * 1024,  # 30MB
         chunk_size: int = 25 * 1024 * 1024,  # 25MB chunks
         progress_callback: Callable[[int, int], None] | None = None,
+        message_callback: Callable[[str], None] | None = None,
+        verify_upload: bool = True,
+        max_upload_retries: int = 3,
     ) -> Any:
         """Upload a file to Drime Cloud.
 
-        Automatically chooses between simple and multipart upload based on file size.
+        Automatically chooses between presigned URL upload and multipart upload
+        based on file size. After upload, verifies that the file size and users
+        fields are correctly set.
 
         Args:
             file_path: Local path to the file
@@ -667,6 +751,12 @@ class DrimeClient:
             chunk_size: Size of each chunk for multipart uploads (default: 25MB)
             progress_callback: Optional callback function(bytes_uploaded,
                 total_bytes)
+            message_callback: Optional callback function(message) for user
+                notifications about upload status and retries
+            verify_upload: Whether to verify the upload was successful by
+                checking size and users fields (default: True)
+            max_upload_retries: Maximum number of upload retry attempts if
+                verification fails (default: 3)
 
         Returns:
             Upload response data with 'status' and 'fileEntry' keys
@@ -676,45 +766,83 @@ class DrimeClient:
 
         file_size = file_path.stat().st_size
 
-        # Use multipart upload for large files
-        if file_size > use_multipart_threshold:
-            return self.upload_file_multipart(
+        def _do_upload() -> Any:
+            """Perform the actual upload."""
+            # Use multipart upload for large files
+            if file_size > use_multipart_threshold:
+                return self.upload_file_multipart(
+                    file_path=file_path,
+                    relative_path=relative_path,
+                    workspace_id=workspace_id,
+                    chunk_size=chunk_size,
+                    progress_callback=progress_callback,
+                )
+
+            # Use presigned URL upload for smaller files (better progress tracking)
+            return self.upload_file_presign(
                 file_path=file_path,
                 relative_path=relative_path,
                 workspace_id=workspace_id,
-                chunk_size=chunk_size,
+                parent_id=parent_id,
                 progress_callback=progress_callback,
             )
 
-        # Simple upload for smaller files
-        endpoint = "/uploads"
+        # If verification is disabled, just upload and return
+        if not verify_upload:
+            return _do_upload()
 
-        # Detect MIME type
-        mime_type = self._detect_mime_type(file_path)
+        # Upload with verification and retry logic
+        last_error = ""
+        for attempt in range(max_upload_retries):
+            result = _do_upload()
 
-        # For small files, progress tracking doesn't work well with httpx
-        # as it reads the entire file at once. Progress is only tracked for large files
-        # using multipart upload.
-        with open(file_path, "rb") as f:
-            files = {"file": (file_path.name, f, mime_type)}
-            data: dict[str, Any] = {}
+            # Extract entry ID from result
+            file_entry = result.get("fileEntry", {})
+            entry_id = file_entry.get("id")
 
-            if parent_id is not None:
-                data["parentId"] = parent_id
+            if not entry_id:
+                last_error = "Upload response missing file entry ID"
+                if message_callback:
+                    message_callback(
+                        f"Upload attempt {attempt + 1}/{max_upload_retries} failed: "
+                        f"{last_error}"
+                    )
+                continue
 
-            if relative_path:
-                data["relativePath"] = relative_path
+            # Verify the upload
+            is_valid, error_msg = self._verify_upload(
+                entry_id=entry_id,
+                expected_size=file_size,
+                workspace_id=workspace_id,
+            )
 
-            if workspace_id:
-                data["workspaceId"] = workspace_id
+            if is_valid:
+                return result
 
-            result = self._request("POST", endpoint, files=files, data=data)
+            last_error = error_msg
 
-            # Call progress callback with 100% to update overall progress
-            if progress_callback:
-                progress_callback(file_size, file_size)
+            # Delete the incomplete entry before retrying
+            if attempt < max_upload_retries - 1:
+                if message_callback:
+                    message_callback(
+                        f"Upload verification failed for '{file_path.name}': "
+                        f"{error_msg}. Retrying ({attempt + 2}/{max_upload_retries})..."
+                    )
+                try:
+                    self.delete_file_entries(
+                        entry_ids=[entry_id],
+                        delete_forever=True,
+                        workspace_id=workspace_id,
+                    )
+                except Exception:
+                    # Ignore deletion errors, just proceed with retry
+                    pass
 
-            return result
+        # All retries exhausted
+        raise DrimeUploadError(
+            f"Upload verification failed after {max_upload_retries} attempts: "
+            f"{last_error}"
+        )
 
     # =========================
     # File Entry Operations
@@ -790,6 +918,20 @@ class DrimeClient:
         if order_dir:
             params["orderDir"] = order_dir
 
+        return self._request("GET", endpoint, params=params)
+
+    def get_file_entry(self, entry_id: int, workspace_id: int = 0) -> Any:
+        """Get a single file entry by ID.
+
+        Args:
+            entry_id: ID of the file entry to retrieve
+            workspace_id: Workspace ID (default: 0 for personal)
+
+        Returns:
+            File entry object with all fields including 'users' and 'file_size'
+        """
+        endpoint = f"/file-entries/{entry_id}"
+        params: dict[str, Any] = {"workspaceId": workspace_id}
         return self._request("GET", endpoint, params=params)
 
     def update_file_entry(

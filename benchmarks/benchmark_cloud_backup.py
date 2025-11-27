@@ -25,7 +25,7 @@ from pathlib import Path
 
 
 def run_sync_command(
-    sync_pair: str, workers: int = 1, batch_size: int = 10
+    sync_pair: str, workers: int = 4, batch_size: int = 10, start_delay: float = 3.0
 ) -> tuple[int, str]:
     """Run a pydrime sync command with streaming output.
 
@@ -33,6 +33,7 @@ def run_sync_command(
         sync_pair: Sync pair string (e.g., "/local:cloudBackup:/remote")
         workers: Number of parallel workers
         batch_size: Number of files to process per batch
+        start_delay: Delay between starting worker processes
 
     Returns:
         Tuple of (exit_code, captured_output)
@@ -52,6 +53,8 @@ def run_sync_command(
         str(workers),
         "--batch-size",
         str(batch_size),
+        "--start-delay",
+        str(start_delay),
     ]
 
     process = subprocess.Popen(

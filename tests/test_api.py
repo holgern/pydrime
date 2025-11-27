@@ -1711,17 +1711,27 @@ class TestMimeTypeDetection:
         finally:
             test_file.unlink()
 
+    @patch("pydrime.api.httpx.put")
     @patch("pydrime.api.DrimeClient._detect_mime_type")
     @patch("pydrime.api.DrimeClient._request")
     def test_upload_file_uses_mime_detection_small_file(
-        self, mock_request, mock_detect_mime
+        self, mock_request, mock_detect_mime, mock_put
     ):
         """Test that upload_file uses MIME detection for small files."""
         import tempfile
         from pathlib import Path
+        from unittest.mock import MagicMock
 
         mock_detect_mime.return_value = "text/plain"
-        mock_request.return_value = {"status": "success", "fileEntry": {"id": 123}}
+        # Mock responses for presign and entry creation
+        mock_request.side_effect = [
+            {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
+            {"status": "success", "fileEntry": {"id": 123}},
+        ]
+        # Mock S3 response
+        mock_s3_response = MagicMock()
+        mock_s3_response.raise_for_status = MagicMock()
+        mock_put.return_value = mock_s3_response
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("small file")
@@ -1729,8 +1739,12 @@ class TestMimeTypeDetection:
 
         try:
             client = DrimeClient(api_key="test_key")
-            # Upload small file (below multipart threshold)
-            client.upload_file(test_file, use_multipart_threshold=1024 * 1024)
+            # Upload small file (below multipart threshold), skip verification
+            client.upload_file(
+                test_file,
+                use_multipart_threshold=1024 * 1024,
+                verify_upload=False,
+            )
 
             # Verify MIME detection was called
             mock_detect_mime.assert_called_once_with(test_file)
@@ -1792,6 +1806,213 @@ class TestMimeTypeDetection:
 
         # Verify MIME detection was called
         mock_detect_mime.assert_called_once_with(test_file)
+
+
+class TestUploadVerification:
+    """Tests for upload verification and retry logic."""
+
+    @patch("pydrime.api.httpx.put")
+    @patch("pydrime.api.DrimeClient._detect_mime_type")
+    @patch("pydrime.api.DrimeClient._request")
+    def test_upload_file_with_verification_success(
+        self, mock_request, mock_detect_mime, mock_put
+    ):
+        """Test upload with successful verification."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        mock_detect_mime.return_value = "text/plain"
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("test content")
+            test_file = Path(f.name)
+
+        file_size = test_file.stat().st_size
+
+        # Mock responses: presign, entry creation, get_file_entry
+        mock_request.side_effect = [
+            {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
+            {"status": "success", "fileEntry": {"id": 123}},
+            {
+                "fileEntry": {
+                    "id": 123,
+                    "file_size": file_size,
+                    "users": [{"id": 1, "email": "test@example.com"}],
+                }
+            },
+        ]
+
+        mock_s3_response = MagicMock()
+        mock_s3_response.raise_for_status = MagicMock()
+        mock_put.return_value = mock_s3_response
+
+        try:
+            client = DrimeClient(api_key="test_key")
+            result = client.upload_file(
+                test_file,
+                use_multipart_threshold=1024 * 1024,
+                verify_upload=True,
+            )
+
+            assert result["status"] == "success"
+            assert result["fileEntry"]["id"] == 123
+        finally:
+            test_file.unlink()
+
+    @patch("pydrime.api.httpx.put")
+    @patch("pydrime.api.DrimeClient._detect_mime_type")
+    @patch("pydrime.api.DrimeClient._request")
+    def test_upload_file_retry_on_missing_users(
+        self, mock_request, mock_detect_mime, mock_put
+    ):
+        """Test upload retries when users field is missing."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        mock_detect_mime.return_value = "text/plain"
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("test content")
+            test_file = Path(f.name)
+
+        file_size = test_file.stat().st_size
+        messages = []
+
+        # Mock responses:
+        # First upload: presign, entry creation, get_file_entry (no users)
+        # Delete entry
+        # Second upload: presign, entry creation, get_file_entry (with users)
+        mock_request.side_effect = [
+            # First attempt
+            {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
+            {"status": "success", "fileEntry": {"id": 123}},
+            {"fileEntry": {"id": 123, "file_size": file_size, "users": []}},  # no users
+            {"fileEntry": {"id": 123, "file_size": file_size, "users": []}},  # retry 1
+            {"fileEntry": {"id": 123, "file_size": file_size, "users": []}},  # retry 2
+            {"fileEntry": {"id": 123, "file_size": file_size, "users": []}},  # retry 3
+            {"status": "success"},  # delete entry
+            # Second attempt
+            {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
+            {"status": "success", "fileEntry": {"id": 456}},
+            {
+                "fileEntry": {
+                    "id": 456,
+                    "file_size": file_size,
+                    "users": [{"id": 1, "email": "test@example.com"}],
+                }
+            },
+        ]
+
+        mock_s3_response = MagicMock()
+        mock_s3_response.raise_for_status = MagicMock()
+        mock_put.return_value = mock_s3_response
+
+        try:
+            client = DrimeClient(api_key="test_key")
+            result = client.upload_file(
+                test_file,
+                use_multipart_threshold=1024 * 1024,
+                verify_upload=True,
+                message_callback=lambda msg: messages.append(msg),
+            )
+
+            assert result["status"] == "success"
+            assert result["fileEntry"]["id"] == 456
+            # Verify message callback was called
+            assert len(messages) > 0
+            assert "Retrying" in messages[0]
+        finally:
+            test_file.unlink()
+
+    @patch("pydrime.api.httpx.put")
+    @patch("pydrime.api.DrimeClient._detect_mime_type")
+    @patch("pydrime.api.DrimeClient._request")
+    def test_upload_file_fails_after_max_retries(
+        self, mock_request, mock_detect_mime, mock_put
+    ):
+        """Test upload fails after maximum retries."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        import pytest
+
+        from pydrime.exceptions import DrimeUploadError
+
+        mock_detect_mime.return_value = "text/plain"
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("test content")
+            test_file = Path(f.name)
+
+        file_size = test_file.stat().st_size
+
+        # All attempts fail with missing users
+        mock_request.side_effect = [
+            # Attempt 1
+            {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
+            {"status": "success", "fileEntry": {"id": 123}},
+            {"fileEntry": {"id": 123, "file_size": file_size, "users": []}},
+            {"fileEntry": {"id": 123, "file_size": file_size, "users": []}},
+            {"fileEntry": {"id": 123, "file_size": file_size, "users": []}},
+            {"fileEntry": {"id": 123, "file_size": file_size, "users": []}},
+            {"status": "success"},  # delete
+            # Attempt 2
+            {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
+            {"status": "success", "fileEntry": {"id": 456}},
+            {"fileEntry": {"id": 456, "file_size": file_size, "users": []}},
+            {"fileEntry": {"id": 456, "file_size": file_size, "users": []}},
+            {"fileEntry": {"id": 456, "file_size": file_size, "users": []}},
+            {"fileEntry": {"id": 456, "file_size": file_size, "users": []}},
+            {"status": "success"},  # delete
+            # Attempt 3
+            {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
+            {"status": "success", "fileEntry": {"id": 789}},
+            {"fileEntry": {"id": 789, "file_size": file_size, "users": []}},
+            {"fileEntry": {"id": 789, "file_size": file_size, "users": []}},
+            {"fileEntry": {"id": 789, "file_size": file_size, "users": []}},
+            {"fileEntry": {"id": 789, "file_size": file_size, "users": []}},
+        ]
+
+        mock_s3_response = MagicMock()
+        mock_s3_response.raise_for_status = MagicMock()
+        mock_put.return_value = mock_s3_response
+
+        try:
+            client = DrimeClient(api_key="test_key")
+            with pytest.raises(DrimeUploadError) as exc_info:
+                client.upload_file(
+                    test_file,
+                    use_multipart_threshold=1024 * 1024,
+                    verify_upload=True,
+                    max_upload_retries=3,
+                )
+
+            assert "verification failed after 3 attempts" in str(exc_info.value)
+        finally:
+            test_file.unlink()
+
+    @patch("pydrime.api.DrimeClient._request")
+    def test_get_file_entry(self, mock_request):
+        """Test get_file_entry method."""
+        mock_request.return_value = {
+            "fileEntry": {
+                "id": 123,
+                "name": "test.txt",
+                "file_size": 1024,
+                "users": [{"id": 1}],
+            }
+        }
+
+        client = DrimeClient(api_key="test_key")
+        result = client.get_file_entry(123, workspace_id=0)
+
+        mock_request.assert_called_once_with(
+            "GET", "/file-entries/123", params={"workspaceId": 0}
+        )
+        assert result["fileEntry"]["id"] == 123
 
 
 class TestExceptions:
