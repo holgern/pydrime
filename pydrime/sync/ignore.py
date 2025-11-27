@@ -306,6 +306,23 @@ class IgnoreFileManager:
             # Invalidate cache when new rules are loaded
             self._invalidate_cache()
 
+    def load_from_file_path(self, filepath_str: str) -> None:
+        """Load .pydrignore file from a string path if not already loaded.
+
+        This is an optimized version that avoids Path object creation
+        for the file existence check when the caller already knows
+        the file exists.
+
+        Args:
+            filepath_str: String path to the .pydrignore file
+        """
+        filepath = Path(filepath_str)
+        if filepath not in self._loaded_files:
+            self._load_ignore_file(filepath)
+            self._loaded_files.add(filepath)
+            # Invalidate cache when new rules are loaded
+            self._invalidate_cache()
+
     def _load_ignore_file(self, filepath: Path) -> None:
         """Load rules from a .pydrignore file.
 
