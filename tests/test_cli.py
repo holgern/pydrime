@@ -475,7 +475,8 @@ class TestLsCommand:
         mock_client.get_file_entries.return_value = {"data": []}
         mock_client_class.return_value = mock_client
 
-        result = runner.invoke(main, ["ls"])
+        # Use --quiet to suppress workspace/directory info
+        result = runner.invoke(main, ["--quiet", "ls"])
 
         assert result.exit_code == 0
         # ls command outputs nothing when directory is empty (like Unix ls)
