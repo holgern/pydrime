@@ -26,7 +26,11 @@ from .models import FileEntriesResult, FileEntry, SchemaValidationWarning, UserS
 from .output import OutputFormatter
 from .upload_preview import display_upload_preview
 from .utils import calculate_drime_hash, parse_iso_timestamp
-from .workspace_utils import format_workspace_display, get_folder_display_name
+from .workspace_utils import (
+    format_workspace_display,
+    get_folder_display_name,
+    resolve_workspace_identifier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1593,14 +1597,15 @@ def sync(
       A JSON file containing a list of sync pair objects:
       [
         {
-          "workspace": 0,              // optional, default: 0
-          "local": "/path/to/local",   // required
-          "remote": "remote/path",     // required
-          "syncMode": "twoWay",        // required
-          "disableLocalTrash": false,  // optional, default: false
-          "ignore": ["*.tmp"],         // optional, CLI patterns
-                                       //(in addition to .pydrignore)
-          "excludeDotFiles": false     // optional, default: false
+          "workspace": "My Team",        // optional, ID or name
+                                         // (default: uses configured default workspace)
+          "local": "/path/to/local",     // required
+          "remote": "remote/path",       // required
+          "syncMode": "twoWay",          // required
+          "disableLocalTrash": false,    // optional, default: false
+          "ignore": ["*.tmp"],           // optional, CLI patterns
+                                         //(in addition to .pydrignore)
+          "excludeDotFiles": false       // optional, default: false
         }
       ]
 
@@ -1697,12 +1702,24 @@ def sync(
         total_conflicts = 0
 
         for i, pair_data in enumerate(sync_pairs_data):
+            # Resolve workspace identifier (int, str name, or None) to workspace ID
+            # Use the default workspace if not specified in config
+            default_ws = config.get_default_workspace() or 0
+            try:
+                resolved_workspace_id = resolve_workspace_identifier(
+                    client, pair_data["workspace"], default_ws
+                )
+            except ValueError as e:
+                out.error(f"Sync pair at index {i}: {e}")
+                ctx.exit(1)
+                return  # For type checker
+
             # Create SyncPair from dict data
             pair = SyncPair(
                 local=Path(pair_data["local"]),
                 remote=pair_data["remote"],
                 sync_mode=SyncMode.from_string(pair_data["syncMode"]),
-                workspace_id=pair_data["workspace"],
+                workspace_id=resolved_workspace_id,
                 disable_local_trash=pair_data["disableLocalTrash"],
                 ignore=pair_data["ignore"],
                 exclude_dot_files=pair_data["excludeDotFiles"],

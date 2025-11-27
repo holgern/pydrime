@@ -2,11 +2,14 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from pydrime.exceptions import DrimeAPIError
 from pydrime.workspace_utils import (
     format_workspace_display,
     get_folder_display_name,
     get_workspace_name,
+    resolve_workspace_identifier,
 )
 
 
@@ -168,3 +171,85 @@ class TestGetFolderDisplayName:
 
         assert display == "/My Folder (2023) (ID: 456)"
         assert name == "My Folder (2023)"
+
+
+class TestResolveWorkspaceIdentifier:
+    """Tests for resolve_workspace_identifier function."""
+
+    def test_none_identifier_uses_default(self):
+        """Test that None returns default workspace."""
+        mock_client = MagicMock()
+
+        result = resolve_workspace_identifier(mock_client, None, 5)
+
+        assert result == 5
+        mock_client.get_workspaces.assert_not_called()
+
+    def test_none_identifier_defaults_to_zero(self):
+        """Test that None with no default returns 0."""
+        mock_client = MagicMock()
+
+        result = resolve_workspace_identifier(mock_client, None)
+
+        assert result == 0
+
+    def test_integer_identifier_returns_directly(self):
+        """Test that integer ID is returned directly."""
+        mock_client = MagicMock()
+
+        result = resolve_workspace_identifier(mock_client, 5)
+
+        assert result == 5
+        mock_client.get_workspaces.assert_not_called()
+
+    def test_numeric_string_is_converted(self):
+        """Test that numeric string is converted to int."""
+        mock_client = MagicMock()
+
+        result = resolve_workspace_identifier(mock_client, "123")
+
+        assert result == 123
+        mock_client.get_workspaces.assert_not_called()
+
+    def test_workspace_name_is_resolved(self):
+        """Test that workspace name is resolved to ID."""
+        mock_client = MagicMock()
+        mock_client.get_workspaces.return_value = {
+            "workspaces": [
+                {"id": 1, "name": "Team Alpha"},
+                {"id": 5, "name": "My Team"},
+            ]
+        }
+
+        result = resolve_workspace_identifier(mock_client, "My Team")
+
+        assert result == 5
+
+    def test_workspace_name_is_case_insensitive(self):
+        """Test that workspace name resolution is case-insensitive."""
+        mock_client = MagicMock()
+        mock_client.get_workspaces.return_value = {
+            "workspaces": [{"id": 5, "name": "My Team"}]
+        }
+
+        result = resolve_workspace_identifier(mock_client, "MY TEAM")
+
+        assert result == 5
+
+    def test_unknown_workspace_name_raises_error(self):
+        """Test that unknown workspace name raises ValueError."""
+        mock_client = MagicMock()
+        mock_client.get_workspaces.return_value = {
+            "workspaces": [{"id": 1, "name": "Team Alpha"}]
+        }
+
+        with pytest.raises(ValueError, match="Workspace 'Unknown' not found"):
+            resolve_workspace_identifier(mock_client, "Unknown")
+
+    def test_empty_workspaces_raises_error(self):
+        """Test that empty workspaces list raises ValueError for name lookup."""
+        mock_client = MagicMock()
+        mock_client.get_workspaces.return_value = {"workspaces": []}
+
+        with pytest.raises(ValueError, match="not found"):
+            resolve_workspace_identifier(mock_client, "Unknown")
