@@ -1618,7 +1618,7 @@ class TestVaultDownloadCommand:
     @patch("pydrime.vault_crypto.unlock_vault")
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.cli.config")
-    def test_vault_download_skips_folders(
+    def test_vault_download_folder(
         self,
         mock_config,
         mock_client_class,
@@ -1627,17 +1627,44 @@ class TestVaultDownloadCommand:
         runner,
         tmp_path,
     ):
-        """Test vault download skips folders when resolving by name."""
+        """Test vault download downloads folder contents recursively."""
         mock_config.is_configured.return_value = True
 
         mock_client = Mock()
         self._mock_vault_info(mock_client)
-        mock_client.get_vault_file_entries.return_value = {
-            "data": [
-                {"id": 1, "name": "Documents", "type": "folder", "hash": "folder_hash"},
-                {"id": 2, "name": "file.txt", "type": "text", "hash": "file_hash"},
-            ]
-        }
+        # First call: list root to find Documents folder
+        # Second call: list Documents folder contents (files only, no subfolders)
+        mock_client.get_vault_file_entries.side_effect = [
+            {
+                "data": [
+                    {
+                        "id": 1,
+                        "name": "Documents",
+                        "type": "folder",
+                        "hash": "folder_hash",
+                    },
+                    {"id": 2, "name": "file.txt", "type": "text", "hash": "file_hash"},
+                ]
+            },
+            {
+                "data": [
+                    {
+                        "id": 3,
+                        "name": "doc1.txt",
+                        "type": "text",
+                        "hash": "doc1_hash",
+                        "iv": "doc1_iv",
+                    },
+                    {
+                        "id": 4,
+                        "name": "doc2.txt",
+                        "type": "text",
+                        "hash": "doc2_hash",
+                        "iv": "doc2_iv",
+                    },
+                ]
+            },
+        ]
 
         def mock_download(hash_value, output_path):
             output_path.write_bytes(b"encrypted_content")
@@ -1655,7 +1682,7 @@ class TestVaultDownloadCommand:
         old_cwd = os.getcwd()
         os.chdir(tmp_path)
         try:
-            # Trying to download "Documents" should not match the folder
+            # Download "Documents" folder
             result = runner.invoke(
                 main, ["vault", "download", "Documents", "-p", "testpassword"]
             )
@@ -1663,9 +1690,11 @@ class TestVaultDownloadCommand:
             os.chdir(old_cwd)
 
         assert result.exit_code == 0
-        # Should use "Documents" as hash since folder was skipped (9 chars, no ext)
-        call_args = mock_client.download_vault_file.call_args
-        assert call_args[1]["hash_value"] == "Documents"
+        # Should have downloaded 2 files from the folder
+        assert mock_client.download_vault_file.call_count == 2
+        # Files should be in Documents subfolder
+        assert (tmp_path / "Documents" / "doc1.txt").exists()
+        assert (tmp_path / "Documents" / "doc2.txt").exists()
 
     @patch("pydrime.vault_crypto.decrypt_file_content")
     @patch("pydrime.vault_crypto.unlock_vault")
@@ -1839,7 +1868,7 @@ class TestVaultDownloadCommand:
         )
 
         assert result.exit_code == 1
-        assert "File 'missing.txt' not found" in result.output
+        assert "'missing.txt' not found" in result.output
 
     @patch("pydrime.vault_crypto.unlock_vault")
     @patch("pydrime.cli.DrimeClient")
@@ -1980,7 +2009,7 @@ class TestVaultUploadCommand:
         )
 
         assert result.exit_code == 0
-        assert "Uploaded and encrypted" in result.output
+        assert "Uploaded:" in result.output or "Uploaded and encrypted" in result.output
         mock_unlock.assert_called_once()
         mock_client.upload_vault_file.assert_called_once()
 
@@ -2031,7 +2060,7 @@ class TestVaultUploadCommand:
         )
 
         assert result.exit_code == 0
-        assert "Uploaded and encrypted" in result.output
+        assert "Uploaded:" in result.output or "Uploaded and encrypted" in result.output
         # Verify parent_id was passed
         call_kwargs = mock_client.upload_vault_file.call_args
         assert call_kwargs[1]["parent_id"] == 100

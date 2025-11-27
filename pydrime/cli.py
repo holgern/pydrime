@@ -3083,13 +3083,13 @@ def vault_ls(
 
 
 @vault.command("download")
-@click.argument("file_identifier", type=str)
+@click.argument("file_identifiers", type=str, nargs=-1, required=True)
 @click.option(
     "--output",
     "-o",
     type=click.Path(),
     default=None,
-    help="Output file path (default: current directory with original filename)",
+    help="Output directory (default: current directory)",
 )
 @click.option(
     "--password",
@@ -3101,24 +3101,31 @@ def vault_ls(
 @click.pass_context
 def vault_download(
     ctx: Any,
-    file_identifier: str,
+    file_identifiers: tuple[str, ...],
     output: Optional[str],
     password: Optional[str],
 ) -> None:
-    """Download a file from the vault.
+    """Download files or folders from the vault.
 
-    Downloads an encrypted file from your vault and decrypts it locally.
+    Downloads encrypted files from your vault and decrypts them locally.
+    Supports glob patterns (* ? []) to match multiple files.
+    Folders are downloaded recursively with their directory structure preserved.
     You will be prompted for your vault password.
 
-    FILE_IDENTIFIER: File path, name, ID, or hash to download
+    FILE_IDENTIFIERS: File/folder paths, names, IDs, hashes, or glob patterns
 
     Examples:
-        pydrime vault download document.pdf              # Download from root
+        pydrime vault download document.pdf              # Download file from root
+        pydrime vault download Test1                     # Download entire folder
         pydrime vault download Test1/document.pdf        # Download from subfolder
         pydrime vault download 34431                     # Download by ID
-        pydrime vault download MzQ0MzF8cGFkZA           # Download by hash
-        pydrime vault download doc.pdf -o out.pdf       # Download to specific path
+        pydrime vault download doc.pdf -o ./output      # Download to directory
+        pydrime vault download "*.txt"                   # Download all .txt files
+        pydrime vault download "doc*" "*.pdf"            # Multiple patterns
     """
+    import tempfile
+
+    from .utils import glob_match, is_glob_pattern
     from .vault_crypto import VaultPasswordError, decrypt_file_content, unlock_vault
 
     api_key = ctx.obj.get("api_key")
@@ -3161,6 +3168,8 @@ def vault_download(
         if not out.quiet:
             out.info("Verifying vault password...")
 
+        # password is guaranteed to be non-None at this point
+        assert password is not None
         try:
             vault_key = unlock_vault(password, salt, check, iv)
         except VaultPasswordError:
@@ -3168,203 +3177,327 @@ def vault_download(
             ctx.exit(1)
             return
 
-        # Resolve file identifier to hash
-        file_hash: Optional[str] = None
-        original_filename: Optional[str] = None
-        file_iv: Optional[str] = None  # IV from file entry for decryption
-
-        # Check if it's a numeric ID - convert to hash
-        if file_identifier.isdigit():
-            file_hash = calculate_drime_hash(int(file_identifier))
-            # Need to fetch file entry to get IV
-            search_result = client.get_vault_file_entries(per_page=1000)
-            search_entries = []
-            if isinstance(search_result, dict):
-                if "data" in search_result:
-                    search_entries = search_result["data"]
-                elif "pagination" in search_result and isinstance(
-                    search_result["pagination"], dict
-                ):
-                    search_entries = search_result["pagination"].get("data", [])
-            for entry in search_entries:
-                if str(entry.get("id")) == file_identifier:
-                    file_iv = entry.get("iv")
-                    original_filename = entry.get("name")
-                    break
-        elif "/" in file_identifier:
-            # Path-based resolution: Test1/subfolder/file.txt
-            path_parts = file_identifier.split("/")
-            file_name = path_parts[-1]
-            folder_parts = path_parts[:-1]
-
-            # Navigate through folders to find the target folder
-            current_folder_hash = ""
-            for folder_name in folder_parts:
-                # Get entries in current folder
-                search_result = client.get_vault_file_entries(
-                    folder_hash=current_folder_hash, per_page=1000
-                )
-
-                # Handle response format
-                search_entries = []
-                if isinstance(search_result, dict):
-                    if "data" in search_result:
-                        search_entries = search_result["data"]
-                    elif "pagination" in search_result and isinstance(
-                        search_result["pagination"], dict
-                    ):
-                        search_entries = search_result["pagination"].get("data", [])
-
-                # Find the folder
-                folder_found = False
-                for entry in search_entries:
-                    if (
-                        entry.get("type") == "folder"
-                        and entry.get("name") == folder_name
-                    ):
-                        current_folder_hash = entry.get("hash", "")
-                        folder_found = True
-                        break
-
-                if not folder_found:
-                    out.error(f"Folder '{folder_name}' not found in vault path")
-                    ctx.exit(1)
-                    return
-
-            # Now find the file in the target folder
-            search_result = client.get_vault_file_entries(
-                folder_hash=current_folder_hash, per_page=1000
+        # Helper function to get vault entries from a folder
+        def get_vault_entries(folder_hash: str = "") -> list[dict]:
+            """Get vault file entries from a folder."""
+            result = client.get_vault_file_entries(
+                folder_hash=folder_hash, per_page=1000
             )
+            entries = []
+            if isinstance(result, dict):
+                if "data" in result:
+                    entries = result["data"]
+                elif "pagination" in result and isinstance(result["pagination"], dict):
+                    entries = result["pagination"].get("data", [])
+            return entries
 
-            search_entries = []
-            if isinstance(search_result, dict):
-                if "data" in search_result:
-                    search_entries = search_result["data"]
-                elif "pagination" in search_result and isinstance(
-                    search_result["pagination"], dict
-                ):
-                    search_entries = search_result["pagination"].get("data", [])
+        # Helper to recursively get all files in a vault folder
+        def get_folder_files_recursive(
+            folder_hash: str, base_path: str = ""
+        ) -> list[tuple[str, str, Optional[str], str]]:
+            """Get all files in a folder recursively.
 
-            for entry in search_entries:
-                if entry.get("type") != "folder" and entry.get("name") == file_name:
-                    file_hash = entry.get("hash")
-                    original_filename = entry.get("name")
-                    file_iv = entry.get("iv")
-                    if not out.quiet:
-                        out.info(f"Resolved '{file_identifier}' to hash: {file_hash}")
-                    break
+            Returns list of (hash, filename, iv, relative_path) tuples.
+            """
+            all_files: list[tuple[str, str, Optional[str], str]] = []
+            entries = get_vault_entries(folder_hash)
 
-            if not file_hash:
-                out.error(
-                    f"File '{file_name}' not found in vault path '{file_identifier}'"
-                )
-                ctx.exit(1)
-                return
-        else:
-            # Could be a name or already a hash
-            # Search in vault root for the file by name
-            search_result = client.get_vault_file_entries(per_page=1000)
+            for entry in entries:
+                entry_name = entry.get("name", "")
+                entry_type = entry.get("type", "")
+                entry_hash = entry.get("hash", "")
 
-            # Handle response format
-            search_entries = []
-            if isinstance(search_result, dict):
-                if "data" in search_result:
-                    search_entries = search_result["data"]
-                elif "pagination" in search_result and isinstance(
-                    search_result["pagination"], dict
-                ):
-                    search_entries = search_result["pagination"].get("data", [])
+                if entry_type == "folder":
+                    # Recurse into subfolder
+                    subfolder_path = (
+                        f"{base_path}/{entry_name}" if base_path else entry_name
+                    )
+                    all_files.extend(
+                        get_folder_files_recursive(entry_hash, subfolder_path)
+                    )
+                else:
+                    # It's a file
+                    rel_path = f"{base_path}/{entry_name}" if base_path else entry_name
+                    all_files.append(
+                        (entry_hash, entry_name, entry.get("iv"), rel_path)
+                    )
 
-            found = False
-            original_filename = None
+            return all_files
+
+        # Helper function to resolve a single file identifier
+        # Returns: (results, folders, has_error)
+        # results: list of (hash, filename, iv) for direct files
+        # folders: list of (folder_name, folder_hash) for folder downloads
+        def resolve_file_identifier(
+            file_identifier: str,
+        ) -> tuple[
+            list[tuple[str, str, Optional[str]]],
+            list[tuple[str, str]],
+            bool,
+        ]:
+            """Resolve file identifier to files and folders.
+
+            Returns:
+                Tuple of (file_results, folder_results, has_error) where:
+                - file_results: list of (hash, filename, iv) for files
+                - folder_results: list of (folder_name, folder_hash) for folders
+                - has_error: indicates a critical error that should stop processing
+            """
+            results: list[tuple[str, str, Optional[str]]] = []
+            folders: list[tuple[str, str]] = []
+
+            # Check if it's a numeric ID - convert to hash
+            if file_identifier.isdigit():
+                file_hash = calculate_drime_hash(int(file_identifier))
+                search_entries = get_vault_entries()
+                for entry in search_entries:
+                    if str(entry.get("id")) == file_identifier:
+                        if entry.get("type") == "folder":
+                            folders.append(
+                                (entry.get("name", ""), entry.get("hash", ""))
+                            )
+                        else:
+                            results.append(
+                                (file_hash, entry.get("name", ""), entry.get("iv"))
+                            )
+                        break
+                if not results and not folders:
+                    # ID not found in entries, but try using computed hash
+                    results.append((file_hash, file_identifier, None))
+                return results, folders, False
+
+            # Check if it's a path with folders
+            if "/" in file_identifier:
+                path_parts = file_identifier.split("/")
+                file_pattern = path_parts[-1]
+                folder_parts = path_parts[:-1]
+
+                # Navigate through folders
+                current_folder_hash = ""
+                for folder_name in folder_parts:
+                    search_entries = get_vault_entries(current_folder_hash)
+                    folder_found = False
+                    for entry in search_entries:
+                        if (
+                            entry.get("type") == "folder"
+                            and entry.get("name") == folder_name
+                        ):
+                            current_folder_hash = entry.get("hash", "")
+                            folder_found = True
+                            break
+                    if not folder_found:
+                        out.error(f"Folder '{folder_name}' not found in vault path")
+                        return [], [], True  # Critical error
+
+                # Get entries in target folder
+                search_entries = get_vault_entries(current_folder_hash)
+
+                # Check for glob pattern
+                if is_glob_pattern(file_pattern):
+                    for entry in search_entries:
+                        entry_name = entry.get("name", "")
+                        if glob_match(file_pattern, entry_name):
+                            if entry.get("type") == "folder":
+                                folders.append((entry_name, entry.get("hash", "")))
+                            else:
+                                results.append(
+                                    (
+                                        entry.get("hash", ""),
+                                        entry_name,
+                                        entry.get("iv"),
+                                    )
+                                )
+                    if (results or folders) and not out.quiet:
+                        total = len(results) + len(folders)
+                        out.info(
+                            f"Matched {total} entries with pattern '{file_identifier}'"
+                        )
+                else:
+                    # Exact match - check both files and folders
+                    for entry in search_entries:
+                        if entry.get("name") == file_pattern:
+                            if entry.get("type") == "folder":
+                                folders.append(
+                                    (entry.get("name", ""), entry.get("hash", ""))
+                                )
+                                if not out.quiet:
+                                    out.info(f"Resolved '{file_identifier}' to folder")
+                            else:
+                                results.append(
+                                    (
+                                        entry.get("hash", ""),
+                                        entry.get("name", ""),
+                                        entry.get("iv"),
+                                    )
+                                )
+                                if not out.quiet:
+                                    out.info(
+                                        f"Resolved '{file_identifier}' to hash: "
+                                        f"{entry.get('hash')}"
+                                    )
+                            break
+                    if not results and not folders:
+                        out.error(
+                            f"'{file_pattern}' not found in "
+                            f"vault path '{file_identifier}'"
+                        )
+                        return [], [], True  # Critical error
+                return results, folders, False
+
+            # Root level - could be name, hash, or glob pattern
+            search_entries = get_vault_entries()
+
+            # Check for glob pattern
+            if is_glob_pattern(file_identifier):
+                for entry in search_entries:
+                    entry_name = entry.get("name", "")
+                    if glob_match(file_identifier, entry_name):
+                        if entry.get("type") == "folder":
+                            folders.append((entry_name, entry.get("hash", "")))
+                        else:
+                            results.append(
+                                (
+                                    entry.get("hash", ""),
+                                    entry_name,
+                                    entry.get("iv"),
+                                )
+                            )
+                if (results or folders) and not out.quiet:
+                    total = len(results) + len(folders)
+                    out.info(
+                        f"Matched {total} entries with pattern '{file_identifier}'"
+                    )
+                elif not results and not folders:
+                    out.warning(f"No entries match pattern '{file_identifier}'")
+                return results, folders, False
+
+            # Exact match by name or hash - check both files and folders
             for entry in search_entries:
                 entry_name = entry.get("name", "")
                 entry_hash = entry.get("hash", "")
                 entry_type = entry.get("type", "")
 
-                # Match by name or hash, only files (not folders)
-                if entry_type != "folder" and (
-                    entry_name == file_identifier or entry_hash == file_identifier
-                ):
-                    file_hash = entry_hash
-                    original_filename = entry_name
-                    file_iv = entry.get("iv")
-                    found = True
-                    if not out.quiet:
-                        out.info(f"Resolved '{file_identifier}' to hash: {file_hash}")
-                    break
+                if entry_name == file_identifier or entry_hash == file_identifier:
+                    if entry_type == "folder":
+                        folders.append((entry_name, entry_hash))
+                        if not out.quiet:
+                            out.info(f"Resolved '{file_identifier}' to folder")
+                    else:
+                        results.append((entry_hash, entry_name, entry.get("iv")))
+                        if not out.quiet:
+                            out.info(
+                                f"Resolved '{file_identifier}' to hash: {entry_hash}"
+                            )
+                    return results, folders, False
 
-            if not found:
-                # Check if this looks like a hash (base64-like, no file extension)
-                # Hashes are typically alphanumeric with possible = padding
-                looks_like_hash = (
-                    "." not in file_identifier and len(file_identifier) >= 8
-                )
-                if looks_like_hash:
-                    # Assume it's already a valid hash
-                    file_hash = file_identifier
-                else:
-                    out.error(
-                        f"File '{file_identifier}' not found in vault root. "
-                        "Use a path like 'Folder/file.txt' for files in subfolders."
-                    )
-                    ctx.exit(1)
-                    return  # Unreachable, but helps type checker
-
-        if not file_hash:
-            out.error(f"Could not resolve file identifier: {file_identifier}")
-            ctx.exit(1)
-            return  # Unreachable, but helps type checker
-
-        # Download the encrypted file to a temp location
-        if not out.quiet:
-            out.info("Downloading encrypted vault file...")
-
-        # Download to a temporary file first
-        import tempfile
-
-        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-            temp_path = Path(tmp_file.name)
-
-        try:
-            # Download encrypted content
-            client.download_vault_file(
-                hash_value=file_hash,
-                output_path=temp_path,
-            )
-
-            # Read encrypted content
-            encrypted_content = temp_path.read_bytes()
-
-            # Decrypt the content
-            if not out.quiet:
-                out.info("Decrypting file...")
-
-            decrypted_content = decrypt_file_content(
-                vault_key, encrypted_content, iv_b64=file_iv
-            )
-
-            # Determine output path
-            if output:
-                save_path = Path(output)
-            elif original_filename:
-                save_path = Path(original_filename)
+            # Check if this looks like a hash
+            looks_like_hash = "." not in file_identifier and len(file_identifier) >= 8
+            if looks_like_hash:
+                results.append((file_identifier, file_identifier, None))
             else:
-                # Try to extract filename from the path identifier
-                if "/" in file_identifier:
-                    save_path = Path(file_identifier.split("/")[-1])
+                out.error(
+                    f"'{file_identifier}' not found in vault root. "
+                    "Use a path like 'Folder/file.txt' for files in subfolders."
+                )
+                return [], [], True  # Critical error
+            return results, folders, False
+
+        # Helper function to download and decrypt a single file
+        def download_single_file(
+            file_hash: str,
+            original_filename: str,
+            file_iv: Optional[str],
+            output_dir: Path,
+        ) -> bool:
+            """Download and decrypt a single vault file. Returns True on success."""
+            with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                temp_path = Path(tmp_file.name)
+
+            try:
+                if not out.quiet:
+                    out.info(f"Downloading encrypted vault file: {original_filename}")
+
+                client.download_vault_file(
+                    hash_value=file_hash,
+                    output_path=temp_path,
+                )
+
+                encrypted_content = temp_path.read_bytes()
+
+                if not out.quiet:
+                    out.info(f"Decrypting file: {original_filename}")
+
+                decrypted_content = decrypt_file_content(
+                    vault_key, encrypted_content, iv_b64=file_iv
+                )
+
+                save_path = output_dir / original_filename
+                save_path.write_bytes(decrypted_content)
+
+                out.success(f"Downloaded and decrypted: {save_path}")
+                return True
+
+            except Exception as e:
+                out.error(f"Failed to download {original_filename}: {e}")
+                return False
+
+            finally:
+                if temp_path.exists():
+                    temp_path.unlink()
+
+        # Determine output directory
+        output_dir = Path(output) if output else Path.cwd()
+        if output and not output_dir.exists():
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Expand all identifiers (including glob patterns)
+        # files_to_download: list of (hash, filename, iv, relative_path)
+        files_to_download: list[tuple[str, str, Optional[str], str]] = []
+        has_critical_error = False
+        for identifier in file_identifiers:
+            resolved_files, resolved_folders, has_error = resolve_file_identifier(
+                identifier
+            )
+            if has_error:
+                has_critical_error = True
+            # Add direct files (relative_path = filename)
+            for file_hash, filename, iv in resolved_files:
+                files_to_download.append((file_hash, filename, iv, filename))
+            # Add all files from folders recursively
+            for folder_name, folder_hash in resolved_folders:
+                folder_files = get_folder_files_recursive(folder_hash, folder_name)
+                if folder_files:
+                    if not out.quiet:
+                        out.info(
+                            f"Found {len(folder_files)} files in folder '{folder_name}'"
+                        )
+                    files_to_download.extend(folder_files)
                 else:
-                    save_path = Path(file_identifier)
+                    out.warning(f"Folder '{folder_name}' is empty")
 
-            # Write decrypted content
-            save_path.write_bytes(decrypted_content)
+        if has_critical_error:
+            ctx.exit(1)
+            return
 
-            out.success(f"Downloaded and decrypted: {save_path}")
+        if not files_to_download:
+            out.warning("No files to download.")
+            return
 
-        finally:
-            # Clean up temp file
-            if temp_path.exists():
-                temp_path.unlink()
+        # Download all files
+        success_count = 0
+        for file_hash, filename, file_iv, rel_path in files_to_download:
+            # Determine the save path based on relative path
+            save_dir = output_dir / Path(rel_path).parent
+            if save_dir != output_dir:
+                save_dir.mkdir(parents=True, exist_ok=True)
+            if download_single_file(file_hash, filename, file_iv, save_dir):
+                success_count += 1
+
+        if len(files_to_download) > 1:
+            out.info(
+                f"Downloaded {success_count}/{len(files_to_download)} files "
+                f"successfully"
+            )
 
     except DrimeAPIError as e:
         out.error(str(e))
@@ -3372,7 +3505,7 @@ def vault_download(
 
 
 @vault.command("upload")
-@click.argument("file_path", type=click.Path(exists=True))
+@click.argument("file_paths", type=str, nargs=-1, required=True)
 @click.option(
     "--folder",
     "-f",
@@ -3390,22 +3523,30 @@ def vault_download(
 @click.pass_context
 def vault_upload(
     ctx: Any,
-    file_path: str,
+    file_paths: tuple[str, ...],
     folder: Optional[str],
     password: Optional[str],
 ) -> None:
-    """Upload a file to the vault with encryption.
+    """Upload files or folders to the vault with encryption.
 
-    Encrypts a local file and uploads it to your encrypted vault.
+    Encrypts local files and uploads them to your encrypted vault.
+    Supports glob patterns (* ? []) to match multiple files.
+    Folders are uploaded recursively with their directory structure preserved.
     You will be prompted for your vault password.
 
-    FILE_PATH: Path to the local file to upload
+    FILE_PATHS: Paths to local files, folders, or glob patterns to upload
 
     Examples:
-        pydrime vault upload secret.txt                    # Upload to vault root
+        pydrime vault upload secret.txt                    # Upload file to vault root
+        pydrime vault upload mydir                         # Upload entire folder
         pydrime vault upload document.pdf -f MyFolder      # Upload to folder
         pydrime vault upload photo.jpg -p mypassword       # With password option
+        pydrime vault upload "*.txt"                       # Upload all .txt files
+        pydrime vault upload "doc*" "*.pdf"                # Multiple patterns
     """
+    import base64
+    import glob as glob_module
+
     from .vault_crypto import VaultPasswordError, encrypt_filename, unlock_vault
 
     api_key = ctx.obj.get("api_key")
@@ -3454,6 +3595,8 @@ def vault_upload(
         if not out.quiet:
             out.info("Verifying vault password...")
 
+        # password is guaranteed to be non-None at this point
+        assert password is not None
         try:
             vault_key = unlock_vault(password, salt, check, iv)
         except VaultPasswordError:
@@ -3500,48 +3643,181 @@ def vault_upload(
                     ctx.exit(1)
                     return
 
-        # Read and encrypt the file
-        local_path = Path(file_path)
-        if not out.quiet:
-            out.info(f"Encrypting {local_path.name}...")
+        # Expand glob patterns and collect files with their relative paths
+        # Each entry is (local_path, relative_path_in_vault)
+        files_to_upload: list[tuple[Path, str]] = []
 
-        # Read file content
-        file_content = local_path.read_bytes()
+        def collect_directory_files(dir_path: Path, base_name: str) -> None:
+            """Recursively collect all files from a directory."""
+            for item in dir_path.iterdir():
+                rel_path = f"{base_name}/{item.name}"
+                if item.is_file():
+                    files_to_upload.append((item, rel_path))
+                elif item.is_dir():
+                    collect_directory_files(item, rel_path)
 
-        # Encrypt the filename
-        encrypted_name, name_iv = encrypt_filename(vault_key, local_path.name)
+        for file_path in file_paths:
+            # Use glob to expand patterns
+            matches = glob_module.glob(file_path)
+            if matches:
+                for match in matches:
+                    match_path = Path(match)
+                    if match_path.is_file():
+                        # Single file - relative path is just the filename
+                        files_to_upload.append((match_path, match_path.name))
+                    elif match_path.is_dir():
+                        # Directory - collect all files with relative paths
+                        if not out.quiet:
+                            out.info(f"Scanning directory: {match_path.name}")
+                        collect_directory_files(match_path, match_path.name)
+                if len(matches) > 1 and not out.quiet:
+                    out.info(
+                        f"Matched {len(matches)} entries with pattern '{file_path}'"
+                    )
+            else:
+                # No glob match - check if it's a literal file or directory
+                literal_path = Path(file_path)
+                if literal_path.exists():
+                    if literal_path.is_file():
+                        files_to_upload.append((literal_path, literal_path.name))
+                    elif literal_path.is_dir():
+                        if not out.quiet:
+                            out.info(f"Scanning directory: {literal_path.name}")
+                        collect_directory_files(literal_path, literal_path.name)
+                else:
+                    out.warning(f"Path not found: '{file_path}'")
 
-        # Encrypt the file content
-        ciphertext, content_iv_bytes = vault_key.encrypt(file_content)
-
-        # Convert IV to base64
-        import base64
-
-        content_iv = base64.b64encode(content_iv_bytes).decode("ascii")
-
-        # Upload the encrypted file
-        if not out.quiet:
-            out.info("Uploading encrypted file...")
-
-        result = client.upload_vault_file(
-            file_path=local_path,
-            encrypted_content=ciphertext,
-            encrypted_name=encrypted_name,
-            name_iv=name_iv,
-            content_iv=content_iv,
-            vault_id=vault_id,
-            parent_id=parent_id,
-        )
-
-        if out.json_output:
-            out.output_json(result)
+        if not files_to_upload:
+            out.warning("No files to upload.")
             return
 
-        file_entry = result.get("fileEntry", {})
-        out.success(
-            f"Uploaded and encrypted: {local_path.name} "
-            f"(ID: {file_entry.get('id', 'N/A')})"
-        )
+        if not out.quiet:
+            out.info(f"Found {len(files_to_upload)} files to upload")
+
+        # Collect all unique folder paths that need to be created
+        folders_to_create: set[str] = set()
+        for _, rel_path in files_to_upload:
+            # Get all parent folders for this file
+            parts = rel_path.split("/")
+            for i in range(1, len(parts)):
+                folder_path = "/".join(parts[:i])
+                folders_to_create.add(folder_path)
+
+        # Sort folders by depth (shorter paths first) to create parents before children
+        sorted_folders = sorted(folders_to_create, key=lambda x: x.count("/"))
+
+        # Map from folder path to vault folder ID
+        folder_id_cache: dict[str, int] = {}
+
+        def get_or_create_vault_folder(folder_path: str) -> Optional[int]:
+            """Get or create a vault folder, returning its ID."""
+            if folder_path in folder_id_cache:
+                return folder_id_cache[folder_path]
+
+            parts = folder_path.split("/")
+            folder_name = parts[-1]
+
+            # Determine parent ID
+            if len(parts) == 1:
+                # Top-level folder, parent is the target folder (or root)
+                folder_parent_id = parent_id
+            else:
+                # Nested folder, parent is the previous folder in path
+                parent_path = "/".join(parts[:-1])
+                folder_parent_id = folder_id_cache.get(parent_path)
+
+            # Encrypt the folder name
+            encrypted_name, _ = encrypt_filename(vault_key, folder_name)
+
+            if not out.quiet:
+                out.info(f"Creating vault folder: {folder_path}")
+
+            try:
+                result = client.create_vault_folder(
+                    name=encrypted_name,
+                    vault_id=vault_id,
+                    parent_id=folder_parent_id,
+                )
+                folder_info = result.get("folder", {})
+                folder_id = folder_info.get("id")
+                if folder_id:
+                    folder_id_cache[folder_path] = folder_id
+                    return folder_id
+            except Exception as e:
+                out.error(f"Failed to create folder '{folder_path}': {e}")
+
+            return None
+
+        # Create all necessary folders
+        for folder_path in sorted_folders:
+            get_or_create_vault_folder(folder_path)
+
+        # Helper function to upload a single file
+        def upload_single_file(local_path: Path, rel_path: str) -> bool:
+            """Upload and encrypt a single file. Returns True on success."""
+            try:
+                # Determine the parent folder ID for this file
+                parts = rel_path.split("/")
+                if len(parts) > 1:
+                    # File is in a subfolder
+                    file_parent_path = "/".join(parts[:-1])
+                    file_parent_id = folder_id_cache.get(file_parent_path, parent_id)
+                else:
+                    # File is at root level
+                    file_parent_id = parent_id
+
+                if not out.quiet:
+                    out.info(f"Encrypting {rel_path}...")
+
+                # Read file content
+                file_content = local_path.read_bytes()
+
+                # Encrypt the filename
+                encrypted_name, name_iv = encrypt_filename(vault_key, local_path.name)
+
+                # Encrypt the file content
+                ciphertext, content_iv_bytes = vault_key.encrypt(file_content)
+
+                # Convert IV to base64
+                content_iv = base64.b64encode(content_iv_bytes).decode("ascii")
+
+                # Upload the encrypted file
+                if not out.quiet:
+                    out.info(f"Uploading: {rel_path}")
+
+                result = client.upload_vault_file(
+                    file_path=local_path,
+                    encrypted_content=ciphertext,
+                    encrypted_name=encrypted_name,
+                    name_iv=name_iv,
+                    content_iv=content_iv,
+                    vault_id=vault_id,
+                    parent_id=file_parent_id,
+                )
+
+                if out.json_output:
+                    out.output_json(result)
+                else:
+                    file_entry = result.get("fileEntry", {})
+                    out.success(
+                        f"Uploaded: {rel_path} (ID: {file_entry.get('id', 'N/A')})"
+                    )
+                return True
+
+            except Exception as e:
+                out.error(f"Failed to upload {rel_path}: {e}")
+                return False
+
+        # Upload all files
+        success_count = 0
+        for local_path, rel_path in files_to_upload:
+            if upload_single_file(local_path, rel_path):
+                success_count += 1
+
+        if len(files_to_upload) > 1:
+            out.info(
+                f"Uploaded {success_count}/{len(files_to_upload)} files successfully"
+            )
 
     except DrimeAPIError as e:
         out.error(str(e))
