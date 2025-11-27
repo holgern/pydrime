@@ -566,6 +566,7 @@ def parallel_upload(
     max_workers: int = 1,
     api_mode: ApiMode = "uploads",
     start_delay: float = 0.0,
+    client: Optional[DrimeClient] = None,
 ) -> list[dict]:
     """Upload multiple files in parallel using ThreadPoolExecutor.
 
@@ -578,6 +579,7 @@ def parallel_upload(
         max_workers: Maximum number of parallel workers
         api_mode: API mode to use ("uploads", "presign", or "multipart")
         start_delay: Delay in seconds between starting each upload (staggered start)
+        client: Optional DrimeClient instance for pre-creating folder
 
     Returns:
         List of upload results
@@ -588,6 +590,20 @@ def parallel_upload(
     print_info(f"API mode: {api_mode}")
     if start_delay > 0:
         print_info(f"Start delay between uploads: {start_delay}s")
+
+    # Pre-create the remote folder to avoid race conditions when multiple
+    # uploads try to create the same parent folder simultaneously
+    if client is not None and max_workers > 1:
+        print_info("Pre-creating remote folder to avoid race conditions...")
+        try:
+            result = client.create_folder(name=remote_folder, parent_id=None)
+            if result.get("status") == "success":
+                folder_id = result.get("folder", {}).get("id")
+                print_success(f"Created folder '{remote_folder}' (id={folder_id})")
+            else:
+                print_warning(f"Folder creation returned: {result.get('status')}")
+        except Exception as e:
+            print_warning(f"Could not pre-create folder: {e}")
 
     results = []
     start_time = time.time()
@@ -804,6 +820,7 @@ def main():  # noqa: C901
             max_workers=max_workers,
             api_mode=api_mode,
             start_delay=start_delay,
+            client=client,
         )
 
         # Build file size map for speed calculations
