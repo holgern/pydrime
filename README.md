@@ -5,7 +5,9 @@
 
 # PyDrime
 
-A command-line tool for uploading files and directories to Drime Cloud.
+A command-line tool for uploading files and directories to Drime Cloud. This
+library was influenced by the great [filen.io cli tool](https://github.com/FilenCloudDienste/filen-cli)
+and it's [sync lib](https://github.com/FilenCloudDienste/filen-sync).
 
 ## ⚠️ Disclaimer
 
