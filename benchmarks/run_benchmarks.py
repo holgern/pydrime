@@ -102,10 +102,12 @@ def run_benchmark(
 
     try:
         # Run the benchmark script
+        # Merge stderr into stdout to avoid potential deadlock from separate
+        # pipe buffers filling up. This ensures all output is streamed in order.
         process = subprocess.Popen(
             [sys.executable, str(benchmark_file)],
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # Merge stderr into stdout
             text=True,
             bufsize=1,
             universal_newlines=True,
@@ -113,9 +115,8 @@ def run_benchmark(
         )
 
         output_lines = []
-        error_lines = []
 
-        # Stream stdout in real-time if verbose
+        # Stream stdout (which now includes stderr) in real-time if verbose
         if process.stdout:
             for line in process.stdout:
                 if verbose:
@@ -123,15 +124,11 @@ def run_benchmark(
                     sys.stdout.flush()
                 output_lines.append(line)
 
-        # Capture stderr
-        if process.stderr:
-            error_lines = process.stderr.readlines()
-
         exit_code = process.wait()
         duration = time.time() - start_time
 
         output = "".join(output_lines)
-        error = "".join(error_lines)
+        error = ""  # stderr is now merged with stdout
 
         # Count tests from output
         tests_passed, tests_total = parse_test_counts(output)
