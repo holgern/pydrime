@@ -47,6 +47,10 @@ class SyncProgressInfo:
         current_file_bytes: Bytes uploaded for current file
         current_file_total: Total bytes for current file
         error_message: Error message if event is an error
+        folder_files_uploaded: Files uploaded in current folder
+        folder_files_total: Total files to upload in current folder
+        folder_bytes_uploaded: Bytes uploaded in current folder
+        folder_bytes_total: Total bytes to upload in current folder
     """
 
     event: SyncProgressEvent
@@ -60,6 +64,11 @@ class SyncProgressInfo:
     current_file_bytes: int = 0
     current_file_total: int = 0
     error_message: str = ""
+    # Per-folder statistics
+    folder_files_uploaded: int = 0
+    folder_files_total: int = 0
+    folder_bytes_uploaded: int = 0
+    folder_bytes_total: int = 0
 
 
 # Type alias for progress callback
@@ -95,6 +104,13 @@ class SyncProgressTracker:
         self._file_bytes: dict[str, int] = {}
         self._file_totals: dict[str, int] = {}
 
+        # Per-folder tracking
+        self._current_folder = ""
+        self._folder_files_total = 0
+        self._folder_files_uploaded = 0
+        self._folder_bytes_total = 0
+        self._folder_bytes_uploaded = 0
+
     def reset(self) -> None:
         """Reset all counters."""
         with self.lock:
@@ -104,6 +120,18 @@ class SyncProgressTracker:
             self.total_files_skipped = 0
             self._file_bytes.clear()
             self._file_totals.clear()
+            self._current_folder = ""
+            self._folder_files_total = 0
+            self._folder_files_uploaded = 0
+            self._folder_bytes_total = 0
+            self._folder_bytes_uploaded = 0
+
+    def _reset_folder_stats(self) -> None:
+        """Reset per-folder counters for a new folder."""
+        self._folder_files_total = 0
+        self._folder_files_uploaded = 0
+        self._folder_bytes_total = 0
+        self._folder_bytes_uploaded = 0
 
     def add_bytes_to_upload(self, total_bytes: int) -> None:
         """Add bytes to the total bytes to upload.
@@ -159,6 +187,11 @@ class SyncProgressTracker:
         """
         with self.lock:
             self.total_bytes_to_upload += total_bytes
+            # Reset folder stats for new folder
+            self._current_folder = directory
+            self._reset_folder_stats()
+            self._folder_files_total = num_files
+            self._folder_bytes_total = total_bytes
 
         if self.callback:
             self.callback(
@@ -169,6 +202,10 @@ class SyncProgressTracker:
                     files_uploaded=self.total_files_uploaded,
                     bytes_uploaded=self.total_bytes_uploaded,
                     bytes_total=self.total_bytes_to_upload,
+                    folder_files_uploaded=0,
+                    folder_files_total=num_files,
+                    folder_bytes_uploaded=0,
+                    folder_bytes_total=total_bytes,
                 )
             )
 
@@ -211,20 +248,31 @@ class SyncProgressTracker:
             increment = bytes_uploaded - prev_bytes
             self._file_bytes[file_path] = bytes_uploaded
             self.total_bytes_uploaded += increment
+            self._folder_bytes_uploaded += increment
 
             current_total = self.total_bytes_uploaded
             overall_total = self.total_bytes_to_upload
+            folder_bytes = self._folder_bytes_uploaded
+            folder_bytes_total = self._folder_bytes_total
+            folder_files = self._folder_files_uploaded
+            folder_files_total = self._folder_files_total
+            directory = self._current_folder
 
         if self.callback:
             self.callback(
                 SyncProgressInfo(
                     event=SyncProgressEvent.UPLOAD_FILE_PROGRESS,
+                    directory=directory,
                     file_path=file_path,
                     current_file_bytes=bytes_uploaded,
                     current_file_total=total_bytes,
                     files_uploaded=self.total_files_uploaded,
                     bytes_uploaded=current_total,
                     bytes_total=overall_total,
+                    folder_files_uploaded=folder_files,
+                    folder_files_total=folder_files_total,
+                    folder_bytes_uploaded=folder_bytes,
+                    folder_bytes_total=folder_bytes_total,
                 )
             )
 
@@ -236,6 +284,7 @@ class SyncProgressTracker:
         """
         with self.lock:
             self.total_files_uploaded += 1
+            self._folder_files_uploaded += 1
             # Clean up per-file tracking
             self._file_bytes.pop(file_path, None)
             self._file_totals.pop(file_path, None)
@@ -243,15 +292,25 @@ class SyncProgressTracker:
             files_uploaded = self.total_files_uploaded
             bytes_uploaded = self.total_bytes_uploaded
             bytes_total = self.total_bytes_to_upload
+            folder_files = self._folder_files_uploaded
+            folder_files_total = self._folder_files_total
+            folder_bytes = self._folder_bytes_uploaded
+            folder_bytes_total = self._folder_bytes_total
+            directory = self._current_folder
 
         if self.callback:
             self.callback(
                 SyncProgressInfo(
                     event=SyncProgressEvent.UPLOAD_FILE_COMPLETE,
+                    directory=directory,
                     file_path=file_path,
                     files_uploaded=files_uploaded,
                     bytes_uploaded=bytes_uploaded,
                     bytes_total=bytes_total,
+                    folder_files_uploaded=folder_files,
+                    folder_files_total=folder_files_total,
+                    folder_bytes_uploaded=folder_bytes,
+                    folder_bytes_total=folder_bytes_total,
                 )
             )
 
@@ -296,6 +355,12 @@ class SyncProgressTracker:
             directory: Relative path of directory
             num_uploaded: Number of files successfully uploaded
         """
+        with self.lock:
+            folder_files = self._folder_files_uploaded
+            folder_files_total = self._folder_files_total
+            folder_bytes = self._folder_bytes_uploaded
+            folder_bytes_total = self._folder_bytes_total
+
         if self.callback:
             self.callback(
                 SyncProgressInfo(
@@ -306,6 +371,10 @@ class SyncProgressTracker:
                     files_skipped=self.total_files_skipped,
                     bytes_uploaded=self.total_bytes_uploaded,
                     bytes_total=self.total_bytes_to_upload,
+                    folder_files_uploaded=folder_files,
+                    folder_files_total=folder_files_total,
+                    folder_bytes_uploaded=folder_bytes,
+                    folder_bytes_total=folder_bytes_total,
                 )
             )
 
