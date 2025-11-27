@@ -685,6 +685,18 @@ def ls(  # noqa: C901
         if workspace is None:
             workspace = config.get_default_workspace() or 0
 
+        # Display workspace and current directory info
+        if not out.quiet and not out.json_output:
+            from .workspace_utils import (
+                format_workspace_display,
+                get_folder_display_name,
+            )
+
+            workspace_display, _ = format_workspace_display(client, workspace)
+            current_folder_id = config.get_current_folder()
+            folder_display, _ = get_folder_display_name(client, current_folder_id)
+            out.info(f"Workspace: {workspace_display} | Directory: {folder_display}")
+
         # Check if parent_identifier is a glob pattern
         glob_pattern = None
         if parent_identifier is not None and is_glob_pattern(parent_identifier):
@@ -892,6 +904,18 @@ def du(
         # Use default workspace if none specified
         if workspace is None:
             workspace = config.get_default_workspace() or 0
+
+        # Display workspace and current directory info
+        if not out.quiet and not out.json_output:
+            from .workspace_utils import (
+                format_workspace_display,
+                get_folder_display_name,
+            )
+
+            workspace_display, _ = format_workspace_display(client, workspace)
+            current_folder_id = config.get_current_folder()
+            folder_display, _ = get_folder_display_name(client, current_folder_id)
+            out.info(f"Workspace: {workspace_display} | Directory: {folder_display}")
 
         # Resolve parent_identifier to parent_id
         parent_id = None
@@ -2066,11 +2090,11 @@ def cd(ctx: Any, folder_identifier: Optional[str]) -> None:
     """Change current working directory (folder).
 
     FOLDER_IDENTIFIER: ID or name of the folder to navigate to
-                       (omit or use 0 or / for root)
+                       (omit or use 0 or / for root, use .. for parent)
 
     Examples:
         pydrime cd 480432024    # Navigate to folder with ID 480432024
-        pydrime cd .            # Navigate to folder named "."
+        pydrime cd ..           # Navigate to parent folder
         pydrime cd "My Folder"  # Navigate to folder named "My Folder"
         pydrime cd              # Navigate to root directory
         pydrime cd 0            # Navigate to root directory
@@ -2088,6 +2112,31 @@ def cd(ctx: Any, folder_identifier: Optional[str]) -> None:
     if folder_identifier is None or folder_identifier in ("0", "/"):
         config.save_current_folder(None)
         out.success("Changed to root directory")
+        return
+
+    # Handle ".." to navigate to parent folder
+    if folder_identifier == "..":
+        current_folder = config.get_current_folder()
+        if current_folder is None:
+            # Already at root, do nothing
+            out.info("Already at root directory")
+            return
+
+        try:
+            client = DrimeClient(api_key=api_key)
+            folder_info = client.get_folder_info(current_folder)
+            parent_id = folder_info.get("parent_id")
+
+            if parent_id is None or parent_id == 0:
+                # Parent is root
+                config.save_current_folder(None)
+                out.success("Changed to root directory")
+            else:
+                config.save_current_folder(parent_id)
+                out.success(f"Changed to folder ID: {parent_id}")
+        except DrimeAPIError as e:
+            out.error(str(e))
+            ctx.exit(1)
         return
 
     try:
