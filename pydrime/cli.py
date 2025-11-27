@@ -1484,6 +1484,52 @@ def download(
         ctx.exit(1)
 
 
+def _display_sync_summary(out: OutputFormatter, stats: dict, dry_run: bool) -> None:
+    """Display sync summary stats.
+
+    This function mirrors SyncEngine._display_summary but uses the CLI's
+    OutputFormatter. Used when progress display is enabled and engine
+    output is suppressed.
+
+    Args:
+        out: OutputFormatter instance
+        stats: Statistics dictionary from sync operation
+        dry_run: Whether this was a dry run
+    """
+    out.print("")
+    if dry_run:
+        out.success("Dry run complete!")
+    else:
+        out.success("Sync complete!")
+
+    # Show statistics
+    total_actions = (
+        stats.get("uploads", 0)
+        + stats.get("downloads", 0)
+        + stats.get("deletes_local", 0)
+        + stats.get("deletes_remote", 0)
+        + stats.get("renames_local", 0)
+        + stats.get("renames_remote", 0)
+    )
+
+    if total_actions > 0:
+        out.info(f"Total actions: {total_actions}")
+        if stats.get("uploads", 0) > 0:
+            out.info(f"  Uploaded: {stats['uploads']}")
+        if stats.get("downloads", 0) > 0:
+            out.info(f"  Downloaded: {stats['downloads']}")
+        if stats.get("renames_local", 0) > 0:
+            out.info(f"  Renamed locally: {stats['renames_local']}")
+        if stats.get("renames_remote", 0) > 0:
+            out.info(f"  Renamed remotely: {stats['renames_remote']}")
+        if stats.get("deletes_local", 0) > 0:
+            out.info(f"  Deleted locally: {stats['deletes_local']}")
+        if stats.get("deletes_remote", 0) > 0:
+            out.info(f"  Deleted remotely: {stats['deletes_remote']}")
+    else:
+        out.info("No changes needed - everything is in sync!")
+
+
 @main.command()
 @click.argument("path", type=str, required=False, default=None)
 @click.option("--remote-path", "-r", help="Remote destination path")
@@ -1782,6 +1828,11 @@ def sync(
                         start_delay=start_delay,
                     )
 
+                # Display summary stats when using progress display
+                # (engine output is suppressed during progress display)
+                if use_progress_display and not out.quiet:
+                    _display_sync_summary(out, stats, dry_run=False)
+
                 # Add pair info to stats
                 stats["pair_index"] = i
                 stats["local"] = str(pair.local)
@@ -1953,6 +2004,11 @@ def sync(
                 max_workers=workers,
                 start_delay=start_delay,
             )
+
+        # Display summary stats when using progress display
+        # (engine output is suppressed during progress display)
+        if use_progress_display and not out.quiet:
+            _display_sync_summary(out, stats, dry_run=False)
 
         # Output results
         if out.json_output:
