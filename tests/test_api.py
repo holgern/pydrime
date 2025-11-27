@@ -1832,16 +1832,17 @@ class TestUploadVerification:
 
         file_size = test_file.stat().st_size
 
-        # Mock responses: presign, entry creation, get_file_entry
+        # Mock responses: presign, entry creation (with verification data)
+        # Verification is now done from the entry creation response directly
         mock_request.side_effect = [
             {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
-            {"status": "success", "fileEntry": {"id": 123}},
             {
+                "status": "success",
                 "fileEntry": {
                     "id": 123,
                     "file_size": file_size,
                     "users": [{"id": 1, "email": "test@example.com"}],
-                }
+                },
             },
         ]
 
@@ -1868,7 +1869,7 @@ class TestUploadVerification:
     def test_upload_file_retry_on_missing_users(
         self, mock_request, mock_detect_mime, mock_put
     ):
-        """Test upload retries when users field is missing."""
+        """Test upload retries when users field is missing in response."""
         import tempfile
         from pathlib import Path
         from unittest.mock import MagicMock
@@ -1883,26 +1884,23 @@ class TestUploadVerification:
         messages = []
 
         # Mock responses:
-        # First upload: presign, entry creation, get_file_entry (no users) x 3
-        # Delete entry
-        # Second upload: presign, entry creation, get_file_entry (with users)
+        # Verification is done from entry creation response directly
+        # First attempt: presign, entry creation (no users) -> delete
+        # Second attempt: presign, entry creation (with users) -> success
         mock_request.side_effect = [
-            # First attempt
+            # First attempt - missing users in response
             {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
-            {"status": "success", "fileEntry": {"id": 123}},
-            {"fileEntry": {"id": 123, "file_size": file_size, "users": []}},  # verify 0
-            {"fileEntry": {"id": 123, "file_size": file_size, "users": []}},  # verify 1
-            {"fileEntry": {"id": 123, "file_size": file_size, "users": []}},  # verify 2
+            {"status": "success", "fileEntry": {"id": 123, "file_size": file_size}},
             {"status": "success"},  # delete entry
-            # Second attempt
+            # Second attempt - users present
             {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
-            {"status": "success", "fileEntry": {"id": 456}},
             {
+                "status": "success",
                 "fileEntry": {
                     "id": 456,
                     "file_size": file_size,
                     "users": [{"id": 1, "email": "test@example.com"}],
-                }
+                },
             },
         ]
 
@@ -1950,29 +1948,20 @@ class TestUploadVerification:
 
         file_size = test_file.stat().st_size
 
-        # All attempts fail with missing users
-        # Each attempt: presign, entry creation, 3 verify attempts, delete (except last)
+        # All attempts fail with missing users in response
+        # Each attempt: presign, entry creation (no users), delete (except last)
         mock_request.side_effect = [
             # Attempt 1
             {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
-            {"status": "success", "fileEntry": {"id": 123}},
-            {"fileEntry": {"id": 123, "file_size": file_size, "users": []}},
-            {"fileEntry": {"id": 123, "file_size": file_size, "users": []}},
-            {"fileEntry": {"id": 123, "file_size": file_size, "users": []}},
+            {"status": "success", "fileEntry": {"id": 123, "file_size": file_size}},
             {"status": "success"},  # delete
             # Attempt 2
             {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
-            {"status": "success", "fileEntry": {"id": 456}},
-            {"fileEntry": {"id": 456, "file_size": file_size, "users": []}},
-            {"fileEntry": {"id": 456, "file_size": file_size, "users": []}},
-            {"fileEntry": {"id": 456, "file_size": file_size, "users": []}},
+            {"status": "success", "fileEntry": {"id": 456, "file_size": file_size}},
             {"status": "success"},  # delete
             # Attempt 3 (last - no delete after this)
             {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
-            {"status": "success", "fileEntry": {"id": 789}},
-            {"fileEntry": {"id": 789, "file_size": file_size, "users": []}},
-            {"fileEntry": {"id": 789, "file_size": file_size, "users": []}},
-            {"fileEntry": {"id": 789, "file_size": file_size, "users": []}},
+            {"status": "success", "fileEntry": {"id": 789, "file_size": file_size}},
         ]
 
         mock_s3_response = MagicMock()
