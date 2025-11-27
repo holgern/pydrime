@@ -3936,7 +3936,6 @@ class TestShareCommand:
         result = runner.invoke(main, ["share", "123"])
 
         assert result.exit_code == 0
-        assert "Shareable link created" in result.output
         assert "https://dri.me/abc123def456" in result.output
         mock_client.create_shareable_link.assert_called_once_with(
             entry_id=123,
@@ -3965,7 +3964,6 @@ class TestShareCommand:
         result = runner.invoke(main, ["share", "test.txt"])
 
         assert result.exit_code == 0
-        assert "Shareable link created" in result.output
         assert "https://dri.me/abc123def456" in result.output
         mock_client.resolve_entry_identifier.assert_called_once_with(
             "test.txt", None, 0
@@ -3995,7 +3993,7 @@ class TestShareCommand:
         result = runner.invoke(main, ["share", "123", "-p", "mypassword"])
 
         assert result.exit_code == 0
-        assert "Shareable link created" in result.output
+        assert "https://dri.me/abc123def456" in result.output
         mock_client.create_shareable_link.assert_called_once_with(
             entry_id=123,
             password="mypassword",
@@ -4023,7 +4021,7 @@ class TestShareCommand:
         )
 
         assert result.exit_code == 0
-        assert "Shareable link created" in result.output
+        assert "https://dri.me/abc123def456" in result.output
         mock_client.create_shareable_link.assert_called_once_with(
             entry_id=123,
             password=None,
@@ -4049,7 +4047,7 @@ class TestShareCommand:
         result = runner.invoke(main, ["share", "123", "--allow-edit"])
 
         assert result.exit_code == 0
-        assert "Shareable link created" in result.output
+        assert "https://dri.me/abc123def456" in result.output
         mock_client.create_shareable_link.assert_called_once_with(
             entry_id=123,
             password=None,

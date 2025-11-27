@@ -3,7 +3,9 @@
 from pathlib import Path
 
 from pydrime.sync.ignore import (
+    DEFAULT_IGNORE_PATTERNS,
     IGNORE_FILE_NAME,
+    LOCAL_TRASH_DIR_NAME,
     IgnoreFileManager,
     IgnoreRule,
     load_ignore_file,
@@ -108,7 +110,8 @@ class TestIgnoreFileManager:
         manager = IgnoreFileManager()
         manager.load_cli_patterns(["*.log", "temp/*"])
 
-        assert len(manager.rules) == 2
+        # +1 for default pattern (.pydrime.trash.local)
+        assert len(manager.rules) == 3
         assert manager.is_ignored("debug.log")
         assert manager.is_ignored("temp/file.txt")
         assert not manager.is_ignored("important.txt")
@@ -187,8 +190,10 @@ class TestIgnoreFileManager:
         assert manager.is_ignored("test.log")
 
         manager.clear()
+        # After clear, default patterns are reloaded
         assert not manager.is_ignored("test.log")
-        assert len(manager.rules) == 0
+        # Only default patterns remain
+        assert len(manager.rules) == 1  # .pydrime.trash.local
 
     def test_get_effective_rules(self):
         """Test getting list of effective rules."""
@@ -196,7 +201,51 @@ class TestIgnoreFileManager:
         manager.load_cli_patterns(["*.log", "temp/*"])
 
         rules = manager.get_effective_rules()
-        assert len(rules) == 2
+        # +1 for default pattern (.pydrime.trash.local)
+        assert len(rules) == 3
+
+
+class TestDefaultIgnorePatterns:
+    """Tests for default ignore patterns (including local trash directory)."""
+
+    def test_default_patterns_loaded(self):
+        """Test that default patterns are loaded on initialization."""
+        manager = IgnoreFileManager()
+        # Default patterns should be loaded
+        assert len(manager.rules) == len(DEFAULT_IGNORE_PATTERNS)
+        assert LOCAL_TRASH_DIR_NAME in DEFAULT_IGNORE_PATTERNS
+
+    def test_local_trash_dir_ignored_by_default(self):
+        """Test that .pydrime.trash.local is ignored by default."""
+        manager = IgnoreFileManager()
+        # The trash directory itself should be ignored
+        assert manager.is_ignored(LOCAL_TRASH_DIR_NAME, is_dir=True)
+        # Files inside the trash directory should be ignored
+        assert manager.is_ignored(f"{LOCAL_TRASH_DIR_NAME}/file.txt")
+        assert manager.is_ignored(f"{LOCAL_TRASH_DIR_NAME}/subdir/file.txt")
+
+    def test_local_trash_dir_ignored_in_scanner(self, tmp_path: Path):
+        """Test that DirectoryScanner ignores the local trash directory."""
+        # Create test files
+        (tmp_path / "file.txt").write_text("content")
+
+        # Create local trash directory with files
+        trash_dir = tmp_path / LOCAL_TRASH_DIR_NAME
+        trash_dir.mkdir()
+        (trash_dir / "deleted_file.txt").write_text("deleted content")
+        timestamped = trash_dir / "20240101_120000"
+        timestamped.mkdir()
+        (timestamped / "another_deleted.txt").write_text("more deleted")
+
+        # Scan should only find file.txt
+        scanner = DirectoryScanner()
+        files = scanner.scan_local(tmp_path)
+
+        paths = [f.relative_path for f in files]
+        assert "file.txt" in paths
+        assert LOCAL_TRASH_DIR_NAME not in paths
+        # No files from trash directory should be included
+        assert not any(LOCAL_TRASH_DIR_NAME in p for p in paths)
 
 
 class TestLoadIgnoreFile:

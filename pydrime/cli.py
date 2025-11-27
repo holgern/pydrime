@@ -647,7 +647,13 @@ def ls(  # noqa: C901
 ) -> None:
     """List files and folders in a Drime Cloud directory.
 
-    PARENT_IDENTIFIER: ID or name of parent folder (omit to list current directory)
+    PARENT_IDENTIFIER: ID, name, or glob pattern of parent folder
+                       (omit to list current directory)
+
+    Supports glob patterns (*, ?, []) to filter entries by name:
+    - * matches any sequence of characters
+    - ? matches any single character
+    - [abc] matches any character in the set
 
     Similar to Unix ls command, shows file and folder names in a columnar format.
     Use 'du' command for detailed disk usage information.
@@ -657,8 +663,13 @@ def ls(  # noqa: C901
         pydrime ls 480432024                # List folder by ID
         pydrime ls test_folder              # List folder by name
         pydrime ls Documents                # List folder by name
+        pydrime ls "*.txt"                  # List all .txt files
+        pydrime ls "bench*"                 # List entries starting with bench
+        pydrime ls "file?.txt"              # Match file1.txt, file2.txt, etc.
         pydrime ls --page 2 --page-size 100 # List page 2 with 100 items per page
     """
+    from .utils import is_glob_pattern
+
     api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
 
@@ -674,6 +685,13 @@ def ls(  # noqa: C901
         if workspace is None:
             workspace = config.get_default_workspace() or 0
 
+        # Check if parent_identifier is a glob pattern
+        glob_pattern = None
+        if parent_identifier is not None and is_glob_pattern(parent_identifier):
+            # It's a glob pattern - will filter entries in current folder
+            glob_pattern = parent_identifier
+            parent_identifier = None
+
         # Resolve parent_identifier to parent_id
         parent_id = None
         if parent_identifier is not None:
@@ -686,8 +704,13 @@ def ls(  # noqa: C901
             )
             if not out.quiet and not parent_identifier.isdigit():
                 out.info(f"Resolved '{parent_identifier}' to folder ID: {parent_id}")
-        elif not any([deleted, starred, recent, shared, folder_hash, query]):
+        elif not any(
+            [deleted, starred, recent, shared, folder_hash, query, glob_pattern]
+        ):
             # If no parent_identifier specified, use current working directory
+            parent_id = config.get_current_folder()
+        elif glob_pattern:
+            # Use current folder for glob pattern filtering
             parent_id = config.get_current_folder()
 
         # Build parameters for API call
@@ -716,6 +739,19 @@ def ls(  # noqa: C901
 
         # Parse the response into our data model
         file_entries = FileEntriesResult.from_api_response(result)
+
+        # Apply glob pattern filtering if specified
+        if glob_pattern:
+            from .utils import glob_match
+
+            filtered_entries = [
+                e for e in file_entries.entries if glob_match(glob_pattern, e.name)
+            ]
+            file_entries.entries = filtered_entries
+            if not out.quiet and filtered_entries:
+                out.info(
+                    f"Matched {len(filtered_entries)} entries with '{glob_pattern}'"
+                )
 
         # If recursive, we need to get entries from subfolders too
         if recursive:
@@ -1183,11 +1219,18 @@ def download(
 ) -> None:
     """Download file(s) or folder(s) from Drime Cloud.
 
-    ENTRY_IDENTIFIERS: One or more file/folder paths, names, hashes, or numeric IDs
+    ENTRY_IDENTIFIERS: One or more file/folder paths, names, glob patterns,
+                       hashes, or numeric IDs
 
     Supports file/folder paths (e.g., folder/file.txt), names (resolved in current
-    directory), numeric IDs, and hashes. Folders are automatically downloaded
-    recursively with all their contents using the sync engine for reliable downloads.
+    directory), glob patterns (*, ?, []), numeric IDs, and hashes. Folders are
+    automatically downloaded recursively with all their contents using the sync
+    engine for reliable downloads.
+
+    Glob patterns:
+        * matches any sequence of characters
+        ? matches any single character
+        [abc] matches any character in the set
 
     Examples:
         pydrime download folder/file.txt              # Download by path
@@ -1199,6 +1242,9 @@ def download(
         pydrime download 480424796 480424802          # Multiple files by ID
         pydrime download -o ./dest test_folder        # Download to dir
         pydrime download test_folder --on-duplicate skip    # Skip existing
+        pydrime download "*.txt"                      # Download all .txt files
+        pydrime download "bench*"                     # Entries starting with "bench"
+        pydrime download "file?.txt"                  # Match file1.txt, file2.txt
     """
     from .download_helpers import (
         download_single_file,
@@ -1206,6 +1252,7 @@ def download(
         resolve_identifier_to_hash,
     )
     from .sync import SyncEngine
+    from .utils import is_glob_pattern
 
     api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
@@ -1225,6 +1272,34 @@ def download(
         output_dir = Path(output) if output else Path.cwd()
         if output and not output_dir.exists():
             output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Expand glob patterns to entry names
+        expanded_identifiers: list[str] = []
+        for identifier in entry_identifiers:
+            if is_glob_pattern(identifier):
+                # Resolve glob pattern to matching entries
+                matching_entries = client.resolve_entries_by_pattern(
+                    pattern=identifier,
+                    parent_id=current_folder,
+                    workspace_id=workspace,
+                )
+                if matching_entries:
+                    if not out.quiet:
+                        out.info(
+                            f"Matched {len(matching_entries)} entries "
+                            f"with pattern '{identifier}'"
+                        )
+                    # Use entry names as identifiers
+                    for entry in matching_entries:
+                        expanded_identifiers.append(entry.name)
+                else:
+                    out.warning(f"No entries match pattern '{identifier}'")
+            else:
+                expanded_identifiers.append(identifier)
+
+        if not expanded_identifiers:
+            out.warning("No entries to download.")
+            return
 
         def resolve_and_get_entry(identifier: str) -> Optional[FileEntry]:
             """Resolve identifier and get the FileEntry object."""
@@ -1303,7 +1378,7 @@ def download(
                     on_duplicate=on_duplicate,
                     no_progress=no_progress,
                     output_override=output if len(entry_identifiers) == 1 else None,
-                    single_file=(len(entry_identifiers) == 1),
+                    single_file=(len(expanded_identifiers) == 1),
                     show_progress=True,
                 )
             return True
@@ -1317,13 +1392,13 @@ def download(
             if not success:
                 nonlocal_error_count[0] += 1
 
-        if workers > 1 and len(entry_identifiers) > 1:
+        if workers > 1 and len(expanded_identifiers) > 1:
             # Parallel download for multiple entries
             # Note: For folders, each folder download already uses parallel workers
             # internally via SyncEngine, so we use sequential here to avoid
             # over-parallelization
             has_folders = False
-            for identifier in entry_identifiers:
+            for identifier in expanded_identifiers:
                 entry = resolve_and_get_entry(identifier)
                 if entry and entry.is_folder:
                     has_folders = True
@@ -1331,13 +1406,13 @@ def download(
 
             if has_folders:
                 # Sequential for folder downloads (they parallelize internally)
-                for identifier in entry_identifiers:
+                for identifier in expanded_identifiers:
                     process_identifier(identifier, output_dir if output else None)
             else:
                 # Parallel for multiple file downloads
                 with ThreadPoolExecutor(max_workers=workers) as executor:
                     futures = {}
-                    for identifier in entry_identifiers:
+                    for identifier in expanded_identifiers:
                         future = executor.submit(
                             process_identifier,
                             identifier,
@@ -1363,14 +1438,14 @@ def download(
                         raise
         else:
             # Sequential download
-            for identifier in entry_identifiers:
+            for identifier in expanded_identifiers:
                 process_identifier(identifier, output_dir if output else None)
 
         if out.json_output:
             out.output_json({"files": downloaded_files})
 
         # Exit with error if all downloads failed
-        if nonlocal_error_count[0] == len(entry_identifiers):
+        if nonlocal_error_count[0] == len(expanded_identifiers):
             ctx.exit(1)
 
     except KeyboardInterrupt:
@@ -2217,10 +2292,10 @@ def rm(
 ) -> None:
     """Delete one or more file or folder entries.
 
-    ENTRY_IDENTIFIERS: One or more entry IDs or names to delete
+    ENTRY_IDENTIFIERS: One or more entry IDs, names, or glob patterns to delete
 
-    Supports both numeric IDs and file/folder names. Names are resolved
-    in the current working directory.
+    Supports numeric IDs, file/folder names, and glob patterns (*, ?, []).
+    Names and patterns are resolved in the current working directory.
 
     Examples:
         pydrime rm 480424796                    # Delete by ID
@@ -2228,9 +2303,13 @@ def rm(
         pydrime rm drime_test                   # Delete folder by name
         pydrime rm test1.txt test2.txt          # Delete multiple files
         pydrime rm 480424796 drime_test         # Mix IDs and names
+        pydrime rm "*.log"                      # Delete all .log files
+        pydrime rm "temp*"                      # Delete entries starting with temp
         pydrime rm --no-trash test1.txt         # Permanent deletion
         pydrime rm -w 5 test.txt                # Delete in workspace 5
     """
+    from .utils import is_glob_pattern
+
     api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
 
@@ -2251,24 +2330,48 @@ def rm(
         entry_ids = []
         for identifier in entry_identifiers:
             try:
+                # Check if identifier is a glob pattern
+                if is_glob_pattern(identifier):
+                    # Resolve glob pattern to matching entries
+                    matching_entries = client.resolve_entries_by_pattern(
+                        pattern=identifier,
+                        parent_id=current_folder,
+                        workspace_id=workspace,
+                    )
+                    if not matching_entries:
+                        out.warning(f"No entries match pattern '{identifier}'")
+                        continue
+                    if not out.quiet:
+                        out.info(
+                            f"Pattern '{identifier}' matched {len(matching_entries)} "
+                            f"entries: {', '.join(e.name for e in matching_entries)}"
+                        )
+                    entry_ids.extend(e.id for e in matching_entries)
                 # Check if identifier is a path (contains /)
-                if "/" in identifier:
+                elif "/" in identifier:
                     entry_id = client.resolve_path_to_id(
                         path=identifier,
                         workspace_id=workspace,
                     )
+                    if not out.quiet:
+                        out.info(f"Resolved '{identifier}' to entry ID: {entry_id}")
+                    entry_ids.append(entry_id)
                 else:
                     entry_id = client.resolve_entry_identifier(
                         identifier=identifier,
                         parent_id=current_folder,
                         workspace_id=workspace,
                     )
-                if not out.quiet and not identifier.isdigit():
-                    out.info(f"Resolved '{identifier}' to entry ID: {entry_id}")
-                entry_ids.append(entry_id)
+                    if not out.quiet and not identifier.isdigit():
+                        out.info(f"Resolved '{identifier}' to entry ID: {entry_id}")
+                    entry_ids.append(entry_id)
             except DrimeNotFoundError as e:
                 out.error(str(e))
                 ctx.exit(1)
+
+        if not entry_ids:
+            out.warning("No entries to delete.")
+            return
 
         # Confirm deletion
         action = "permanently delete" if no_trash else "move to trash"
@@ -2300,7 +2403,7 @@ def rm(
 
 
 @main.command()
-@click.argument("entry_identifier", type=str)
+@click.argument("entry_identifiers", nargs=-1, required=True)
 @click.option("--password", "-p", help="Optional password for the link")
 @click.option(
     "--expires", "-e", help="Expiration date (format: 2025-12-31T23:59:59.000000Z)"
@@ -2315,18 +2418,23 @@ def rm(
 @click.pass_context
 def share(
     ctx: Any,
-    entry_identifier: str,
+    entry_identifiers: tuple[str, ...],
     password: Optional[str],
     expires: Optional[str],
     allow_edit: bool,
     allow_download: bool,
 ) -> None:
-    """Create a shareable link for a file or folder.
+    """Create a shareable link for file(s) or folder(s).
 
-    ENTRY_IDENTIFIER: ID or name of the entry to share
+    ENTRY_IDENTIFIERS: One or more IDs, names, or glob patterns of entries to share
 
-    Supports both numeric IDs and file/folder names. Names are resolved
-    in the current working directory.
+    Supports numeric IDs, file/folder names, and glob patterns (*, ?, []).
+    Names are resolved in the current working directory.
+
+    Glob patterns:
+        * matches any sequence of characters
+        ? matches any single character
+        [abc] matches any character in the set
 
     Examples:
         pydrime share 480424796                   # Share by ID
@@ -2335,7 +2443,12 @@ def share(
         pydrime share test.txt -p mypass123       # Share with password
         pydrime share test.txt -e 2025-12-31      # Share with expiration
         pydrime share test.txt --allow-edit       # Allow editing
+        pydrime share "*.txt"                     # Share all .txt files
+        pydrime share "doc*"                      # Share entries starting with doc
+        pydrime share file1.txt file2.txt         # Share multiple files
     """
+    from .utils import is_glob_pattern
+
     api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
 
@@ -2349,33 +2462,89 @@ def share(
         current_folder = config.get_current_folder()
         workspace = config.get_default_workspace() or 0
 
-        # Resolve identifier to entry ID
-        try:
-            entry_id = int(entry_identifier)
-        except ValueError:
-            # Not a numeric ID, resolve by name
-            entry_id = client.resolve_entry_identifier(
-                entry_identifier, current_folder, workspace
-            )
+        # Expand glob patterns to entry names
+        expanded_identifiers: list[str] = []
+        for identifier in entry_identifiers:
+            if is_glob_pattern(identifier):
+                # Resolve glob pattern to matching entries
+                matching_entries = client.resolve_entries_by_pattern(
+                    pattern=identifier,
+                    parent_id=current_folder,
+                    workspace_id=workspace,
+                )
+                if matching_entries:
+                    if not out.quiet:
+                        out.info(
+                            f"Matched {len(matching_entries)} entries "
+                            f"with pattern '{identifier}'"
+                        )
+                    for entry in matching_entries:
+                        expanded_identifiers.append(entry.name)
+                else:
+                    out.warning(f"No entries match pattern '{identifier}'")
+            else:
+                expanded_identifiers.append(identifier)
 
-        result = client.create_shareable_link(
-            entry_id=entry_id,
-            password=password,
-            expires_at=expires,
-            allow_edit=allow_edit,
-            allow_download=allow_download,
-        )
+        if not expanded_identifiers:
+            out.warning("No entries to share.")
+            return
+
+        # Process each identifier
+        results: list[dict] = []
+        errors: list[str] = []
+
+        for identifier in expanded_identifiers:
+            # Resolve identifier to entry ID
+            try:
+                entry_id = int(identifier)
+            except ValueError:
+                # Not a numeric ID, resolve by name
+                try:
+                    entry_id = client.resolve_entry_identifier(
+                        identifier, current_folder, workspace
+                    )
+                except DrimeNotFoundError:
+                    errors.append(f"Entry not found: {identifier}")
+                    continue
+
+            try:
+                result = client.create_shareable_link(
+                    entry_id=entry_id,
+                    password=password,
+                    expires_at=expires,
+                    allow_edit=allow_edit,
+                    allow_download=allow_download,
+                )
+
+                if isinstance(result, dict) and "link" in result:
+                    link_hash = result["link"].get("hash", "")
+                    link_url = f"https://dri.me/{link_hash}"
+                    results.append(
+                        {"identifier": identifier, "url": link_url, "result": result}
+                    )
+                    if not out.quiet and not out.json_output:
+                        out.success(f"✓ {identifier}: {link_url}")
+                else:
+                    results.append({"identifier": identifier, "result": result})
+                    if not out.quiet and not out.json_output:
+                        out.warning(
+                            f"Link created for {identifier} (format unexpected)"
+                        )
+            except DrimeAPIError as e:
+                errors.append(f"{identifier}: {e}")
 
         if out.json_output:
-            out.output_json(result)
+            out.output_json({"links": results, "errors": errors})
         else:
-            if isinstance(result, dict) and "link" in result:
-                link_hash = result["link"].get("hash", "")
-                out.success("✓ Shareable link created:")
-                out.print(f"https://dri.me/{link_hash}")
-            else:
-                out.warning("Link created but format unexpected")
-                out.output_json(result)
+            if results and not out.quiet:
+                if len(results) > 1:
+                    out.success(f"\n✓ Created {len(results)} shareable link(s)")
+            if errors:
+                for error in errors:
+                    out.error(error)
+
+        if errors and not results:
+            ctx.exit(1)
 
     except DrimeAPIError as e:
         out.error(str(e))

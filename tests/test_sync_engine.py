@@ -375,3 +375,171 @@ class TestSyncEngineIntegration:
         # Verify uploads were called
         assert stats["uploads"] == 2
         assert mock_client_with_ops.upload_file.call_count == 2
+
+
+class TestLocalTrashOperations:
+    """Tests for local trash directory functionality."""
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for testing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    def test_move_to_local_trash(self, temp_dir: Path):
+        """Test moving a file to local trash directory."""
+        from pydrime.sync.operations import (
+            LOCAL_TRASH_DIR_NAME,
+            move_to_local_trash,
+        )
+
+        # Create a test file
+        test_file = temp_dir / "test_file.txt"
+        test_file.write_text("test content")
+
+        # Move to trash
+        trash_path = move_to_local_trash(test_file, temp_dir)
+
+        # Original file should be gone
+        assert not test_file.exists()
+
+        # File should be in trash directory
+        assert trash_path.exists()
+        assert LOCAL_TRASH_DIR_NAME in str(trash_path)
+        assert trash_path.read_text() == "test content"
+
+    def test_move_to_local_trash_preserves_structure(self, temp_dir: Path):
+        """Test that directory structure is preserved in trash."""
+        from pydrime.sync.operations import move_to_local_trash
+
+        # Create nested directory structure
+        nested_dir = temp_dir / "subdir1" / "subdir2"
+        nested_dir.mkdir(parents=True)
+        test_file = nested_dir / "nested_file.txt"
+        test_file.write_text("nested content")
+
+        # Move to trash
+        trash_path = move_to_local_trash(test_file, temp_dir)
+
+        # Original file should be gone
+        assert not test_file.exists()
+
+        # Trash path should contain the nested structure
+        assert trash_path.exists()
+        assert "subdir1" in str(trash_path)
+        assert "subdir2" in str(trash_path)
+        assert trash_path.name == "nested_file.txt"
+
+    def test_move_to_local_trash_nonexistent_file(self, temp_dir: Path):
+        """Test that moving nonexistent file raises error."""
+        from pydrime.sync.operations import move_to_local_trash
+
+        nonexistent = temp_dir / "nonexistent.txt"
+
+        with pytest.raises(FileNotFoundError):
+            move_to_local_trash(nonexistent, temp_dir)
+
+    def test_get_local_trash_path(self, temp_dir: Path):
+        """Test getting the local trash path."""
+        from pydrime.sync.operations import (
+            LOCAL_TRASH_DIR_NAME,
+            get_local_trash_path,
+        )
+
+        trash_path = get_local_trash_path(temp_dir)
+        assert trash_path == temp_dir / LOCAL_TRASH_DIR_NAME
+
+    def test_sync_operations_delete_local_with_trash(self, temp_dir: Path):
+        """Test SyncOperations.delete_local with trash enabled."""
+        from pydrime.sync.operations import LOCAL_TRASH_DIR_NAME, SyncOperations
+        from pydrime.sync.scanner import LocalFile
+
+        # Create a test file
+        test_file = temp_dir / "to_delete.txt"
+        test_file.write_text("delete me")
+        local_file = LocalFile.from_path(test_file, temp_dir)
+
+        # Create mock client
+        mock_client = Mock(spec=DrimeClient)
+        ops = SyncOperations(mock_client)
+
+        # Delete with trash enabled
+        ops.delete_local(local_file, use_trash=True, sync_root=temp_dir)
+
+        # Original should be gone
+        assert not test_file.exists()
+
+        # Trash directory should exist and contain the file
+        trash_dir = temp_dir / LOCAL_TRASH_DIR_NAME
+        assert trash_dir.exists()
+
+        # Find the file in trash (it's in a timestamped subdirectory)
+        trash_files = list(trash_dir.rglob("to_delete.txt"))
+        assert len(trash_files) == 1
+        assert trash_files[0].read_text() == "delete me"
+
+    def test_sync_operations_delete_local_without_trash(self, temp_dir: Path):
+        """Test SyncOperations.delete_local with trash disabled."""
+        from pydrime.sync.operations import LOCAL_TRASH_DIR_NAME, SyncOperations
+        from pydrime.sync.scanner import LocalFile
+
+        # Create a test file
+        test_file = temp_dir / "to_delete.txt"
+        test_file.write_text("delete me")
+        local_file = LocalFile.from_path(test_file, temp_dir)
+
+        # Create mock client
+        mock_client = Mock(spec=DrimeClient)
+        ops = SyncOperations(mock_client)
+
+        # Delete with trash disabled
+        ops.delete_local(local_file, use_trash=False, sync_root=temp_dir)
+
+        # File should be permanently deleted
+        assert not test_file.exists()
+
+        # Trash directory should NOT exist
+        trash_dir = temp_dir / LOCAL_TRASH_DIR_NAME
+        assert not trash_dir.exists()
+
+    def test_sync_operations_delete_local_without_sync_root(self, temp_dir: Path):
+        """Test SyncOperations.delete_local without sync_root falls back to delete."""
+        from pydrime.sync.operations import LOCAL_TRASH_DIR_NAME, SyncOperations
+        from pydrime.sync.scanner import LocalFile
+
+        # Create a test file
+        test_file = temp_dir / "to_delete.txt"
+        test_file.write_text("delete me")
+        local_file = LocalFile.from_path(test_file, temp_dir)
+
+        # Create mock client
+        mock_client = Mock(spec=DrimeClient)
+        ops = SyncOperations(mock_client)
+
+        # Delete with trash enabled but no sync_root
+        ops.delete_local(local_file, use_trash=True, sync_root=None)
+
+        # File should be permanently deleted (fallback behavior)
+        assert not test_file.exists()
+
+        # Trash directory should NOT exist
+        trash_dir = temp_dir / LOCAL_TRASH_DIR_NAME
+        assert not trash_dir.exists()
+
+    def test_sync_pair_disable_local_trash(self, temp_dir: Path):
+        """Test SyncPair.disable_local_trash setting."""
+        pair_with_trash = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+            disable_local_trash=False,
+        )
+        assert pair_with_trash.use_local_trash is True
+
+        pair_without_trash = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+            disable_local_trash=True,
+        )
+        assert pair_without_trash.use_local_trash is False
