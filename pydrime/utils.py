@@ -459,7 +459,8 @@ def glob_match(pattern: str, name: str) -> bool:
         >>> glob_match("[abc]*.py", "api.py")
         True
     """
-    return fnmatch.fnmatch(name, pattern)
+    # Use fnmatchcase for case-sensitive matching on all platforms
+    return fnmatch.fnmatchcase(name, pattern)
 
 
 def glob_match_entries(
