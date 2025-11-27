@@ -228,6 +228,10 @@ class IgnoreFileManager:
     .pydrignore files. It supports hierarchical ignore files where rules
     in subdirectories only apply to that subtree.
 
+    The manager caches ignore results to avoid rechecking the same paths
+    repeatedly, which significantly improves performance for large directory
+    trees. The cache is automatically invalidated when new rules are loaded.
+
     Examples:
         >>> manager = IgnoreFileManager()
         >>> manager.load_from_directory(Path("/sync/root"))
@@ -248,12 +252,25 @@ class IgnoreFileManager:
     cli_patterns: list[str] = field(default_factory=list)
     """Patterns provided via CLI --ignore option"""
 
+    # Cache for ignore results: (path, is_dir) -> ignored
+    _ignore_cache: dict[tuple[str, bool], bool] = field(default_factory=dict)
+    """Cache mapping (relative_path, is_dir) to ignore result"""
+
     def __post_init__(self) -> None:
         """Initialize with default ignore patterns."""
         # Load default patterns that are always ignored
         for pattern in DEFAULT_IGNORE_PATTERNS:
             rule = IgnoreRule(pattern=pattern)
             self.rules.append(rule)
+        # Initialize cache
+        self._ignore_cache = {}
+
+    def _invalidate_cache(self) -> None:
+        """Invalidate the ignore result cache.
+
+        Called when rules change (new patterns loaded or cleared).
+        """
+        self._ignore_cache.clear()
 
     def load_cli_patterns(self, patterns: list[str]) -> None:
         """Load ignore patterns from CLI arguments.
@@ -266,6 +283,8 @@ class IgnoreFileManager:
             if pattern.strip() and not pattern.strip().startswith("#"):
                 rule = IgnoreRule(pattern=pattern.strip())
                 self.rules.append(rule)
+        # Invalidate cache when rules change
+        self._invalidate_cache()
 
     def load_from_directory(self, directory: Path) -> None:
         """Load .pydrignore file from a directory if it exists.
@@ -284,6 +303,8 @@ class IgnoreFileManager:
         if ignore_file.exists() and ignore_file not in self._loaded_files:
             self._load_ignore_file(ignore_file)
             self._loaded_files.add(ignore_file)
+            # Invalidate cache when new rules are loaded
+            self._invalidate_cache()
 
     def _load_ignore_file(self, filepath: Path) -> None:
         """Load rules from a .pydrignore file.
@@ -326,7 +347,8 @@ class IgnoreFileManager:
         """Check if a path should be ignored.
 
         This method evaluates all rules in order, with later rules
-        (including negations) taking precedence.
+        (including negations) taking precedence. Results are cached
+        to avoid rechecking the same paths repeatedly.
 
         Args:
             relative_path: Path relative to base_path
@@ -342,16 +364,29 @@ class IgnoreFileManager:
         if not path:
             return False
 
+        # Check cache first (only for the exact path, not parents)
+        cache_key = (path, is_dir)
+        if cache_key in self._ignore_cache:
+            return self._ignore_cache[cache_key]
+
         # Check if any parent directory is ignored (unless checking a subdir rule)
         if check_parents:
             parts = path.split("/")
             for i in range(1, len(parts)):
                 parent_path = "/".join(parts[:i])
-                if self._check_rules(parent_path, is_dir=True):
+                # Check parent with caching (recursively)
+                if self.is_ignored(parent_path, is_dir=True, check_parents=False):
+                    # Cache the result for this path too
+                    self._ignore_cache[cache_key] = True
                     return True
 
         # Check the path itself
-        return self._check_rules(path, is_dir)
+        result = self._check_rules(path, is_dir)
+
+        # Cache the result
+        self._ignore_cache[cache_key] = result
+
+        return result
 
     def _check_rules(self, relative_path: str, is_dir: bool) -> bool:
         """Check rules against a specific path.

@@ -6,6 +6,7 @@ from typing import Optional
 
 from .modes import SyncMode
 from .scanner import LocalFile, RemoteFile
+from .state import LocalTree, RemoteTree
 
 
 class SyncAction(str, Enum):
@@ -22,6 +23,12 @@ class SyncAction(str, Enum):
 
     DELETE_REMOTE = "delete_remote"
     """Delete remote file"""
+
+    RENAME_LOCAL = "rename_local"
+    """Rename/move local file (detected via remote rename)"""
+
+    RENAME_REMOTE = "rename_remote"
+    """Rename/move remote file (detected via local rename)"""
 
     SKIP = "skip"
     """Skip file (no action needed)"""
@@ -49,6 +56,12 @@ class SyncDecision:
     relative_path: str
     """Relative path of the file"""
 
+    old_path: Optional[str] = None
+    """For rename operations: the previous path of the file"""
+
+    new_path: Optional[str] = None
+    """For rename operations: the new path of the file"""
+
 
 class FileComparator:
     """Compares local and remote files to determine sync actions.
@@ -56,12 +69,18 @@ class FileComparator:
     For bidirectional sync modes (TWO_WAY), the comparator can use previous
     sync state to determine whether a file that exists only on one side is
     a new file or was deleted from the other side.
+
+    Rename detection uses file_id (for local files) and id (for remote files)
+    to detect when a file has been moved/renamed rather than deleted+created.
+    This enables efficient rename operations instead of re-uploading/downloading.
     """
 
     def __init__(
         self,
         sync_mode: SyncMode,
         previous_synced_files: Optional[set[str]] = None,
+        previous_local_tree: Optional[LocalTree] = None,
+        previous_remote_tree: Optional[RemoteTree] = None,
     ):
         """Initialize file comparator.
 
@@ -70,9 +89,20 @@ class FileComparator:
             previous_synced_files: Set of relative paths that were synced
                                   in the previous sync operation. Used for
                                   deletion detection in TWO_WAY mode.
+            previous_local_tree: Previous local tree state for rename detection.
+                                Contains file_id -> path mapping.
+            previous_remote_tree: Previous remote tree state for rename detection.
+                                 Contains id -> path mapping.
         """
         self.sync_mode = sync_mode
         self.previous_synced_files = previous_synced_files or set()
+        self.previous_local_tree = previous_local_tree
+        self.previous_remote_tree = previous_remote_tree
+
+        # Track detected renames to avoid processing them twice
+        self._local_renames: dict[int, str] = {}  # file_id -> new_path
+        self._remote_renames: dict[int, str] = {}  # id -> new_path
+        self._handled_rename_old_paths: set[str] = set()
 
     def compare_files(
         self,
@@ -90,23 +120,82 @@ class FileComparator:
         """
         decisions: list[SyncDecision] = []
 
+        # First pass: detect renames by comparing with previous state
+        if self.sync_mode == SyncMode.TWO_WAY:
+            self._detect_renames(local_files, remote_files)
+
         # Get all unique paths
         all_paths = set(local_files.keys()) | set(remote_files.keys())
 
         for path in sorted(all_paths):
+            # Skip if this path was already handled as old path of a rename
+            if path in self._handled_rename_old_paths:
+                continue
+
             local_file = local_files.get(path)
             remote_file = remote_files.get(path)
 
-            decision = self._compare_single_file(path, local_file, remote_file)
+            decision = self._compare_single_file(
+                path, local_file, remote_file, local_files, remote_files
+            )
             decisions.append(decision)
 
         return decisions
+
+    def _detect_renames(
+        self,
+        local_files: dict[str, LocalFile],
+        remote_files: dict[str, RemoteFile],
+    ) -> None:
+        """Detect renames by comparing current files with previous state.
+
+        A rename is detected when:
+        - Local: A file_id exists in the previous local tree at path A,
+                 but now exists at path B in current local files
+        - Remote: An id exists in the previous remote tree at path A,
+                  but now exists at path B in current remote files
+
+        Args:
+            local_files: Current local files
+            remote_files: Current remote files
+        """
+        # Detect local renames (same file_id, different path)
+        if self.previous_local_tree:
+            # Build current file_id -> path mapping
+            current_local_by_file_id = {
+                f.file_id: f.relative_path for f in local_files.values()
+            }
+
+            for file_id, prev_state in self.previous_local_tree.file_ids.items():
+                if file_id in current_local_by_file_id:
+                    current_path = current_local_by_file_id[file_id]
+                    prev_path = prev_state.path
+                    if current_path != prev_path:
+                        # Local rename detected!
+                        self._local_renames[file_id] = current_path
+
+        # Detect remote renames (same id, different path)
+        if self.previous_remote_tree:
+            # Build current id -> path mapping
+            current_remote_by_id = {
+                f.id: f.relative_path for f in remote_files.values()
+            }
+
+            for remote_id, prev_state in self.previous_remote_tree.ids.items():
+                if remote_id in current_remote_by_id:
+                    current_path = current_remote_by_id[remote_id]
+                    prev_path = prev_state.path
+                    if current_path != prev_path:
+                        # Remote rename detected!
+                        self._remote_renames[remote_id] = current_path
 
     def _compare_single_file(
         self,
         path: str,
         local_file: Optional[LocalFile],
         remote_file: Optional[RemoteFile],
+        local_files: Optional[dict[str, LocalFile]] = None,
+        remote_files: Optional[dict[str, RemoteFile]] = None,
     ) -> SyncDecision:
         """Compare a single file and determine action.
 
@@ -114,6 +203,8 @@ class FileComparator:
             path: Relative path of the file
             local_file: Local file (if exists)
             remote_file: Remote file (if exists)
+            local_files: All local files (for rename lookup)
+            remote_files: All remote files (for rename lookup)
 
         Returns:
             SyncDecision for this file
@@ -124,11 +215,15 @@ class FileComparator:
 
         # Case 2: File only exists locally
         if local_file and not remote_file:
-            return self._handle_local_only(path, local_file)
+            return self._handle_local_only(
+                path, local_file, local_files or {}, remote_files or {}
+            )
 
         # Case 3: File only exists remotely
         if remote_file and not local_file:
-            return self._handle_remote_only(path, remote_file)
+            return self._handle_remote_only(
+                path, remote_file, local_files or {}, remote_files or {}
+            )
 
         # Should never happen
         return SyncDecision(
@@ -225,13 +320,49 @@ class FileComparator:
             relative_path=path,
         )
 
-    def _handle_local_only(self, path: str, local_file: LocalFile) -> SyncDecision:
+    def _handle_local_only(
+        self,
+        path: str,
+        local_file: LocalFile,
+        local_files: dict[str, LocalFile],
+        remote_files: dict[str, RemoteFile],
+    ) -> SyncDecision:
         """Handle file that only exists locally.
 
         For TWO_WAY mode with previous state:
         - If file was previously synced, it was deleted from remote -> delete local
         - If file was NOT previously synced, it's a new file -> upload
+        - If file_id matches a renamed file in remote, it's a rename -> rename remote
+
+        Args:
+            path: Current path of the file
+            local_file: Local file object
+            local_files: All current local files
+            remote_files: All current remote files
         """
+        # Check if this is a local rename that needs to be propagated to remote
+        if (
+            self.sync_mode == SyncMode.TWO_WAY
+            and local_file.file_id in self._local_renames
+            and self.previous_local_tree
+        ):
+            prev_state = self.previous_local_tree.get_by_file_id(local_file.file_id)
+            if prev_state and prev_state.path != path:
+                old_path = prev_state.path
+                # Check if old path still exists in remote
+                if old_path in remote_files:
+                    # Mark old path as handled
+                    self._handled_rename_old_paths.add(old_path)
+                    return SyncDecision(
+                        action=SyncAction.RENAME_REMOTE,
+                        reason=f"Local file renamed from '{old_path}' to '{path}'",
+                        local_file=local_file,
+                        remote_file=remote_files[old_path],
+                        relative_path=path,
+                        old_path=old_path,
+                        new_path=path,
+                    )
+
         # For TWO_WAY mode, use previous state to determine action
         if self.sync_mode == SyncMode.TWO_WAY and self.previous_synced_files:
             if path in self.previous_synced_files:
@@ -276,13 +407,49 @@ class FileComparator:
                 relative_path=path,
             )
 
-    def _handle_remote_only(self, path: str, remote_file: RemoteFile) -> SyncDecision:
+    def _handle_remote_only(
+        self,
+        path: str,
+        remote_file: RemoteFile,
+        local_files: dict[str, LocalFile],
+        remote_files: dict[str, RemoteFile],
+    ) -> SyncDecision:
         """Handle file that only exists remotely.
 
         For TWO_WAY mode with previous state:
         - If file was previously synced, it was deleted locally -> delete remote
         - If file was NOT previously synced, it's a new file -> download
+        - If id matches a renamed file locally, it's a rename -> rename local
+
+        Args:
+            path: Current path of the file
+            remote_file: Remote file object
+            local_files: All current local files
+            remote_files: All current remote files
         """
+        # Check if this is a remote rename that needs to be propagated to local
+        if (
+            self.sync_mode == SyncMode.TWO_WAY
+            and remote_file.id in self._remote_renames
+            and self.previous_remote_tree
+        ):
+            prev_state = self.previous_remote_tree.get_by_id(remote_file.id)
+            if prev_state and prev_state.path != path:
+                old_path = prev_state.path
+                # Check if old path still exists in local
+                if old_path in local_files:
+                    # Mark old path as handled
+                    self._handled_rename_old_paths.add(old_path)
+                    return SyncDecision(
+                        action=SyncAction.RENAME_LOCAL,
+                        reason=f"Remote file renamed from '{old_path}' to '{path}'",
+                        local_file=local_files[old_path],
+                        remote_file=remote_file,
+                        relative_path=path,
+                        old_path=old_path,
+                        new_path=path,
+                    )
+
         # For TWO_WAY mode, use previous state to determine action
         if self.sync_mode == SyncMode.TWO_WAY and self.previous_synced_files:
             if path in self.previous_synced_files:

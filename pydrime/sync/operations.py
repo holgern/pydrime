@@ -72,6 +72,42 @@ def move_to_local_trash(
     return trash_path
 
 
+def rename_local_file(
+    old_path: Path,
+    new_path: Path,
+) -> Path:
+    """Rename/move a local file.
+
+    Creates parent directories as needed and handles the rename atomically
+    where possible.
+
+    Args:
+        old_path: Current path of the file
+        new_path: New path for the file
+
+    Returns:
+        The new path
+
+    Raises:
+        FileNotFoundError: If the source file does not exist
+        FileExistsError: If the target path already exists
+        OSError: If the rename fails
+    """
+    if not old_path.exists():
+        raise FileNotFoundError(f"Source file not found: {old_path}")
+
+    if new_path.exists():
+        raise FileExistsError(f"Target path already exists: {new_path}")
+
+    # Ensure parent directory exists
+    new_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Rename the file
+    old_path.rename(new_path)
+
+    return new_path
+
+
 class SyncOperations:
     """Unified operations for upload/download with common interface."""
 
@@ -185,3 +221,65 @@ class SyncOperations:
 
         # Permanent delete
         local_file.path.unlink()
+
+    def rename_local(
+        self,
+        local_file: LocalFile,
+        new_relative_path: str,
+        sync_root: Path,
+    ) -> Path:
+        """Rename/move a local file.
+
+        This is used when a remote rename is detected and needs to be
+        propagated to the local filesystem.
+
+        Args:
+            local_file: Local file to rename
+            new_relative_path: New relative path for the file
+            sync_root: Root directory of the sync operation
+
+        Returns:
+            The new absolute path of the file
+
+        Raises:
+            FileNotFoundError: If the source file does not exist
+            FileExistsError: If the target path already exists
+            OSError: If the rename fails
+        """
+        new_path = sync_root / new_relative_path.replace("/", str(Path("/"))[0])
+        return rename_local_file(local_file.path, new_path)
+
+    def rename_remote(
+        self,
+        remote_file: RemoteFile,
+        new_name: str,
+        new_parent_id: Optional[int] = None,
+    ) -> Any:
+        """Rename/move a remote file.
+
+        This is used when a local rename is detected and needs to be
+        propagated to the remote storage.
+
+        For simple renames (same folder, different name), uses update_file_entry.
+        For moves (different folder), uses move_file_entries followed by rename.
+
+        Args:
+            remote_file: Remote file to rename
+            new_name: New name for the file (just the filename, not full path)
+            new_parent_id: New parent folder ID (for moves), or None to keep same parent
+
+        Returns:
+            Response from API
+        """
+        # If moving to a different folder, do the move first
+        if new_parent_id is not None:
+            self.client.move_file_entries(
+                entry_ids=[remote_file.id],
+                destination_id=new_parent_id,
+            )
+
+        # Rename the file
+        return self.client.update_file_entry(
+            entry_id=remote_file.id,
+            name=new_name,
+        )
