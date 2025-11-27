@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from ..models import FileEntry
 
@@ -23,6 +23,16 @@ class LocalFile:
     mtime: float
     """Last modification time (Unix timestamp)"""
 
+    file_id: int = 0
+    """Filesystem file identifier (inode on Unix, file index on Windows).
+
+    This value persists across renames on most filesystems, enabling
+    rename detection by tracking the same file_id at a different path.
+    """
+
+    creation_time: Optional[float] = None
+    """Creation time (Unix timestamp) if available"""
+
     @classmethod
     def from_path(cls, file_path: Path, base_path: Path) -> "LocalFile":
         """Create LocalFile from a path.
@@ -38,11 +48,20 @@ class LocalFile:
         # Use as_posix() to ensure forward slashes on all platforms
         relative_path = file_path.relative_to(base_path).as_posix()
 
+        # Get creation time if available (platform-dependent)
+        creation_time: Optional[float] = None
+        # st_birthtime on macOS, st_ctime on Linux (though ctime is change time)
+        stat_any: Any = stat  # Cast to Any to access platform-specific attributes
+        if hasattr(stat_any, "st_birthtime"):
+            creation_time = stat_any.st_birthtime
+
         return cls(
             path=file_path,
             relative_path=relative_path,
             size=stat.st_size,
             mtime=stat.st_mtime,
+            file_id=stat.st_ino,
+            creation_time=creation_time,
         )
 
 
@@ -85,8 +104,17 @@ class RemoteFile:
         return self.entry.id
 
     @property
+    def uuid(self) -> int:
+        """Remote file entry UUID (alias for id).
+
+        In Drime API, the entry ID serves as the unique identifier
+        that persists across renames, similar to file_id for local files.
+        """
+        return self.entry.id
+
+    @property
     def hash(self) -> str:
-        """Remote file entry hash."""
+        """Remote file entry hash (MD5)."""
         return self.entry.hash
 
 

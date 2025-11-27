@@ -16,10 +16,12 @@ from .exceptions import (
 )
 from .file_entries_manager import FileEntriesManager
 from .utils import (
+    RemoteFileVerificationResult,
     calculate_drime_hash,
     decode_drime_hash,
     format_size,
     parse_iso_timestamp,
+    verify_remote_files_have_users,
 )
 
 __all__ = [
@@ -36,8 +38,10 @@ __all__ = [
     "DrimeRateLimitError",
     "DrimeUploadError",
     "FileEntriesManager",
+    "RemoteFileVerificationResult",
     "calculate_drime_hash",
     "decode_drime_hash",
     "format_size",
     "parse_iso_timestamp",
+    "verify_remote_files_have_users",
 ]

@@ -23,9 +23,13 @@ import time
 import uuid
 from pathlib import Path
 
+from pydrime.api import DrimeClient
+from pydrime.config import config
+from pydrime.utils import verify_remote_files_have_users
+
 
 def run_sync_command(
-    sync_pair: str, workers: int = 1, batch_size: int = 10
+    sync_pair: str, workers: int = 4, batch_size: int = 10, start_delay: float = 3.0
 ) -> tuple[int, str]:
     """Run a pydrime sync command with streaming output.
 
@@ -39,7 +43,7 @@ def run_sync_command(
     """
     print(
         f"\n>>> Running: pydrime sync {sync_pair} "
-        f"--workers {workers} --batch-size {batch_size}"
+        f"--workers {workers} --batch-size {batch_size} --start-delay {start_delay}"
     )
     print("-" * 80)
     sys.stdout.flush()
@@ -52,6 +56,8 @@ def run_sync_command(
         str(workers),
         "--batch-size",
         str(batch_size),
+        "--start-delay",
+        str(start_delay),
     ]
 
     process = subprocess.Popen(
@@ -149,7 +155,9 @@ def cleanup_remote_folder(remote_folder: str) -> None:
         print(f"  ! Error deleting remote folder: {e}")
 
 
-def test_initial_state(local_dir: Path, remote_folder: str) -> bool:
+def test_initial_state(
+    local_dir: Path, remote_folder: str, client: DrimeClient, workspace_id: int
+) -> bool:
     """Test 1: Initial state - create local files and sync to cloud.
 
     LOCAL_BACKUP should upload all local files to cloud.
@@ -183,6 +191,20 @@ def test_initial_state(local_dir: Path, remote_folder: str) -> bool:
         return False
 
     print("[PASS] Initial state: 5 files uploaded successfully")
+
+    # Verify users field is set correctly
+    time.sleep(2)  # Wait for API to process
+    verification_result = verify_remote_files_have_users(
+        client, remote_folder, expected_count=5, workspace_id=workspace_id
+    )
+    if not verification_result:
+        print(
+            f"[FAIL] Users field verification failed: "
+            f"{verification_result.verified_count}/{verification_result.total_count} "
+            f"verified, expected 5"
+        )
+        return False
+    print("[PASS] Users field verification passed")
 
     # Verify idempotency
     time.sleep(2)
@@ -343,9 +365,16 @@ def main() -> None:
     print(f"\nRemote folder: /{remote_folder}")
     print(f"Local directory: {local_dir}")
 
+    # Create client for verification
+    client = DrimeClient()
+
+    # Get workspace ID from config (same as sync command uses)
+    workspace_id = config.get_default_workspace() or 0
+    print(f"Workspace ID: {workspace_id}")
+
     try:
         # Test 1: Initial state
-        if not test_initial_state(local_dir, remote_folder):
+        if not test_initial_state(local_dir, remote_folder, client, workspace_id):
             print("\n[FAIL] TEST 1 FAILED")
             cleanup_remote_folder(remote_folder)
             if base_dir.exists():

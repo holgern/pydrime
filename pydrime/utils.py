@@ -191,3 +191,201 @@ def normalize_to_hash(value: str) -> str:
     if is_file_id(value):
         return calculate_drime_hash(int(value))
     return value
+
+
+# =============================================================================
+# Remote file verification utilities
+# =============================================================================
+
+
+class RemoteFileVerificationResult:
+    """Result of remote file verification.
+
+    Attributes:
+        all_verified: True if all files passed verification
+        verified_count: Number of files that passed verification
+        total_count: Total number of files checked
+        expected_count: Expected number of files (if specified)
+        unverified_files: List of file names that failed verification
+        errors: List of error messages if verification failed
+    """
+
+    def __init__(
+        self,
+        all_verified: bool,
+        verified_count: int,
+        total_count: int,
+        expected_count: Optional[int] = None,
+        unverified_files: Optional[list[str]] = None,
+        errors: Optional[list[str]] = None,
+    ):
+        self.all_verified = all_verified
+        self.verified_count = verified_count
+        self.total_count = total_count
+        self.expected_count = expected_count
+        self.unverified_files = unverified_files or []
+        self.errors = errors or []
+
+    def __bool__(self) -> bool:
+        """Return True if all files were verified."""
+        return self.all_verified
+
+    def __repr__(self) -> str:
+        return (
+            f"RemoteFileVerificationResult("
+            f"verified={self.verified_count}/{self.total_count}, "
+            f"all_verified={self.all_verified})"
+        )
+
+
+def verify_remote_files_have_users(
+    client: "DrimeClient",  # noqa: F821  # type: ignore[name-defined]
+    remote_folder: str,
+    expected_count: Optional[int] = None,
+    verbose: bool = True,
+    workspace_id: int = 0,
+) -> RemoteFileVerificationResult:
+    """Verify that remote files have the users field correctly set.
+
+    This checks that uploaded files are properly associated with user ownership,
+    which is critical for ensuring uploads are complete and not affected by
+    race conditions during parallel uploads.
+
+    The users field being populated indicates that the file entry has been
+    fully processed by the server and is properly associated with the user.
+
+    Args:
+        client: DrimeClient instance for API calls
+        remote_folder: Name of the remote folder to check (without leading /)
+        expected_count: Expected number of files (optional)
+        verbose: If True, print verification details
+        workspace_id: Workspace ID to search in (default: 0 for personal)
+
+    Returns:
+        RemoteFileVerificationResult with verification details
+
+    Example:
+        >>> from pydrime.api import DrimeClient
+        >>> from pydrime.utils import verify_remote_files_have_users
+        >>> client = DrimeClient()
+        >>> result = verify_remote_files_have_users(
+        ...     client, "my_folder", expected_count=5
+        ... )
+        >>> if result:
+        ...     print("All files verified!")
+        >>> else:
+        ...     print(f"Verification failed: {result.errors}")
+    """
+    # Import here to avoid circular imports
+    from .models import FileEntriesResult
+
+    if verbose:
+        print(f"\n[VERIFY] Checking users field for files in /{remote_folder}")
+
+    try:
+        # Find the folder first
+        result = client.get_file_entries(
+            query=remote_folder, entry_type="folder", workspace_id=workspace_id
+        )
+        folder_hash = None
+
+        if result and result.get("data"):
+            entries = FileEntriesResult.from_api_response(result)
+            for entry in entries.entries:
+                if entry.name == remote_folder:
+                    folder_hash = entry.hash
+                    break
+
+        if not folder_hash:
+            error_msg = f"Folder not found: {remote_folder}"
+            if verbose:
+                print(f"  ! {error_msg}")
+            return RemoteFileVerificationResult(
+                all_verified=False,
+                verified_count=0,
+                total_count=0,
+                expected_count=expected_count,
+                errors=[error_msg],
+            )
+
+        # Get files in the folder using folder hash
+        result = client.get_file_entries(
+            folder_id=folder_hash,
+            per_page=100,
+            workspace_id=workspace_id,
+        )
+
+        if not result or not result.get("data"):
+            error_msg = "No files found in folder"
+            if verbose:
+                print(f"  ! {error_msg}")
+            return RemoteFileVerificationResult(
+                all_verified=False,
+                verified_count=0,
+                total_count=0,
+                expected_count=expected_count,
+                errors=[error_msg],
+            )
+
+        entries = FileEntriesResult.from_api_response(result)
+        # Filter to only include files (not folders)
+        file_entries = [e for e in entries.entries if e.type != "folder"]
+        total_count = len(file_entries)
+        verified_count = 0
+        unverified_files = []
+
+        for entry in file_entries:
+            has_users = len(entry.users) > 0
+            has_size = entry.file_size > 0
+
+            if has_users and has_size:
+                verified_count += 1
+                if verbose:
+                    print(
+                        f"  + {entry.name}: VERIFIED "
+                        f"(size={entry.file_size}, users={len(entry.users)})"
+                    )
+            else:
+                unverified_files.append(entry.name)
+                if verbose:
+                    print(
+                        f"  ! {entry.name}: UNVERIFIED "
+                        f"(size={entry.file_size}, users={len(entry.users)})"
+                    )
+
+        # Determine if verification passed
+        errors = []
+        all_verified = verified_count == total_count
+
+        if expected_count is not None:
+            if total_count < expected_count:
+                all_verified = False
+                errors.append(
+                    f"Expected {expected_count} files, but only found {total_count}"
+                )
+
+        if verbose:
+            print(f"\n[VERIFY] Result: {verified_count}/{total_count} files verified")
+            for error in errors:
+                print(f"  ! WARNING: {error}")
+
+        return RemoteFileVerificationResult(
+            all_verified=all_verified,
+            verified_count=verified_count,
+            total_count=total_count,
+            expected_count=expected_count,
+            unverified_files=unverified_files,
+            errors=errors,
+        )
+
+    except Exception as e:
+        error_msg = f"Error verifying files: {e}"
+        if verbose:
+            print(f"  ! {error_msg}")
+        return RemoteFileVerificationResult(
+            all_verified=False,
+            verified_count=0,
+            total_count=0,
+            expected_count=expected_count,
+            errors=[error_msg],
+        )

@@ -6,7 +6,16 @@ from .modes import SyncMode
 from .operations import SyncOperations
 from .pair import SyncPair
 from .scanner import DirectoryScanner, LocalFile, RemoteFile
-from .state import SyncState, SyncStateManager
+from .state import (
+    LocalItemState,
+    LocalTree,
+    RemoteItemState,
+    RemoteTree,
+    SyncState,
+    SyncStateManager,
+    build_local_tree_from_files,
+    build_remote_tree_from_files,
+)
 
 __all__ = [
     "SyncEngine",
@@ -20,4 +29,10 @@ __all__ = [
     "RemoteFile",
     "SyncState",
     "SyncStateManager",
+    "LocalItemState",
+    "LocalTree",
+    "RemoteItemState",
+    "RemoteTree",
+    "build_local_tree_from_files",
+    "build_remote_tree_from_files",
 ]

@@ -872,6 +872,7 @@ def du(
             "workspace_id": workspace,
             "folder_id": page,
             "page_id": page,
+            "per_page": 100,  # Request more entries per page
         }
 
         # Add parent_id if specified
@@ -881,10 +882,33 @@ def du(
         # Remove None values
         params = {k: v for k, v in params.items() if v is not None}
 
-        result = client.get_file_entries(**params)
+        # Collect all entries across pages
+        all_entries: list[FileEntry] = []
+        current_page = 1
 
-        # Parse the response into our data model
-        file_entries = FileEntriesResult.from_api_response(result)
+        while True:
+            params["page"] = current_page
+            result = client.get_file_entries(**params)
+
+            # Parse the response into our data model
+            page_entries = FileEntriesResult.from_api_response(result)
+            all_entries.extend(page_entries.entries)
+
+            # Check if there are more pages
+            if page_entries.pagination:
+                current = page_entries.pagination.get("current_page")
+                last = page_entries.pagination.get("last_page")
+                if current is not None and last is not None and current < last:
+                    current_page += 1
+                    continue
+            break
+
+        # Create a combined result
+        file_entries = FileEntriesResult(
+            entries=all_entries,
+            raw_data=result,  # Keep last page's raw data for reference
+            pagination={"total": len(all_entries)},
+        )
 
         # Output based on format
         if out.json_output:
@@ -3344,8 +3368,8 @@ def usage(ctx: Any) -> None:
 
         if isinstance(result, dict):
             used = result.get("used", 0)
-            available = result.get("available", 0)
-            total = used + available
+            total = result.get("available", 0)
+            available = total - used
             percentage = (used / total * 100) if total > 0 else 0
 
             # Text format - one-liner
@@ -3382,8 +3406,12 @@ def validate(
 
     PATH: Local file or directory to validate
 
-    Checks if every file in the given path exists in Drime Cloud
-    and has the same size as the local file.
+    Checks if every file in the given path exists in Drime Cloud,
+    has the same size as the local file, and has the users field set
+    (indicating a complete upload).
+
+    Files without the users field are flagged as incomplete uploads,
+    which can occur due to race conditions during parallel uploads.
 
     Examples:
         pydrime validate drime_test              # Validate folder
@@ -3516,6 +3544,7 @@ def validate(
         valid_files = []
         missing_files = []
         size_mismatch_files = []
+        incomplete_files = []
 
         for idx, (file_path, rel_path) in enumerate(files_to_validate, 1):
             local_size = file_path.stat().st_size
@@ -3562,6 +3591,17 @@ def validate(
                         "cloud_id": matching_entry.id,
                     }
                 )
+            elif not matching_entry.users:
+                # File exists with correct size but has no users field
+                # This indicates an incomplete upload (race condition during parallel)
+                incomplete_files.append(
+                    {
+                        "path": rel_path,
+                        "size": local_size,
+                        "cloud_id": matching_entry.id,
+                        "reason": "No users field (incomplete upload)",
+                    }
+                )
             else:
                 valid_files.append(
                     {
@@ -3579,9 +3619,11 @@ def validate(
                     "valid": len(valid_files),
                     "missing": len(missing_files),
                     "size_mismatch": len(size_mismatch_files),
+                    "incomplete": len(incomplete_files),
                     "valid_files": valid_files,
                     "missing_files": missing_files,
                     "size_mismatch_files": size_mismatch_files,
+                    "incomplete_files": incomplete_files,
                 }
             )
         else:
@@ -3618,10 +3660,23 @@ def validate(
                     )
                 out.print("")
 
+            # Show incomplete files (no users field)
+            if incomplete_files:
+                out.warning(f"⚠ Incomplete: {len(incomplete_files)} file(s)")
+                for f in incomplete_files:
+                    file_size = cast(int, f["size"])
+                    out.print(
+                        f"  ⚠ {f['path']} [ID: {f['cloud_id']}] "
+                        f"({out.format_size(file_size)}) - {f['reason']}"
+                    )
+                out.print("")
+
             # Summary
             total = len(files_to_validate)
             valid = len(valid_files)
-            issues = len(missing_files) + len(size_mismatch_files)
+            issues = (
+                len(missing_files) + len(size_mismatch_files) + len(incomplete_files)
+            )
 
             out.print("=" * 60)
             if issues == 0:
@@ -3632,7 +3687,7 @@ def validate(
             out.print("=" * 60)
 
         # Exit with error code if there are issues
-        if missing_files or size_mismatch_files:
+        if missing_files or size_mismatch_files or incomplete_files:
             ctx.exit(1)
 
     except DrimeAPIError as e:
