@@ -33,8 +33,8 @@ class TestLoadSyncPairsFromJson:
         assert result[0]["local"] == str(local_dir)
         assert result[0]["remote"] == "/remote/path"
         assert result[0]["syncMode"] == "twoWay"
-        # Check defaults are applied
-        assert result[0]["workspace"] == 0
+        # Check defaults are applied (None means use default workspace)
+        assert result[0]["workspace"] is None
         assert result[0]["disableLocalTrash"] is False
         assert result[0]["ignore"] == []
         assert result[0]["excludeDotFiles"] is False
@@ -198,7 +198,30 @@ class TestLoadSyncPairsFromJson:
             load_sync_pairs_from_json(config_file)
 
     def test_invalid_workspace_type_raises_error(self, tmp_path):
-        """Test that non-integer workspace raises SyncConfigError."""
+        """Test that invalid workspace type raises SyncConfigError."""
+        local_dir = tmp_path / "sync_folder"
+        local_dir.mkdir()
+
+        # workspace can be int, str, or None - but not a list or dict
+        config = [
+            {
+                "local": str(local_dir),
+                "remote": "/remote/path",
+                "syncMode": "twoWay",
+                "workspace": ["not", "valid"],
+            }
+        ]
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps(config))
+
+        with pytest.raises(
+            SyncConfigError, match="workspace must be an integer or string"
+        ):
+            load_sync_pairs_from_json(config_file)
+
+    def test_workspace_can_be_string(self, tmp_path):
+        """Test that workspace can be a string (workspace name)."""
         local_dir = tmp_path / "sync_folder"
         local_dir.mkdir()
 
@@ -207,15 +230,35 @@ class TestLoadSyncPairsFromJson:
                 "local": str(local_dir),
                 "remote": "/remote/path",
                 "syncMode": "twoWay",
-                "workspace": "not_an_int",
+                "workspace": "My Team Workspace",
             }
         ]
 
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps(config))
 
-        with pytest.raises(SyncConfigError, match="workspace must be an integer"):
-            load_sync_pairs_from_json(config_file)
+        result = load_sync_pairs_from_json(config_file)
+        assert result[0]["workspace"] == "My Team Workspace"
+
+    def test_workspace_can_be_int(self, tmp_path):
+        """Test that workspace can be an integer (workspace ID)."""
+        local_dir = tmp_path / "sync_folder"
+        local_dir.mkdir()
+
+        config = [
+            {
+                "local": str(local_dir),
+                "remote": "/remote/path",
+                "syncMode": "twoWay",
+                "workspace": 5,
+            }
+        ]
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps(config))
+
+        result = load_sync_pairs_from_json(config_file)
+        assert result[0]["workspace"] == 5
 
     def test_invalid_disable_local_trash_type_raises_error(self, tmp_path):
         """Test that non-boolean disableLocalTrash raises SyncConfigError."""

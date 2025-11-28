@@ -16,7 +16,8 @@ def load_sync_pairs_from_json(json_path: Path) -> list[dict[str, Any]]:
     """Load and validate sync pairs from a JSON file.
 
     The JSON file should contain a list of sync pair dictionaries with these fields:
-        - workspace (int, optional): Workspace ID (default: 0)
+        - workspace (int or str, optional): Workspace ID or name
+          (default: uses configured default workspace)
         - local (str, required): Local directory path
         - remote (str, required): Remote path in cloud
         - syncMode (str, required): Sync mode (twoWay, localToCloud, etc.)
@@ -90,20 +91,25 @@ def load_sync_pairs_from_json(json_path: Path) -> list[dict[str, Any]]:
             )
 
         # Normalize and validate optional fields
+        # Use None as default for workspace to indicate "use default workspace"
+        # The workspace value can be an integer (ID) or a string (name)
+        workspace_value = pair_data.get("workspace")
         normalized: dict[str, Any] = {
             "local": str(local_path),
             "remote": pair_data["remote"],
             "syncMode": pair_data["syncMode"],
-            "workspace": pair_data.get("workspace", 0),
+            "workspace": workspace_value,  # None, int, or str (name)
             "disableLocalTrash": pair_data.get("disableLocalTrash", False),
             "ignore": pair_data.get("ignore", []),
             "excludeDotFiles": pair_data.get("excludeDotFiles", False),
         }
 
-        # Validate types
-        if not isinstance(normalized["workspace"], int):
+        # Validate workspace type (int, str, or None)
+        if normalized["workspace"] is not None and not isinstance(
+            normalized["workspace"], (int, str)
+        ):
             raise SyncConfigError(
-                f"Sync pair at index {i}: workspace must be an integer"
+                f"Sync pair at index {i}: workspace must be an integer or string"
             )
         if not isinstance(normalized["disableLocalTrash"], bool):
             raise SyncConfigError(

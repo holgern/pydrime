@@ -1,9 +1,54 @@
 """Workspace resolution and display utilities."""
 
-from typing import Optional
+from typing import Optional, Union
 
 from .api import DrimeClient
 from .exceptions import DrimeAPIError
+
+
+def resolve_workspace_identifier(
+    client: DrimeClient,
+    identifier: Union[int, str, None],
+    default_workspace: Optional[int] = None,
+) -> int:
+    """Resolve a workspace identifier (ID, name, or None) to an integer ID.
+
+    Args:
+        client: Drime API client
+        identifier: Workspace ID (int), workspace name (str), or None
+        default_workspace: Default workspace ID to use when identifier is None
+            (defaults to 0 for personal workspace)
+
+    Returns:
+        Resolved workspace ID as integer
+
+    Raises:
+        ValueError: If workspace name is not found
+    """
+    # Handle None - use default workspace
+    if identifier is None:
+        return default_workspace if default_workspace is not None else 0
+
+    # Handle integer ID directly
+    if isinstance(identifier, int):
+        return identifier
+
+    # Handle string - could be numeric string or workspace name
+    if identifier.isdigit():
+        return int(identifier)
+
+    # Try to resolve as workspace name (case-insensitive)
+    result = client.get_workspaces()
+    if isinstance(result, dict) and "workspaces" in result:
+        identifier_lower = identifier.lower()
+        for ws in result["workspaces"]:
+            if ws.get("name", "").lower() == identifier_lower:
+                return ws.get("id", 0)
+
+    raise ValueError(
+        f"Workspace '{identifier}' not found. "
+        f"Use 'pydrime workspaces' to list available workspaces."
+    )
 
 
 def get_workspace_name(client: DrimeClient, workspace_id: int) -> Optional[str]:
