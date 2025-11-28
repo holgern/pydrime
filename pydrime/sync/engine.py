@@ -180,32 +180,31 @@ class SyncEngine:
             self.output.print("")
 
         # Choose between streaming and traditional mode
-        # Always use traditional (scan-all) mode for dry-run to show complete plan
-        if use_streaming and not dry_run and pair.sync_mode.requires_remote_scan:
-            # Check if this is a local-to-cloud only mode (no remote scan needed for
-            # sync decisions - we only upload)
-            if pair.sync_mode in (SyncMode.LOCAL_TO_CLOUD, SyncMode.LOCAL_BACKUP):
-                # Use incremental mode for local-to-cloud
-                return self._sync_pair_incremental(
-                    pair,
-                    chunk_size,
-                    multipart_threshold,
-                    progress_callback,
-                    batch_size,
-                    max_workers,
-                    start_delay,
-                )
-            else:
-                # Use streaming mode for better performance
-                return self._sync_pair_streaming(
-                    pair,
-                    chunk_size,
-                    multipart_threshold,
-                    progress_callback,
-                    batch_size,
-                    max_workers,
-                    start_delay,
-                )
+        # For LOCAL_TO_CLOUD and LOCAL_BACKUP, use incremental mode (even for dry-run)
+        # to avoid scanning huge directories upfront
+        if pair.sync_mode in (SyncMode.LOCAL_TO_CLOUD, SyncMode.LOCAL_BACKUP):
+            # Use incremental mode for local-to-cloud (works for both dry-run and real)
+            return self._sync_pair_incremental(
+                pair,
+                dry_run,
+                chunk_size,
+                multipart_threshold,
+                progress_callback,
+                batch_size,
+                max_workers,
+                start_delay,
+            )
+        elif use_streaming and not dry_run and pair.sync_mode.requires_remote_scan:
+            # Use streaming mode for other modes (not dry-run)
+            return self._sync_pair_streaming(
+                pair,
+                chunk_size,
+                multipart_threshold,
+                progress_callback,
+                batch_size,
+                max_workers,
+                start_delay,
+            )
         else:
             # Use traditional mode (scan all files upfront)
             return self._sync_pair_traditional(
@@ -505,6 +504,7 @@ class SyncEngine:
     def _sync_pair_incremental(
         self,
         pair: SyncPair,
+        dry_run: bool,
         chunk_size: int,
         multipart_threshold: int,
         progress_callback: Optional[Callable[[int, int], None]],
@@ -519,7 +519,7 @@ class SyncEngine:
         upfront, it:
         1. Scans one directory level at a time
         2. Compares files with remote (if needed)
-        3. Uploads files immediately
+        3. Uploads files immediately (or counts them for dry-run)
         4. Then descends into subdirectories
 
         This provides immediate feedback and avoids memory/time overhead of
@@ -527,6 +527,7 @@ class SyncEngine:
 
         Args:
             pair: Sync pair to synchronize
+            dry_run: If True, only show what would be done without uploading
             chunk_size: Chunk size for multipart uploads
             multipart_threshold: Threshold for multipart upload
             progress_callback: Optional callback for progress updates
@@ -541,7 +542,10 @@ class SyncEngine:
         logger.debug(f"Starting incremental sync at {start_time:.2f}")
 
         if not self.output.quiet:
-            self.output.info("Using incremental sync mode (level-by-level)...")
+            mode_str = "dry-run " if dry_run else ""
+            self.output.info(
+                f"Using {mode_str}incremental sync mode (level-by-level)..."
+            )
 
         # Initialize scanner
         scanner = DirectoryScanner(
@@ -555,11 +559,16 @@ class SyncEngine:
         # Track statistics
         stats = self._create_empty_stats()
 
-        # Get or create remote folder
+        # Get or create remote folder (skip creation for dry-run)
         remote_folder_id = self._resolve_remote_folder_id(pair, manager)
 
-        # If remote folder doesn't exist for LOCAL_TO_CLOUD, create it
-        if pair.remote and pair.remote != "/" and remote_folder_id is None:
+        # If remote folder doesn't exist for LOCAL_TO_CLOUD, create it (not for dry-run)
+        if (
+            not dry_run
+            and pair.remote
+            and pair.remote != "/"
+            and remote_folder_id is None
+        ):
             try:
                 folder_name = pair.remote.lstrip("/")
                 result = self.client.create_folder(name=folder_name, parent_id=None)
@@ -648,23 +657,28 @@ class SyncEngine:
                     if current_dir != pair.local
                     else "."
                 )
+                action = "would upload" if dry_run else "to upload"
                 self.output.info(
-                    f"Processing {rel_dir}: {len(upload_decisions)} file(s) to upload"
+                    f"Processing {rel_dir}: {len(upload_decisions)} file(s) {action}"
                 )
 
-            # Execute uploads for this batch
-            batch_stats = self._execute_batch_decisions(
-                batch_decisions=upload_decisions,
-                pair=pair,
-                chunk_size=chunk_size,
-                multipart_threshold=multipart_threshold,
-                progress_callback=progress_callback,
-                max_workers=max_workers,
-                start_delay=start_delay,
-            )
+            # For dry-run, just count; otherwise execute uploads
+            if dry_run:
+                stats["uploads"] += len(upload_decisions)
+            else:
+                # Execute uploads for this batch
+                batch_stats = self._execute_batch_decisions(
+                    batch_decisions=upload_decisions,
+                    pair=pair,
+                    chunk_size=chunk_size,
+                    multipart_threshold=multipart_threshold,
+                    progress_callback=progress_callback,
+                    max_workers=max_workers,
+                    start_delay=start_delay,
+                )
+                # Update stats
+                stats["uploads"] += batch_stats.get("uploads", 0)
 
-            # Update stats
-            stats["uploads"] += batch_stats.get("uploads", 0)
             total_files_processed += len(files)
 
             # Log progress periodically
@@ -684,7 +698,7 @@ class SyncEngine:
         )
 
         if not self.output.quiet:
-            self._display_summary(stats, dry_run=False)
+            self._display_summary(stats, dry_run=dry_run)
 
         return stats
 

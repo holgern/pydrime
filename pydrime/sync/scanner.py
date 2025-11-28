@@ -608,17 +608,22 @@ class DirectoryScanner:
             >>> # files contains LocalFile objects for files in /sync
             >>> # subdirs contains relative paths like "subdir1", "subdir2"
         """
+        # Initialize ignore manager only on first call (when scanning root directory)
+        # or when base_path changes
         if base_path is None:
             base_path = directory
-            # Initialize ignore manager for new scan
+
+        # Initialize ignore manager if not already initialized or if base_path changed
+        if self._ignore_manager is None or (
+            self._ignore_manager.base_path is not None
+            and self._ignore_manager.base_path != base_path
+        ):
             if self.use_ignore_files:
                 self._ignore_manager = self._init_ignore_manager(base_path)
-            else:
-                self._ignore_manager = None
-                # Still need to apply CLI patterns
-                if self.ignore_patterns:
-                    self._ignore_manager = IgnoreFileManager(base_path=base_path)
-                    self._ignore_manager.load_cli_patterns(self.ignore_patterns)
+            elif self.ignore_patterns:
+                # Still need to apply CLI patterns even without ignore files
+                self._ignore_manager = IgnoreFileManager(base_path=base_path)
+                self._ignore_manager.load_cli_patterns(self.ignore_patterns)
 
         files: list[LocalFile] = []
         subdirs: list[str] = []
