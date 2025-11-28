@@ -729,6 +729,7 @@ class TestSyncEngineHelperMethods:
             "renames_remote": 0,
             "skips": 0,
             "conflicts": 0,
+            "errors": 0,
         }
 
     def test_categorize_decisions_with_renames(self, sync_engine):

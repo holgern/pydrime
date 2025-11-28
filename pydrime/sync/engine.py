@@ -17,6 +17,7 @@ from ..utils import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_MULTIPART_THRESHOLD,
     DEFAULT_RETRY_DELAY,
+    format_size,
 )
 from .comparator import FileComparator, SyncAction, SyncDecision
 from .concurrency import ConcurrencyLimits, SyncPauseController
@@ -598,13 +599,38 @@ class SyncEngine:
         stats = self._create_empty_stats()
 
         # Setup remote folder and get existing files
-        # Note: _setup_incremental_remote now handles the case when remote is "/"
-        # by using the local folder name as the target remote folder
+        # When remote is "/" or empty, files sync directly to cloud root (folder_id=0)
         remote_folder_id = self._setup_incremental_remote(pair, manager, dry_run)
         logger.debug(
             f"Remote folder setup: remote='{pair.remote}', "
             f"folder_id={remote_folder_id}, dry_run={dry_run}"
         )
+
+        # Determine effective remote folder name for display
+        syncing_to_root = not pair.remote or pair.remote == "/"
+        effective_remote_name = "/ (root)" if syncing_to_root else pair.remote
+
+        # Show remote folder status to user
+        if not self.output.quiet:
+            if syncing_to_root:
+                # Syncing to root - folder_id is 0
+                self.output.success("Syncing directly to cloud root")
+            elif remote_folder_id is not None:
+                self.output.success(
+                    f"Remote folder '{effective_remote_name}' exists "
+                    f"(id: {remote_folder_id})"
+                )
+            else:
+                if dry_run:
+                    self.output.info(
+                        f"Remote folder '{effective_remote_name}' does not exist yet "
+                        "(will be created on actual sync)"
+                    )
+                else:
+                    self.output.info(
+                        f"Remote folder '{effective_remote_name}' will be created"
+                    )
+
         remote_file_set, remote_file_ids, remote_file_sizes = self._get_remote_file_set(
             pair, manager, remote_folder_id
         )
@@ -612,6 +638,19 @@ class SyncEngine:
             f"Remote file set: {len(remote_file_set)} files found in workspace "
             f"{pair.workspace_id}, folder_id={remote_folder_id}"
         )
+
+        # Show remote file count to user
+        if not self.output.quiet:
+            if len(remote_file_set) > 0:
+                total_remote_size = sum(remote_file_sizes.values())
+                size_str = format_size(total_remote_size)
+                self.output.info(
+                    f"Found {len(remote_file_set)} file(s) already on remote "
+                    f"({size_str})"
+                )
+            else:
+                self.output.info("No files found on remote yet")
+            self.output.print("")  # Empty line for readability
 
         # Track all local files seen (for deletion detection)
         local_file_set: set[str] = set()
@@ -691,9 +730,9 @@ class SyncEngine:
     ) -> Optional[int]:
         """Setup remote folder for incremental sync.
 
-        When remote is "/" (root), the local folder name is used as the target
-        folder in the remote root. For example, if local is "/path/to/my_folder"
-        and remote is "/", files will be synced to remote "/my_folder/...".
+        When remote is "/" or empty, files are synced directly to the cloud root.
+        For example, if local is "/path/to/my_folder" with files "a/file.txt",
+        and remote is "/", files will be synced to remote "/a/file.txt".
 
         Args:
             pair: Sync pair configuration
@@ -701,19 +740,17 @@ class SyncEngine:
             dry_run: If True, skip folder creation
 
         Returns:
-            Remote folder ID if found/created, None otherwise
+            Remote folder ID if found/created, 0 for root, None if folder
+            doesn't exist and couldn't be created
         """
-        # Determine effective remote folder name
-        # When remote is "/" or empty, use the local folder name as remote target
+        # When remote is "/" or empty, sync directly to root (folder_id=0)
         syncing_to_root = not pair.remote or pair.remote == "/"
         if syncing_to_root:
-            effective_folder_name = pair.local.name
-            logger.debug(
-                f"Syncing to root: using local folder name '{effective_folder_name}' "
-                "as remote target folder"
-            )
-        else:
-            effective_folder_name = pair.remote.lstrip("/")
+            logger.debug("Syncing directly to cloud root (folder_id=0)")
+            return 0  # 0 means root folder
+
+        # For non-root remote paths, find or create the folder
+        effective_folder_name = pair.remote.lstrip("/")
 
         # Try to find existing folder
         remote_folder_id = None
@@ -897,10 +934,26 @@ class SyncEngine:
 
         if not upload_files:
             if not self.output.quiet and not sync_progress_tracker and files:
+                total_size = sum(f.size for f in files)
                 self.output.info(
-                    f"Scanning {rel_dir}: {len(files)} file(s) already synced"
+                    f"Processing {rel_dir}: {len(files)} file(s) already synced "
+                    f"({format_size(total_size)})"
                 )
             return result
+
+        # Show upload info with size details
+        if not self.output.quiet and not sync_progress_tracker:
+            upload_size = sum(f.size for f in upload_files)
+            if skipped_count > 0:
+                self.output.info(
+                    f"Processing {rel_dir}: {len(upload_files)} to upload "
+                    f"({format_size(upload_size)}), {skipped_count} already synced"
+                )
+            else:
+                self.output.info(
+                    f"Processing {rel_dir}: {len(upload_files)} to upload "
+                    f"({format_size(upload_size)})"
+                )
 
         # Execute uploads for this directory
         self._execute_incremental_uploads(
@@ -1000,11 +1053,12 @@ class SyncEngine:
 
         batch_total_bytes = sum(f.size for f in upload_files)
 
-        # Show progress (only if no tracker)
-        if not self.output.quiet and not sync_progress_tracker:
-            action = "would upload" if dry_run else "uploading"
+        # Note: Upload info is already shown in _process_incremental_directory
+        # Only show dry-run specific message here
+        if not self.output.quiet and not sync_progress_tracker and dry_run:
             self.output.info(
-                f"Processing {rel_dir}: {action} {len(upload_decisions)} file(s)"
+                f"  Would upload {len(upload_decisions)} file(s) "
+                f"({format_size(batch_total_bytes)})"
             )
 
         if dry_run:
@@ -1031,6 +1085,7 @@ class SyncEngine:
 
         uploaded_count = batch_stats.get("uploads", 0)
         stats["uploads"] += uploaded_count
+        stats["errors"] = stats.get("errors", 0) + batch_stats.get("errors", 0)
 
         # Notify tracker about batch complete
         if sync_progress_tracker:
@@ -1147,6 +1202,7 @@ class SyncEngine:
                 )
                 stats["uploads"] = batch_stats["uploads"]
                 stats["downloads"] = batch_stats["downloads"]
+                stats["errors"] = batch_stats.get("errors", 0)
             else:
                 # Sequential execution with progress tracking
                 for decision in actionable_decisions:
@@ -1175,6 +1231,7 @@ class SyncEngine:
                             stats["uploads"] += 1
                             sync_progress_tracker.on_upload_file_complete(file_path)
                         except Exception as e:
+                            stats["errors"] = stats.get("errors", 0) + 1
                             sync_progress_tracker.on_upload_file_error(
                                 file_path, str(e)
                             )
@@ -1199,6 +1256,7 @@ class SyncEngine:
                             elif decision.action == SyncAction.DELETE_REMOTE:
                                 stats["deletes_remote"] += 1
                         except Exception as e:
+                            stats["errors"] = stats.get("errors", 0) + 1
                             if not self.output.quiet:
                                 self.output.error(
                                     f"Failed to sync {decision.relative_path}: {e}"
@@ -1251,6 +1309,7 @@ class SyncEngine:
             "downloads": 0,
             "deletes_local": 0,
             "deletes_remote": 0,
+            "errors": 0,
         }
 
         def execute_with_tracking(
@@ -1339,7 +1398,10 @@ class SyncEngine:
                                 stats["deletes_local"] += 1
                             elif action == SyncAction.DELETE_REMOTE:
                                 stats["deletes_remote"] += 1
+                        else:
+                            stats["errors"] += 1
                     except Exception as e:
+                        stats["errors"] += 1
                         if not self.output.quiet:
                             self.output.error(
                                 f"Unexpected error in parallel execution: {e}"
@@ -1418,6 +1480,7 @@ class SyncEngine:
             "renames_remote": 0,
             "skips": 0,
             "conflicts": 0,
+            "errors": 0,
         }
 
     def _resolve_remote_folder_id(
@@ -2248,8 +2311,9 @@ class SyncEngine:
                 self._execute_single_decision(
                     decision, pair, chunk_size, multipart_threshold, None
                 )
-            except Exception:
-                pass  # Already logged
+            except Exception as e:
+                if not self.output.quiet:
+                    self.output.error(f"Failed to sync {decision.relative_path}: {e}")
 
         # 2. Execute remote renames (sequential)
         for decision in rename_remote:
@@ -2257,8 +2321,9 @@ class SyncEngine:
                 self._execute_single_decision(
                     decision, pair, chunk_size, multipart_threshold, None
                 )
-            except Exception:
-                pass  # Already logged
+            except Exception as e:
+                if not self.output.quiet:
+                    self.output.error(f"Failed to sync {decision.relative_path}: {e}")
 
         # 3. Execute local deletes (sequential)
         for decision in delete_local:
@@ -2266,8 +2331,9 @@ class SyncEngine:
                 self._execute_single_decision(
                     decision, pair, chunk_size, multipart_threshold, None
                 )
-            except Exception:
-                pass  # Already logged
+            except Exception as e:
+                if not self.output.quiet:
+                    self.output.error(f"Failed to sync {decision.relative_path}: {e}")
 
         # 4. Execute remote deletes (sequential)
         for decision in delete_remote:
@@ -2275,8 +2341,9 @@ class SyncEngine:
                 self._execute_single_decision(
                     decision, pair, chunk_size, multipart_threshold, None
                 )
-            except Exception:
-                pass  # Already logged
+            except Exception as e:
+                if not self.output.quiet:
+                    self.output.error(f"Failed to sync {decision.relative_path}: {e}")
 
         # 5. Execute uploads (can be parallel)
         if max_workers > 1 and len(uploads) > 1:
@@ -2299,8 +2366,11 @@ class SyncEngine:
                         multipart_threshold,
                         progress_callback,
                     )
-                except Exception:
-                    pass  # Already logged
+                except Exception as e:
+                    if not self.output.quiet:
+                        self.output.error(
+                            f"Failed to sync {decision.relative_path}: {e}"
+                        )
 
         # 6. Execute downloads (can be parallel)
         if max_workers > 1 and len(downloads) > 1:
@@ -2323,8 +2393,11 @@ class SyncEngine:
                         multipart_threshold,
                         progress_callback,
                     )
-                except Exception:
-                    pass  # Already logged
+                except Exception as e:
+                    if not self.output.quiet:
+                        self.output.error(
+                            f"Failed to sync {decision.relative_path}: {e}"
+                        )
 
     def _execute_ordered_with_progress(
         self,
@@ -2375,8 +2448,11 @@ class SyncEngine:
                     self._execute_single_decision(
                         decision, pair, chunk_size, multipart_threshold, None
                     )
-                except Exception:
-                    pass  # Already logged
+                except Exception as e:
+                    if not self.output.quiet:
+                        self.output.error(
+                            f"Failed to sync {decision.relative_path}: {e}"
+                        )
                 progress.update(task, advance=1)
 
             # 2. Execute remote renames (sequential)
@@ -2385,8 +2461,11 @@ class SyncEngine:
                     self._execute_single_decision(
                         decision, pair, chunk_size, multipart_threshold, None
                     )
-                except Exception:
-                    pass  # Already logged
+                except Exception as e:
+                    if not self.output.quiet:
+                        self.output.error(
+                            f"Failed to sync {decision.relative_path}: {e}"
+                        )
                 progress.update(task, advance=1)
 
             # 3. Execute local deletes (sequential)
@@ -2395,8 +2474,11 @@ class SyncEngine:
                     self._execute_single_decision(
                         decision, pair, chunk_size, multipart_threshold, None
                     )
-                except Exception:
-                    pass  # Already logged
+                except Exception as e:
+                    if not self.output.quiet:
+                        self.output.error(
+                            f"Failed to sync {decision.relative_path}: {e}"
+                        )
                 progress.update(task, advance=1)
 
             # 4. Execute remote deletes (sequential)
@@ -2405,8 +2487,11 @@ class SyncEngine:
                     self._execute_single_decision(
                         decision, pair, chunk_size, multipart_threshold, None
                     )
-                except Exception:
-                    pass  # Already logged
+                except Exception as e:
+                    if not self.output.quiet:
+                        self.output.error(
+                            f"Failed to sync {decision.relative_path}: {e}"
+                        )
                 progress.update(task, advance=1)
 
             # 5. Execute uploads (can be parallel)
@@ -2431,8 +2516,11 @@ class SyncEngine:
                             multipart_threshold,
                             progress_callback,
                         )
-                    except Exception:
-                        pass  # Already logged
+                    except Exception as e:
+                        if not self.output.quiet:
+                            self.output.error(
+                                f"Failed to sync {decision.relative_path}: {e}"
+                            )
                     progress.update(task, advance=1)
 
             # 6. Execute downloads (can be parallel)
@@ -2457,8 +2545,11 @@ class SyncEngine:
                             multipart_threshold,
                             progress_callback,
                         )
-                    except Exception:
-                        pass  # Already logged
+                    except Exception as e:
+                        if not self.output.quiet:
+                            self.output.error(
+                                f"Failed to sync {decision.relative_path}: {e}"
+                            )
                     progress.update(task, advance=1)
 
     def _execute_upload(
@@ -2699,10 +2790,10 @@ class SyncEngine:
             elif decision.action == SyncAction.RENAME_REMOTE:
                 self._execute_rename_remote(decision)
 
-        except Exception as e:
-            if not self.output.quiet:
-                self.output.error(f"Error syncing {decision.relative_path}: {e}")
-            raise  # Re-raise for parallel executor to track failure
+        except Exception:
+            # Re-raise for caller to handle error logging and tracking
+            # Callers are responsible for logging errors to avoid duplication
+            raise
 
     def _ensure_remote_folders_exist(
         self,
@@ -3128,8 +3219,9 @@ class SyncEngine:
             + stats.get("renames_local", 0)
             + stats.get("renames_remote", 0)
         )
+        errors = stats.get("errors", 0)
 
-        if total_actions > 0:
+        if total_actions > 0 or errors > 0:
             self.output.info(f"Total actions: {total_actions}")
             if stats["uploads"] > 0:
                 self.output.info(f"  Uploaded: {stats['uploads']}")
@@ -3143,8 +3235,18 @@ class SyncEngine:
                 self.output.info(f"  Deleted locally: {stats['deletes_local']}")
             if stats["deletes_remote"] > 0:
                 self.output.info(f"  Deleted remotely: {stats['deletes_remote']}")
+            if stats.get("skips", 0) > 0:
+                self.output.info(f"  Already synced: {stats['skips']}")
+            if errors > 0:
+                self.output.error(f"  Failed: {errors}")
         else:
-            self.output.info("No changes needed - everything is in sync!")
+            skips = stats.get("skips", 0)
+            if skips > 0:
+                self.output.info(
+                    f"No changes needed - {skips} file(s) already in sync!"
+                )
+            else:
+                self.output.info("No changes needed - everything is in sync!")
 
     def download_folder(
         self,
