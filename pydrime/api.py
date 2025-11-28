@@ -602,6 +602,7 @@ class DrimeClient:
         file_path: Path,
         relative_path: str | None = None,
         workspace_id: int = 0,
+        parent_id: int | None = None,
         chunk_size: int = 25 * 1024 * 1024,  # 25MB chunks
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> Any:
@@ -611,6 +612,7 @@ class DrimeClient:
             file_path: Local path to the file
             relative_path: Relative path where file should be stored
             workspace_id: ID of the workspace
+            parent_id: Optional parent folder ID
             chunk_size: Size of each chunk in bytes (default: 25MB)
             progress_callback: Optional callback function(bytes_uploaded, total_bytes)
 
@@ -634,7 +636,7 @@ class DrimeClient:
         mime_type = self._detect_mime_type(file_path)
 
         # Initialize multipart upload
-        init_data = {
+        init_data: dict[str, Any] = {
             "filename": file_name,
             "mime": mime_type,
             "size": file_size,
@@ -642,6 +644,8 @@ class DrimeClient:
             "relativePath": relative_path or "",
             "workspaceId": workspace_id,
         }
+        if parent_id is not None:
+            init_data["parentId"] = parent_id
 
         init_response = self._request("POST", "/s3/multipart/create", json=init_data)
         upload_id = init_response.get("uploadId")
@@ -725,18 +729,22 @@ class DrimeClient:
             )
 
             # Create file entry
+            entry_data: dict[str, Any] = {
+                "clientMime": mime_type,
+                "clientName": file_name,
+                "filename": key.split("/")[-1],
+                "size": file_size,
+                "clientExtension": extension,
+                "relativePath": relative_path or "",
+                "workspaceId": workspace_id,
+            }
+            if parent_id is not None:
+                entry_data["parentId"] = parent_id
+
             entry_response = self._request(
                 "POST",
                 "/s3/entries",
-                json={
-                    "clientMime": mime_type,
-                    "clientName": file_name,
-                    "filename": key.split("/")[-1],
-                    "size": file_size,
-                    "clientExtension": extension,
-                    "relativePath": relative_path or "",
-                    "workspaceId": workspace_id,
-                },
+                json=entry_data,
             )
 
             return entry_response
@@ -847,7 +855,7 @@ class DrimeClient:
             progress_callback(file_size, file_size)
 
         # Step 3: Create file entry
-        entry_payload = {
+        entry_payload: dict[str, Any] = {
             "clientMime": mime_type,
             "clientName": file_path.name,
             "filename": key.split("/")[-1],
@@ -856,6 +864,8 @@ class DrimeClient:
             "relativePath": relative_path or "",
             "workspaceId": workspace_id,
         }
+        if parent_id is not None:
+            entry_payload["parentId"] = parent_id
 
         entry_response = self._request("POST", "/s3/entries", json=entry_payload)
         return entry_response
@@ -950,6 +960,7 @@ class DrimeClient:
                     file_path=file_path,
                     relative_path=relative_path,
                     workspace_id=workspace_id,
+                    parent_id=parent_id,
                     chunk_size=chunk_size,
                     progress_callback=progress_callback,
                 )
