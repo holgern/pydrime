@@ -624,6 +624,21 @@ class SyncEngine:
                 subdir_abs = pair.local / subdir_rel
                 dirs_to_process.append(subdir_abs)
 
+            # Calculate relative directory path for display
+            rel_dir = (
+                str(current_dir.relative_to(pair.local))
+                if current_dir != pair.local
+                else "."
+            )
+
+            # Show directory being processed (even if no files to upload)
+            if not self.output.quiet:
+                if subdirs and not files:
+                    # Directory with only subdirectories
+                    self.output.info(
+                        f"Scanning {rel_dir}: {len(subdirs)} subdirectory(ies)"
+                    )
+
             if not files:
                 continue
 
@@ -636,6 +651,11 @@ class SyncEngine:
                     upload_files.append(local_file)
 
             if not upload_files:
+                if not self.output.quiet and files:
+                    # All files already exist
+                    self.output.info(
+                        f"Scanning {rel_dir}: {len(files)} file(s) already synced"
+                    )
                 continue
 
             # Create upload decisions for this batch
@@ -652,14 +672,9 @@ class SyncEngine:
 
             # Show progress
             if not self.output.quiet:
-                rel_dir = (
-                    str(current_dir.relative_to(pair.local))
-                    if current_dir != pair.local
-                    else "."
-                )
-                action = "would upload" if dry_run else "to upload"
+                action = "would upload" if dry_run else "uploading"
                 self.output.info(
-                    f"Processing {rel_dir}: {len(upload_decisions)} file(s) {action}"
+                    f"Processing {rel_dir}: {action} {len(upload_decisions)} file(s)"
                 )
 
             # For dry-run, just count; otherwise execute uploads
