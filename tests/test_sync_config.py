@@ -1,8 +1,8 @@
 """Unit tests for sync config loading."""
 
 import json
+
 import pytest
-from pathlib import Path
 
 from pydrime.sync.config import SyncConfigError, load_sync_pairs_from_json
 

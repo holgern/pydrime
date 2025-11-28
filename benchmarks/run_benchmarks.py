@@ -73,12 +73,19 @@ def get_benchmark_files(benchmarks_dir: Path) -> list[Path]:
     )
 
 
-def run_benchmark(benchmark_file: Path, verbose: bool = True) -> BenchmarkResult:
+def run_benchmark(
+    benchmark_file: Path,
+    verbose: bool = True,
+    current: int = 0,
+    total: int = 0,
+) -> BenchmarkResult:
     """Run a single benchmark script.
 
     Args:
         benchmark_file: Path to the benchmark script
         verbose: Whether to print output in real-time
+        current: Current benchmark number (1-based, for progress display)
+        total: Total number of benchmarks to run
 
     Returns:
         BenchmarkResult with success status and details
@@ -88,7 +95,8 @@ def run_benchmark(benchmark_file: Path, verbose: bool = True) -> BenchmarkResult
 
     if verbose:
         print(f"\n{'=' * 80}")
-        print(f"RUNNING: {benchmark_file.name}")
+        progress = f"[{current}/{total}] " if current and total else ""
+        print(f"{progress}RUNNING: {benchmark_file.name}")
         print(f"{'=' * 80}\n")
         sys.stdout.flush()
 
@@ -399,12 +407,21 @@ def main() -> int:
     print(f"\n{'=' * 80}")
     print("PYDRIME BENCHMARK RUNNER")
     print(f"{'=' * 80}")
-    print(f"Running {len(benchmarks_to_run)} benchmark(s)...")
+    print(f"Running {len(benchmarks_to_run)} benchmark(s):\n")
+    for i, f in enumerate(benchmarks_to_run, 1):
+        print(f"  {i:2}. {f.name}")
+    print()
 
     summary = BenchmarkSummary(start_time=datetime.now())
 
-    for benchmark_file in benchmarks_to_run:
-        result = run_benchmark(benchmark_file, verbose=not args.quiet)
+    total = len(benchmarks_to_run)
+    for i, benchmark_file in enumerate(benchmarks_to_run, 1):
+        result = run_benchmark(
+            benchmark_file,
+            verbose=not args.quiet,
+            current=i,
+            total=total,
+        )
         summary.results.append(result)
 
     summary.end_time = datetime.now()

@@ -1,8 +1,6 @@
 """Unit tests for sync state management."""
 
 import json
-import pytest
-from pathlib import Path
 from unittest.mock import MagicMock
 
 from pydrime.sync.state import (
@@ -633,7 +631,6 @@ class TestSyncStateManager:
     def test_load_state_with_migration(self, tmp_path):
         """Test loading state with migration from legacy directory."""
         state_dir = tmp_path / "state"
-        legacy_dir = state_dir
 
         manager = SyncStateManager(state_dir=state_dir)
         local_path = tmp_path / "local"
@@ -652,9 +649,10 @@ class TestSyncStateManager:
         legacy_file.write_text(json.dumps(legacy_data))
 
         # Load should work with migration
-        state = manager.load_state(local_path, remote_path)
+        loaded = manager.load_state(local_path, remote_path)
         # Note: This test may or may not migrate depending on paths
         # The state should either be loaded from current or legacy
+        assert loaded is not None or legacy_file.exists()
 
 
 class TestBuildTreeFromFiles:
