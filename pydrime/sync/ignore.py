@@ -146,13 +146,13 @@ class IgnoreRule:
             if self.anchored:
                 # Anchored: only match first path component
                 first_component = full_path.split("/")[0]
-                return fnmatch.fnmatch(first_component, pattern)
+                return fnmatch.fnmatchcase(first_component, pattern)
             else:
                 # Non-anchored: match filename anywhere in tree
                 # Also try matching each path component
                 parts = full_path.split("/")
                 for part in parts:
-                    if fnmatch.fnmatch(part, pattern):
+                    if fnmatch.fnmatchcase(part, pattern):
                         return True
                 return False
 
@@ -166,7 +166,7 @@ class IgnoreRule:
         Returns:
             True if path matches pattern
         """
-        return fnmatch.fnmatch(path, pattern)
+        return fnmatch.fnmatchcase(path, pattern)
 
     def _pattern_to_regex(self, pattern: str) -> str:
         """Convert a gitignore-style pattern to a regex.
