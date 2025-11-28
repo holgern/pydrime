@@ -598,6 +598,8 @@ class SyncEngine:
         stats = self._create_empty_stats()
 
         # Setup remote folder and get existing files
+        # Note: _setup_incremental_remote now handles the case when remote is "/"
+        # by using the local folder name as the target remote folder
         remote_folder_id = self._setup_incremental_remote(pair, manager, dry_run)
         logger.debug(
             f"Remote folder setup: remote='{pair.remote}', "
@@ -689,6 +691,10 @@ class SyncEngine:
     ) -> Optional[int]:
         """Setup remote folder for incremental sync.
 
+        When remote is "/" (root), the local folder name is used as the target
+        folder in the remote root. For example, if local is "/path/to/my_folder"
+        and remote is "/", files will be synced to remote "/my_folder/...".
+
         Args:
             pair: Sync pair configuration
             manager: File entries manager
@@ -697,21 +703,49 @@ class SyncEngine:
         Returns:
             Remote folder ID if found/created, None otherwise
         """
-        remote_folder_id = self._resolve_remote_folder_id(pair, manager)
+        # Determine effective remote folder name
+        # When remote is "/" or empty, use the local folder name as remote target
+        syncing_to_root = not pair.remote or pair.remote == "/"
+        if syncing_to_root:
+            effective_folder_name = pair.local.name
+            logger.debug(
+                f"Syncing to root: using local folder name '{effective_folder_name}' "
+                "as remote target folder"
+            )
+        else:
+            effective_folder_name = pair.remote.lstrip("/")
+
+        # Try to find existing folder
+        remote_folder_id = None
+        try:
+            if "/" in effective_folder_name:
+                # Nested path - use path resolution
+                remote_folder_id = self.client.resolve_path_to_id(
+                    effective_folder_name, workspace_id=pair.workspace_id
+                )
+            else:
+                # Simple folder name - search in root
+                folder_entry = manager.find_folder_by_name(
+                    effective_folder_name, parent_id=0
+                )
+                if folder_entry:
+                    remote_folder_id = folder_entry.id
+                    logger.debug(
+                        f"Found remote folder '{effective_folder_name}' with id="
+                        f"{remote_folder_id}"
+                    )
+        except Exception as e:
+            logger.debug(f"Folder lookup failed for '{effective_folder_name}': {e}")
 
         # Create remote folder if needed (not for dry-run)
-        if (
-            not dry_run
-            and pair.remote
-            and pair.remote != "/"
-            and remote_folder_id is None
-        ):
+        if not dry_run and remote_folder_id is None:
             try:
-                folder_name = pair.remote.lstrip("/")
-                result = self.client.create_folder(name=folder_name, parent_id=None)
+                result = self.client.create_folder(
+                    name=effective_folder_name, parent_id=None
+                )
                 if result.get("status") == "success":
                     remote_folder_id = result.get("id")
-                    logger.debug(f"Created remote folder: {folder_name}")
+                    logger.debug(f"Created remote folder: {effective_folder_name}")
             except Exception as e:
                 logger.debug(f"Could not create remote folder: {e}")
 
@@ -731,7 +765,7 @@ class SyncEngine:
         Args:
             pair: Sync pair configuration
             manager: File entries manager
-            remote_folder_id: Remote folder ID
+            remote_folder_id: Remote folder ID (None if folder doesn't exist yet)
 
         Returns:
             Tuple of (set of remote file paths, dict mapping paths to entry IDs,
@@ -742,7 +776,6 @@ class SyncEngine:
         remote_file_sizes: dict[str, int] = {}
 
         # Skip if remote folder doesn't exist yet (nothing to compare against)
-        # This also prevents scanning the entire workspace root when folder_id is None
         if remote_folder_id is None:
             logger.debug("Remote folder not found, skipping remote file scan")
             return remote_file_set, remote_file_ids, remote_file_sizes
