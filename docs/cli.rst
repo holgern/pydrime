@@ -350,6 +350,138 @@ Supports both numeric folder IDs and folder names (resolved in current working d
    # Output as JSON
    pydrime --json du
 
+recent
+~~~~~~
+
+List recently accessed files.
+
+.. code-block:: bash
+
+   pydrime recent [OPTIONS]
+
+**Options:**
+
+* ``-w, --workspace INTEGER`` - Workspace ID
+* ``-p, --page INTEGER`` - Page number (1-based, default: 1)
+* ``--page-size INTEGER`` - Number of items per page (default: 50)
+* ``--order-by [created_at|updated_at|name|file_size]`` - Field to order by (default: created_at)
+* ``--order-dir [asc|desc]`` - Order direction (default: desc)
+
+**Description:**
+
+Shows files that have been recently created or modified, ordered by date.
+Similar to the ``ls --recent`` flag but as a dedicated command with more options.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # List recent files
+   pydrime recent
+
+   # List page 2 of recent files
+   pydrime recent --page 2
+
+   # Order by last update time
+   pydrime recent --order-by updated_at
+
+   # Order ascending (oldest first)
+   pydrime recent --order-dir asc
+
+   # List recent files in specific workspace
+   pydrime recent -w 1593
+
+   # Output as JSON
+   pydrime --json recent
+
+trash
+~~~~~
+
+List deleted files and folders in trash.
+
+.. code-block:: bash
+
+   pydrime trash [OPTIONS]
+
+**Options:**
+
+* ``-w, --workspace INTEGER`` - Workspace ID
+* ``-p, --page INTEGER`` - Page number (1-based, default: 1)
+* ``--page-size INTEGER`` - Number of items per page (default: 50)
+* ``--order-by [created_at|updated_at|name|file_size]`` - Field to order by (default: updated_at)
+* ``--order-dir [asc|desc]`` - Order direction (default: desc)
+
+**Description:**
+
+Shows files and folders that have been deleted and are in the trash.
+Similar to the ``ls --deleted`` flag but as a dedicated command with more options.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # List trashed files
+   pydrime trash
+
+   # List page 2 of trashed files
+   pydrime trash --page 2
+
+   # Order by name
+   pydrime trash --order-by name
+
+   # Order ascending
+   pydrime trash --order-dir asc
+
+   # List trash in specific workspace
+   pydrime trash -w 1593
+
+   # Output as JSON
+   pydrime --json trash
+
+starred
+~~~~~~~
+
+List starred files and folders.
+
+.. code-block:: bash
+
+   pydrime starred [OPTIONS]
+
+**Options:**
+
+* ``-w, --workspace INTEGER`` - Workspace ID
+* ``-p, --page INTEGER`` - Page number (1-based, default: 1)
+* ``--page-size INTEGER`` - Number of items per page (default: 50)
+* ``--order-by [created_at|updated_at|name|file_size]`` - Field to order by (default: updated_at)
+* ``--order-dir [asc|desc]`` - Order direction (default: desc)
+
+**Description:**
+
+Shows files and folders that have been marked as starred/favorites.
+Similar to the ``ls --starred`` flag but as a dedicated command with more options.
+
+**Examples:**
+
+.. code-block:: bash
+
+   # List starred files
+   pydrime starred
+
+   # List page 2 of starred files
+   pydrime starred --page 2
+
+   # Order by name
+   pydrime starred --order-by name
+
+   # Order ascending
+   pydrime starred --order-dir asc
+
+   # List starred files in specific workspace
+   pydrime starred -w 1593
+
+   # Output as JSON
+   pydrime --json starred
+
 mkdir
 ~~~~~
 

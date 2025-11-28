@@ -960,7 +960,7 @@ class TestNotifications:
             == "e0d8de26-4016-489a-94f3-361bd7127b9b"
         )
         mock_request.assert_called_once_with(
-            "GET", "/notifications", params={"perPage": 10, "page": 1}
+            "GET", "/notifications", params={"perPage": 10, "page": 1, "workspaceId": 0}
         )
 
     @patch("pydrime.api.DrimeClient._request")
@@ -988,7 +988,7 @@ class TestNotifications:
         assert result["pagination"]["current_page"] == 2
         assert result["pagination"]["per_page"] == 20
         mock_request.assert_called_once_with(
-            "GET", "/notifications", params={"perPage": 20, "page": 2}
+            "GET", "/notifications", params={"perPage": 20, "page": 2, "workspaceId": 0}
         )
 
     @patch("pydrime.api.DrimeClient._request")

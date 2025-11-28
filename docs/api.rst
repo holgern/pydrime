@@ -473,11 +473,42 @@ Notifications
 .. code-block:: python
 
    # Get user notifications
-   result = client.get_notifications(per_page=10, page=1)
+   result = client.get_notifications(per_page=10, page=1, workspace_id=0)
    notifications = result["pagination"]["data"]
 
    for notif in notifications:
        print(notif["data"]["lines"][0]["content"])
+
+Notes
+-----
+
+.. code-block:: python
+
+   # Get all notes
+   notes = client.get_notes()
+   for note in notes:
+       print(f"{note['title']}: {note['body']}")
+
+   # Get a single note by ID
+   result = client.get_note(note_id=1958, workspace_id=1593)
+   note = result["data"]
+   print(f"{note['title']}: {note['body']}")
+
+   # Update a note
+   result = client.update_note(
+       note_id=1958,
+       title="Updated Title",
+       body="<p>Updated content</p>"
+   )
+   print(result["success"])  # True
+
+   # Update only the title
+   result = client.update_note_title(
+       note_id=1958,
+       title="New Title",
+       token="your_token"
+   )
+   print(result["success"])  # True
 
 Space Usage
 -----------
