@@ -313,6 +313,111 @@ class TestFindFolderByName:
         assert folder is not None
         assert folder.name == "target_folder"
 
+    def test_find_folder_fallback_to_listing(self):
+        """Test fallback to listing when search API returns no results."""
+        mock_client = Mock()
+
+        # First call (search API) returns empty results
+        # Second call (listing root folder) returns the folder
+        mock_client.get_file_entries.side_effect = [
+            # Search API returns empty
+            {
+                "data": [],
+                "current_page": 1,
+                "last_page": 1,
+                "per_page": 50,
+                "total": 0,
+            },
+            # Listing root returns the folder
+            {
+                "data": [
+                    {
+                        "id": 42,
+                        "name": "sync_folder",
+                        "type": "folder",
+                        "hash": "hash1",
+                        "mime": None,
+                        "file_size": 0,
+                        "parent_id": 0,
+                        "created_at": "2023-01-01",
+                        "updated_at": "2023-01-01",
+                        "owner": {"email": "test@example.com"},
+                    },
+                    {
+                        "id": 43,
+                        "name": "other_folder",
+                        "type": "folder",
+                        "hash": "hash2",
+                        "mime": None,
+                        "file_size": 0,
+                        "parent_id": 0,
+                        "created_at": "2023-01-01",
+                        "updated_at": "2023-01-01",
+                        "owner": {"email": "test@example.com"},
+                    },
+                ],
+                "current_page": 1,
+                "last_page": 1,
+                "per_page": 100,
+                "total": 2,
+            },
+        ]
+
+        manager = FileEntriesManager(mock_client, workspace_id=0)
+        folder = manager.find_folder_by_name("sync_folder", parent_id=0)
+
+        assert folder is not None
+        assert folder.name == "sync_folder"
+        assert folder.id == 42
+
+        # Should have called API twice: once for search, once for listing
+        assert mock_client.get_file_entries.call_count == 2
+
+    def test_find_folder_not_found_after_fallback(self):
+        """Test that None is returned if folder not found via search or listing."""
+        mock_client = Mock()
+
+        # Both search and listing return no matching folder
+        mock_client.get_file_entries.side_effect = [
+            # Search API returns empty
+            {
+                "data": [],
+                "current_page": 1,
+                "last_page": 1,
+                "per_page": 50,
+                "total": 0,
+            },
+            # Listing root returns other folders, not the one we're looking for
+            {
+                "data": [
+                    {
+                        "id": 43,
+                        "name": "other_folder",
+                        "type": "folder",
+                        "hash": "hash2",
+                        "mime": None,
+                        "file_size": 0,
+                        "parent_id": 0,
+                        "created_at": "2023-01-01",
+                        "updated_at": "2023-01-01",
+                        "owner": {"email": "test@example.com"},
+                    },
+                ],
+                "current_page": 1,
+                "last_page": 1,
+                "per_page": 100,
+                "total": 1,
+            },
+        ]
+
+        manager = FileEntriesManager(mock_client, workspace_id=0)
+        folder = manager.find_folder_by_name("nonexistent_folder", parent_id=0)
+
+        assert folder is None
+
+        # Should have called API twice: once for search, once for listing
+        assert mock_client.get_file_entries.call_count == 2
+
 
 class TestGetAllRecursive:
     """Tests for get_all_recursive method."""

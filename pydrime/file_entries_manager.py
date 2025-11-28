@@ -221,8 +221,7 @@ class FileEntriesManager:
         Returns:
             FileEntry if found, None otherwise
         """
-        # Use search API for faster lookups instead of listing all entries
-        # This is especially important when searching in root with many files
+        # Try search API first for faster lookups
         folders = self.search_by_name(
             query=folder_name, exact_match=True, entry_type="folder", per_page=50
         )
@@ -240,8 +239,43 @@ class FileEntriesManager:
             # Search in root means parent_id=0 or None
             folders = [f for f in folders if f.parent_id == 0 or f.parent_id is None]
 
-        # Return first match (should only be one with exact name in same parent)
-        return folders[0] if folders else None
+        # Return first match if found via search API
+        if folders:
+            return folders[0]
+
+        # Fallback: If search API didn't find the folder, try listing the parent
+        # folder directly. This handles cases where:
+        # 1. Search index hasn't been updated yet (newly created folder)
+        # 2. Search API has issues or is rate-limited
+        logger.debug(
+            f"Search API did not find folder '{folder_name}', "
+            f"falling back to listing parent folder"
+        )
+
+        try:
+            # Determine which folder to list
+            list_folder_id = None
+            if parent_id is not None and parent_id != 0:
+                list_folder_id = parent_id
+            elif search_in_root or parent_id == 0:
+                list_folder_id = None  # List root
+
+            entries = self.get_all_in_folder(
+                folder_id=list_folder_id, use_cache=False, per_page=100
+            )
+
+            # Find folder with exact name match
+            for entry in entries:
+                if entry.is_folder and entry.name == folder_name:
+                    logger.debug(
+                        f"Found folder '{folder_name}' via listing (id={entry.id})"
+                    )
+                    return entry
+
+        except DrimeAPIError as e:
+            logger.debug(f"Fallback listing also failed: {e}")
+
+        return None
 
     def iter_all_recursive(
         self,

@@ -2,7 +2,7 @@
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -32,6 +32,11 @@ from .state import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Timeout for future.result() to allow Ctrl+C handling on Windows
+# This is needed because Python's ThreadPoolExecutor doesn't handle
+# KeyboardInterrupt well on Windows without periodic timeouts
+_FUTURE_RESULT_TIMEOUT = 0.5  # seconds
 
 
 class SyncEngine:
@@ -1180,6 +1185,9 @@ class SyncEngine:
     ) -> dict:
         """Execute sync decisions in parallel with progress tracking.
 
+        This method handles Ctrl+C (KeyboardInterrupt) properly on Windows by using
+        timeouts on future.result() calls to periodically check for interrupts.
+
         Args:
             decisions: List of sync decisions to execute
             pair: Sync pair configuration
@@ -1254,34 +1262,52 @@ class SyncEngine:
                 elapsed = time.time() - start
                 return decision.relative_path, elapsed, success, decision.action
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        try:
+            futures: dict[Future, SyncDecision] = {
                 executor.submit(
                     execute_with_tracking, decision, i * start_delay
                 ): decision
                 for i, decision in enumerate(decisions)
             }
 
-            for future in as_completed(futures):
+            # Process completed futures with timeout to allow Ctrl+C on Windows
+            pending = set(futures.keys())
+            while pending:
+                # Check for cancellation
                 if self.pause_controller.removed:
                     break
 
-                try:
-                    path, elapsed, success, action = future.result()
-                    if success:
-                        if action == SyncAction.UPLOAD:
-                            stats["uploads"] += 1
-                        elif action == SyncAction.DOWNLOAD:
-                            stats["downloads"] += 1
-                        elif action == SyncAction.DELETE_LOCAL:
-                            stats["deletes_local"] += 1
-                        elif action == SyncAction.DELETE_REMOTE:
-                            stats["deletes_remote"] += 1
-                except Exception as e:
-                    if not self.output.quiet:
-                        self.output.error(
-                            f"Unexpected error in parallel execution: {e}"
-                        )
+                # Wait for any future with timeout to allow interrupt handling
+                done, pending = self._wait_for_futures_with_timeout(
+                    pending, timeout=_FUTURE_RESULT_TIMEOUT
+                )
+
+                for future in done:
+                    try:
+                        path, elapsed, success, action = future.result(timeout=0)
+                        if success:
+                            if action == SyncAction.UPLOAD:
+                                stats["uploads"] += 1
+                            elif action == SyncAction.DOWNLOAD:
+                                stats["downloads"] += 1
+                            elif action == SyncAction.DELETE_LOCAL:
+                                stats["deletes_local"] += 1
+                            elif action == SyncAction.DELETE_REMOTE:
+                                stats["deletes_remote"] += 1
+                    except Exception as e:
+                        if not self.output.quiet:
+                            self.output.error(
+                                f"Unexpected error in parallel execution: {e}"
+                            )
+
+        except KeyboardInterrupt:
+            logger.debug("KeyboardInterrupt received, cancelling parallel execution")
+            self.pause_controller.cancel()
+            raise
+        finally:
+            # Shutdown executor and cancel pending futures
+            executor.shutdown(wait=False, cancel_futures=True)
 
         return stats
 
@@ -1375,6 +1401,17 @@ class SyncEngine:
                 folder_entry = manager.find_folder_by_name(folder_name, parent_id=0)
                 if folder_entry:
                     remote_folder_id = folder_entry.id
+                    logger.debug(
+                        "Found remote folder '%s' with id=%s",
+                        folder_name,
+                        remote_folder_id,
+                    )
+                else:
+                    logger.debug(
+                        "Remote folder '%s' not found - will be created or "
+                        "files will be uploaded to root",
+                        folder_name,
+                    )
             except Exception as e:
                 # Remote folder doesn't exist yet
                 logger.debug("Folder resolution failed: %s", e)
@@ -2700,6 +2737,9 @@ class SyncEngine:
         - Transfers (uploads/downloads) use a separate semaphore (default: 10)
         - Normal operations use a separate semaphore (default: 20)
 
+        This method handles Ctrl+C (KeyboardInterrupt) properly on Windows by using
+        timeouts on future.result() calls to periodically check for interrupts.
+
         Args:
             decisions: List of sync decisions to execute
             pair: Sync pair configuration
@@ -2767,49 +2807,91 @@ class SyncEngine:
                 return decision.relative_path, elapsed, success, decision.action
 
         # Execute in parallel with staggered start delays and semaphore control
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        try:
+            futures: dict[Future, SyncDecision] = {
                 executor.submit(
                     execute_with_semaphore, decision, i * start_delay
                 ): decision
                 for i, decision in enumerate(decisions)
             }
 
-            for future in as_completed(futures):
+            # Process completed futures with timeout to allow Ctrl+C on Windows
+            pending = set(futures.keys())
+            while pending:
                 # Check for cancellation
                 if self.pause_controller.removed:
                     logger.debug("Sync cancelled, stopping parallel execution")
-                    # Note: We don't cancel running futures as they may leave
-                    # files in inconsistent state. They will complete naturally.
                     break
 
-                try:
-                    path, elapsed, success, action = future.result()
-                    if success:
-                        # Update stats for successful operations
-                        if action == SyncAction.UPLOAD:
-                            stats["uploads"] += 1
-                        elif action == SyncAction.DOWNLOAD:
-                            stats["downloads"] += 1
-                        elif action == SyncAction.DELETE_LOCAL:
-                            stats["deletes_local"] += 1
-                        elif action == SyncAction.DELETE_REMOTE:
-                            stats["deletes_remote"] += 1
-                        elif action == SyncAction.RENAME_LOCAL:
-                            stats["renames_local"] += 1
-                        elif action == SyncAction.RENAME_REMOTE:
-                            stats["renames_remote"] += 1
+                # Wait for any future with timeout to allow interrupt handling
+                done, pending = self._wait_for_futures_with_timeout(
+                    pending, timeout=_FUTURE_RESULT_TIMEOUT
+                )
 
-                        logger.debug(f"Completed {path} in {elapsed:.2f}s")
-                    else:
-                        logger.debug(f"Failed {path} in {elapsed:.2f}s")
-                except Exception as e:
-                    if not self.output.quiet:
-                        self.output.error(
-                            f"Unexpected error in parallel execution: {e}"
-                        )
+                for future in done:
+                    try:
+                        path, elapsed, success, action = future.result(timeout=0)
+                        if success:
+                            # Update stats for successful operations
+                            if action == SyncAction.UPLOAD:
+                                stats["uploads"] += 1
+                            elif action == SyncAction.DOWNLOAD:
+                                stats["downloads"] += 1
+                            elif action == SyncAction.DELETE_LOCAL:
+                                stats["deletes_local"] += 1
+                            elif action == SyncAction.DELETE_REMOTE:
+                                stats["deletes_remote"] += 1
+                            elif action == SyncAction.RENAME_LOCAL:
+                                stats["renames_local"] += 1
+                            elif action == SyncAction.RENAME_REMOTE:
+                                stats["renames_remote"] += 1
+
+                            logger.debug(f"Completed {path} in {elapsed:.2f}s")
+                        else:
+                            logger.debug(f"Failed {path} in {elapsed:.2f}s")
+                    except Exception as e:
+                        if not self.output.quiet:
+                            self.output.error(
+                                f"Unexpected error in parallel execution: {e}"
+                            )
+
+        except KeyboardInterrupt:
+            logger.debug("KeyboardInterrupt received, cancelling parallel execution")
+            self.pause_controller.cancel()
+            raise
+        finally:
+            # Shutdown executor and cancel pending futures
+            executor.shutdown(wait=False, cancel_futures=True)
 
         return stats
+
+    def _wait_for_futures_with_timeout(
+        self,
+        futures: set[Future],
+        timeout: float,
+    ) -> tuple[set[Future], set[Future]]:
+        """Wait for futures with a timeout to allow interrupt handling.
+
+        This is a workaround for Python's ThreadPoolExecutor not handling
+        KeyboardInterrupt properly on Windows. By using a timeout, we can
+        periodically check for interrupts and handle them gracefully.
+
+        Args:
+            futures: Set of futures to wait for
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            Tuple of (done futures, pending futures)
+        """
+        import concurrent.futures
+
+        done, pending = concurrent.futures.wait(
+            futures,
+            timeout=timeout,
+            return_when=concurrent.futures.FIRST_COMPLETED,
+        )
+        return done, pending
 
     def _execute_upload_decisions(
         self,

@@ -2114,7 +2114,7 @@ def stat(ctx: Any, identifier: str) -> None:
             out.output_json(entry_dict)
         else:
             # Text format - display as a table
-            icon = "📁" if entry.type == "folder" else "📄"
+            icon = "[D]" if entry.type == "folder" else "[F]"
 
             # Format timestamps
             created_dt = parse_iso_timestamp(entry.created_at)

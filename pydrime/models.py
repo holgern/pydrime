@@ -903,7 +903,7 @@ class FileEntry:
     def display_name(self) -> str:
         """Get a display-friendly name."""
         if self.is_folder:
-            return f"📁 {self.name}"
+            return f"[D] {self.name}"
         return self.name
 
 
@@ -984,7 +984,7 @@ class FileEntriesResult:
         """
         items = []
         for entry in self.entries:
-            type_icon = "📁" if entry.is_folder else "📄"
+            type_icon = "[D]" if entry.is_folder else "[F]"
             details = {
                 "id": entry.id,
                 "hash": entry.hash,

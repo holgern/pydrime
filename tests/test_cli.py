@@ -407,9 +407,9 @@ class TestUploadCommand:
         assert "Files will be uploaded to:" in result.output
         assert "Folders to create:" in result.output
         assert "Files to upload:" in result.output
-        # Should show folder and file with emojis (folder paths start with /)
-        assert "📁 /test/" in result.output
-        assert "📄 file.txt" in result.output
+        # Should show folder and file with icons (folder paths start with /)
+        assert "[D] /test/" in result.output
+        assert "[F] file.txt" in result.output
 
 
 class TestLsCommand:
@@ -4684,7 +4684,7 @@ class TestFolderStructureDetection:
             # Check that folder structure is shown
             output = result.output
             # Should show nested folders
-            assert "folder1" in output or "📁" in output
+            assert "folder1" in output or "[D]" in output
 
             # Should show files grouped by directory
             assert "file1.txt" in output
@@ -4735,7 +4735,7 @@ class TestFolderStructureDetection:
             assert "Folders to create:" in output
 
             # Check folder count (a, a/b, a/b/c = 3 folders)
-            assert "Folders to create: 3" in output or "📁" in output
+            assert "Folders to create: 3" in output or "[D]" in output
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.auth.config")
@@ -4871,9 +4871,9 @@ class TestWindowsPathHandling:
             output = result.output
 
             # Check that folders are shown with forward slashes, not mixed
-            assert "data/" in output or "📁 data/" in output
-            assert "data/01/" in output or "📁 data/01/" in output
-            assert "data/01/02/" in output or "📁 data/01/02/" in output
+            assert "data/" in output or "[D] data/" in output
+            assert "data/01/" in output or "[D] data/01/" in output
+            assert "data/01/02/" in output or "[D] data/01/02/" in output
 
             # Ensure no mixed separators (backslash followed by forward slash)
             assert "\\/" not in output, "Found mixed separators in output"
@@ -4963,13 +4963,13 @@ class TestWindowsPathHandling:
 
             # Extract folder paths from output
             lines = output.split("\n")
-            folder_lines = [line.strip() for line in lines if "📁" in line]
+            folder_lines = [line.strip() for line in lines if "[D]" in line]
 
             # Check that all folders use forward slashes
             for line in folder_lines:
-                # Extract the path from the line (after the emoji)
-                if "📁" in line:
-                    path_part = line.split("📁")[1].strip()
+                # Extract the path from the line (after the icon)
+                if "[D]" in line:
+                    path_part = line.split("[D]")[1].strip()
                     # Should not contain backslashes
                     assert (
                         "\\" not in path_part
