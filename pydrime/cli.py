@@ -1116,7 +1116,7 @@ def mkdir(ctx: Any, name: str, parent_id: Optional[int]) -> None:
 
     if not config.is_configured() and not api_key:
         out.error("API key not configured.")
-        out.info("Run 'drime init' to configure your API key")
+        out.info("Run 'pydrime init' to configure your API key")
         ctx.exit(1)
 
     try:
@@ -1147,7 +1147,7 @@ def status(ctx: Any) -> None:
 
     if not config.is_configured() and not api_key:
         out.error("API key not configured.")
-        out.info("Run 'drime init' to configure your API key")
+        out.info("Run 'pydrime init' to configure your API key")
         ctx.exit(1)
 
     try:
@@ -2240,7 +2240,7 @@ def rename(
 
     if not config.is_configured() and not api_key:
         out.error("API key not configured.")
-        out.info("Run 'drime init' to configure your API key")
+        out.info("Run 'pydrime init' to configure your API key")
         ctx.exit(1)
 
     try:
@@ -2315,7 +2315,7 @@ def rm(
 
     if not config.is_configured() and not api_key:
         out.error("API key not configured.")
-        out.info("Run 'drime init' to configure your API key")
+        out.info("Run 'pydrime init' to configure your API key")
         ctx.exit(1)
 
     # Use default workspace if none specified
@@ -2454,7 +2454,7 @@ def share(
 
     if not config.is_configured() and not api_key:
         out.error("API key not configured.")
-        out.info("Run 'drime init' to configure your API key")
+        out.info("Run 'pydrime init' to configure your API key")
         ctx.exit(1)
 
     try:
@@ -2563,7 +2563,7 @@ def workspaces(ctx: Any) -> None:
 
     if not config.is_configured() and not api_key:
         out.error("API key not configured.")
-        out.info("Run 'drime init' to configure your API key")
+        out.info("Run 'pydrime init' to configure your API key")
         ctx.exit(1)
 
     try:
@@ -2626,7 +2626,7 @@ def folders(ctx: Any, workspace: int) -> None:
 
     if not config.is_configured() and not api_key:
         out.error("API key not configured.")
-        out.info("Run 'drime init' to configure your API key")
+        out.info("Run 'pydrime init' to configure your API key")
         ctx.exit(1)
 
     try:
@@ -3988,7 +3988,7 @@ def usage(ctx: Any) -> None:
 
     if not config.is_configured() and not api_key:
         out.error("API key not configured.")
-        out.info("Run 'drime init' to configure your API key")
+        out.info("Run 'pydrime init' to configure your API key")
         ctx.exit(1)
 
     try:

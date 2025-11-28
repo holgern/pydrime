@@ -246,7 +246,8 @@ class SyncOperations:
             FileExistsError: If the target path already exists
             OSError: If the rename fails
         """
-        new_path = sync_root / new_relative_path.replace("/", str(Path("/"))[0])
+        # Convert forward slashes to OS-native path separators
+        new_path = sync_root / Path(new_relative_path)
         return rename_local_file(local_file.path, new_path)
 
     def rename_remote(
