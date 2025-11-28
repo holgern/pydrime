@@ -1,15 +1,22 @@
 """Unit tests for utility functions."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from pydrime.utils import (
+    RemoteFileVerificationResult,
     calculate_drime_hash,
     decode_drime_hash,
+    format_size,
     glob_match,
+    glob_match_entries,
     glob_to_regex,
     is_file_id,
     is_glob_pattern,
     normalize_to_hash,
+    parse_iso_timestamp,
+    verify_remote_files_have_users,
 )
 
 
@@ -340,3 +347,366 @@ class TestGlobToRegex:
         regex = glob_to_regex("file?.txt")
         assert regex.match("file1.txt") is not None
         assert regex.match("file12.txt") is None
+
+
+class TestParseIsoTimestamp:
+    """Tests for parse_iso_timestamp function."""
+
+    def test_parse_valid_iso_timestamp_with_z(self):
+        """Test parsing ISO timestamp with Z suffix."""
+        result = parse_iso_timestamp("2025-01-15T10:30:00Z")
+        assert result is not None
+        # Check it's a datetime (exact time depends on local timezone)
+        assert result.year == 2025
+        assert result.month == 1
+        assert result.day == 15
+
+    def test_parse_valid_iso_timestamp_with_microseconds(self):
+        """Test parsing ISO timestamp with microseconds."""
+        result = parse_iso_timestamp("2025-01-15T10:30:00.123456Z")
+        assert result is not None
+        assert result.year == 2025
+
+    def test_parse_timestamp_with_timezone(self):
+        """Test parsing ISO timestamp with timezone offset."""
+        result = parse_iso_timestamp("2025-01-15T10:30:00+02:00")
+        assert result is not None
+        assert result.year == 2025
+
+    def test_parse_timestamp_without_timezone(self):
+        """Test parsing ISO timestamp without timezone."""
+        result = parse_iso_timestamp("2025-01-15T10:30:00")
+        assert result is not None
+        assert result.year == 2025
+        assert result.month == 1
+
+    def test_parse_none_returns_none(self):
+        """Test that None input returns None."""
+        result = parse_iso_timestamp(None)
+        assert result is None
+
+    def test_parse_empty_string_returns_none(self):
+        """Test that empty string returns None."""
+        result = parse_iso_timestamp("")
+        assert result is None
+
+    def test_parse_invalid_timestamp_returns_none(self):
+        """Test that invalid timestamp returns None."""
+        result = parse_iso_timestamp("not a timestamp")
+        assert result is None
+
+    def test_parse_invalid_format_returns_none(self):
+        """Test that invalid format returns None."""
+        result = parse_iso_timestamp("2025/01/15 10:30:00")
+        assert result is None
+
+    def test_parse_timestamp_with_malformed_data(self):
+        """Test parsing timestamp with various malformed formats."""
+        # The function is quite forgiving, so test cases that actually fail
+        # Completely invalid format
+        result = parse_iso_timestamp("not-a-timestamp")
+        assert result is None
+
+        # Valid formats that should parse
+        result = parse_iso_timestamp("2025-01-15T10:30:00.123456Z")
+        assert result is not None
+
+
+class TestFormatSize:
+    """Tests for format_size function."""
+
+    def test_format_bytes(self):
+        """Test formatting sizes less than 1 KB."""
+        assert format_size(0) == "0 B"
+        assert format_size(100) == "100 B"
+        assert format_size(1023) == "1023 B"
+
+    def test_format_kilobytes(self):
+        """Test formatting sizes in KB range."""
+        assert format_size(1024) == "1.0 KB"
+        assert format_size(2048) == "2.0 KB"
+        assert format_size(1536) == "1.5 KB"
+
+    def test_format_megabytes(self):
+        """Test formatting sizes in MB range."""
+        assert format_size(1024 * 1024) == "1.0 MB"
+        assert format_size(1024 * 1024 * 2) == "2.0 MB"
+        assert format_size(int(1024 * 1024 * 1.5)) == "1.5 MB"
+
+    def test_format_gigabytes(self):
+        """Test formatting sizes in GB range."""
+        assert format_size(1024 * 1024 * 1024) == "1.0 GB"
+        assert format_size(1024 * 1024 * 1024 * 2) == "2.0 GB"
+
+
+class TestRemoteFileVerificationResult:
+    """Tests for RemoteFileVerificationResult class."""
+
+    def test_basic_initialization(self):
+        """Test basic initialization."""
+        result = RemoteFileVerificationResult(
+            all_verified=True,
+            verified_count=5,
+            total_count=5,
+        )
+        assert result.all_verified is True
+        assert result.verified_count == 5
+        assert result.total_count == 5
+        assert result.expected_count is None
+        assert result.unverified_files == []
+        assert result.errors == []
+
+    def test_initialization_with_all_params(self):
+        """Test initialization with all parameters."""
+        result = RemoteFileVerificationResult(
+            all_verified=False,
+            verified_count=3,
+            total_count=5,
+            expected_count=10,
+            unverified_files=["file1.txt", "file2.txt"],
+            errors=["Error 1", "Error 2"],
+        )
+        assert result.all_verified is False
+        assert result.verified_count == 3
+        assert result.total_count == 5
+        assert result.expected_count == 10
+        assert result.unverified_files == ["file1.txt", "file2.txt"]
+        assert result.errors == ["Error 1", "Error 2"]
+
+    def test_bool_returns_all_verified(self):
+        """Test that bool() returns all_verified value."""
+        result_true = RemoteFileVerificationResult(True, 5, 5)
+        result_false = RemoteFileVerificationResult(False, 3, 5)
+
+        assert bool(result_true) is True
+        assert bool(result_false) is False
+
+        # Can use in if statements
+        if result_true:
+            pass  # Should enter
+        else:
+            pytest.fail("Should have been truthy")
+
+        if not result_false:
+            pass  # Should enter
+        else:
+            pytest.fail("Should have been falsy")
+
+    def test_repr(self):
+        """Test string representation."""
+        result = RemoteFileVerificationResult(True, 5, 10)
+        repr_str = repr(result)
+
+        assert "RemoteFileVerificationResult" in repr_str
+        assert "verified=5/10" in repr_str
+        assert "all_verified=True" in repr_str
+
+
+class TestGlobMatchEntries:
+    """Tests for glob_match_entries function."""
+
+    def test_filter_entries_by_pattern(self):
+        """Test filtering entries by glob pattern."""
+        # Create mock FileEntry objects
+        entries = []
+        for name in ["file1.txt", "file2.txt", "data.csv", "readme.md"]:
+            entry = MagicMock()
+            entry.name = name
+            entries.append(entry)
+
+        # Filter for .txt files
+        result = glob_match_entries("*.txt", entries)
+        assert len(result) == 2
+        assert all(e.name.endswith(".txt") for e in result)
+
+    def test_filter_no_matches(self):
+        """Test filtering with no matches."""
+        entries = []
+        for name in ["file1.txt", "file2.txt"]:
+            entry = MagicMock()
+            entry.name = name
+            entries.append(entry)
+
+        result = glob_match_entries("*.csv", entries)
+        assert len(result) == 0
+
+    def test_filter_all_match(self):
+        """Test filtering where all entries match."""
+        entries = []
+        for name in ["test1.py", "test2.py", "test_utils.py"]:
+            entry = MagicMock()
+            entry.name = name
+            entries.append(entry)
+
+        result = glob_match_entries("*.py", entries)
+        assert len(result) == 3
+
+    def test_filter_empty_entries(self):
+        """Test filtering empty entries list."""
+        result = glob_match_entries("*.txt", [])
+        assert len(result) == 0
+
+
+class TestVerifyRemoteFilesHaveUsers:
+    """Tests for verify_remote_files_have_users function."""
+
+    def test_folder_not_found(self):
+        """Test when remote folder is not found."""
+        mock_client = MagicMock()
+        mock_client.get_file_entries.return_value = {"data": []}
+
+        result = verify_remote_files_have_users(
+            mock_client, "nonexistent_folder", verbose=False
+        )
+
+        assert result.all_verified is False
+        assert "Folder not found" in result.errors[0]
+
+    def test_no_files_in_folder(self):
+        """Test when folder exists but has no files."""
+        mock_client = MagicMock()
+
+        # First call finds the folder
+        folder_entry = {
+            "name": "test_folder",
+            "hash": "abc123",
+            "type": "folder",
+            "id": 1,
+        }
+        mock_client.get_file_entries.side_effect = [
+            {"data": [folder_entry]},  # First call - folder search
+            {"data": []},  # Second call - folder contents
+        ]
+
+        result = verify_remote_files_have_users(
+            mock_client, "test_folder", verbose=False
+        )
+
+        assert result.all_verified is False
+        assert "No files found" in result.errors[0]
+
+    def test_all_files_verified(self):
+        """Test when all files are verified."""
+        mock_client = MagicMock()
+
+        folder_entry = {
+            "name": "test_folder",
+            "hash": "abc123",
+            "type": "folder",
+            "id": 1,
+        }
+        file_entry = {
+            "name": "test.txt",
+            "hash": "file123",
+            "type": "file",
+            "id": 2,
+            "file_size": 100,
+            "users": [{"id": 1, "name": "user1"}],
+        }
+
+        mock_client.get_file_entries.side_effect = [
+            {"data": [folder_entry]},  # First call - folder search
+            {"data": [file_entry]},  # Second call - folder contents
+        ]
+
+        result = verify_remote_files_have_users(
+            mock_client, "test_folder", verbose=False
+        )
+
+        assert result.all_verified is True
+        assert result.verified_count == 1
+        assert result.total_count == 1
+
+    def test_files_with_missing_users(self):
+        """Test when some files are missing users."""
+        mock_client = MagicMock()
+
+        folder_entry = {
+            "name": "test_folder",
+            "hash": "abc123",
+            "type": "folder",
+            "id": 1,
+        }
+        verified_file = {
+            "name": "verified.txt",
+            "hash": "file123",
+            "type": "file",
+            "id": 2,
+            "file_size": 100,
+            "users": [{"id": 1}],
+        }
+        unverified_file = {
+            "name": "unverified.txt",
+            "hash": "file456",
+            "type": "file",
+            "id": 3,
+            "file_size": 100,
+            "users": [],  # No users
+        }
+
+        mock_client.get_file_entries.side_effect = [
+            {"data": [folder_entry]},
+            {"data": [verified_file, unverified_file]},
+        ]
+
+        result = verify_remote_files_have_users(
+            mock_client, "test_folder", verbose=False
+        )
+
+        assert result.all_verified is False
+        assert result.verified_count == 1
+        assert result.total_count == 2
+        assert "unverified.txt" in result.unverified_files
+
+    def test_expected_count_mismatch(self):
+        """Test when expected count doesn't match."""
+        mock_client = MagicMock()
+
+        folder_entry = {
+            "name": "test_folder",
+            "hash": "abc123",
+            "type": "folder",
+            "id": 1,
+        }
+        file_entry = {
+            "name": "test.txt",
+            "hash": "file123",
+            "type": "file",
+            "id": 2,
+            "file_size": 100,
+            "users": [{"id": 1}],
+        }
+
+        mock_client.get_file_entries.side_effect = [
+            {"data": [folder_entry]},
+            {"data": [file_entry]},
+        ]
+
+        result = verify_remote_files_have_users(
+            mock_client, "test_folder", expected_count=5, verbose=False
+        )
+
+        assert result.all_verified is False
+        assert "Expected 5 files" in result.errors[0]
+
+    def test_api_exception(self):
+        """Test when API raises an exception."""
+        mock_client = MagicMock()
+        mock_client.get_file_entries.side_effect = Exception("API error")
+
+        result = verify_remote_files_have_users(
+            mock_client, "test_folder", verbose=False
+        )
+
+        assert result.all_verified is False
+        assert "Error verifying files" in result.errors[0]
+
+    def test_verbose_output(self, capsys):
+        """Test verbose output."""
+        mock_client = MagicMock()
+        mock_client.get_file_entries.return_value = {"data": []}
+
+        verify_remote_files_have_users(mock_client, "test_folder", verbose=True)
+
+        captured = capsys.readouterr()
+        assert "VERIFY" in captured.out

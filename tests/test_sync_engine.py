@@ -1,8 +1,9 @@
 """Tests for the sync engine."""
 
 import tempfile
+import time
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -10,6 +11,10 @@ from pydrime.api import DrimeClient
 from pydrime.models import FileEntry
 from pydrime.output import OutputFormatter
 from pydrime.sync import SyncEngine, SyncMode, SyncPair
+from pydrime.sync.comparator import SyncAction, SyncDecision
+from pydrime.sync.concurrency import ConcurrencyLimits, SyncPauseController
+from pydrime.sync.scanner import LocalFile, RemoteFile
+from pydrime.sync.state import SyncStateManager
 
 
 class TestSyncEngine:
@@ -543,3 +548,1250 @@ class TestLocalTrashOperations:
             disable_local_trash=True,
         )
         assert pair_without_trash.use_local_trash is False
+
+
+class TestSyncEnginePauseResumeCancel:
+    """Tests for pause, resume, and cancel functionality."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mock Drime client."""
+        return Mock(spec=DrimeClient)
+
+    @pytest.fixture
+    def mock_output(self):
+        """Create a mock output formatter."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = False  # Enable output to test messages
+        return output
+
+    @pytest.fixture
+    def mock_output_quiet(self):
+        """Create a quiet mock output formatter."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = True
+        return output
+
+    def test_pause_with_output(self, mock_client, mock_output):
+        """Test pause method with output enabled."""
+        engine = SyncEngine(mock_client, mock_output)
+        engine.pause()
+
+        assert engine.paused is True
+        mock_output.info.assert_called_with("Sync paused")
+
+    def test_pause_quiet(self, mock_client, mock_output_quiet):
+        """Test pause method with quiet output."""
+        engine = SyncEngine(mock_client, mock_output_quiet)
+        engine.pause()
+
+        assert engine.paused is True
+        mock_output_quiet.info.assert_not_called()
+
+    def test_resume_with_output(self, mock_client, mock_output):
+        """Test resume method with output enabled."""
+        engine = SyncEngine(mock_client, mock_output)
+        engine.pause()
+        engine.resume()
+
+        assert engine.paused is False
+        mock_output.info.assert_any_call("Sync resumed")
+
+    def test_resume_quiet(self, mock_client, mock_output_quiet):
+        """Test resume method with quiet output."""
+        engine = SyncEngine(mock_client, mock_output_quiet)
+        engine.pause()
+        engine.resume()
+
+        assert engine.paused is False
+
+    def test_cancel_with_output(self, mock_client, mock_output):
+        """Test cancel method with output enabled."""
+        engine = SyncEngine(mock_client, mock_output)
+        engine.cancel()
+
+        assert engine.cancelled is True
+        mock_output.info.assert_called_with("Sync cancelled")
+
+    def test_cancel_quiet(self, mock_client, mock_output_quiet):
+        """Test cancel method with quiet output."""
+        engine = SyncEngine(mock_client, mock_output_quiet)
+        engine.cancel()
+
+        assert engine.cancelled is True
+
+    def test_paused_property(self, mock_client, mock_output_quiet):
+        """Test paused property reflects pause controller state."""
+        engine = SyncEngine(mock_client, mock_output_quiet)
+
+        assert engine.paused is False
+        engine.pause()
+        assert engine.paused is True
+        engine.resume()
+        assert engine.paused is False
+
+    def test_cancelled_property(self, mock_client, mock_output_quiet):
+        """Test cancelled property reflects pause controller state."""
+        engine = SyncEngine(mock_client, mock_output_quiet)
+
+        assert engine.cancelled is False
+        engine.cancel()
+        assert engine.cancelled is True
+
+    def test_reset(self, mock_client, mock_output_quiet):
+        """Test reset method clears pause controller state."""
+        engine = SyncEngine(mock_client, mock_output_quiet)
+
+        engine.pause()
+        assert engine.paused is True
+        assert engine.cancelled is False
+
+        engine.cancel()
+        # cancel() also resumes (unpauses) to allow workers to exit
+        assert engine.paused is False
+        assert engine.cancelled is True
+
+        engine.reset()
+        assert engine.paused is False
+        assert engine.cancelled is False
+
+
+class TestSyncEngineWithCustomDependencies:
+    """Tests for SyncEngine with custom dependencies."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mock Drime client."""
+        return Mock(spec=DrimeClient)
+
+    def test_init_with_custom_state_manager(self, mock_client):
+        """Test initializing with custom state manager."""
+        custom_state_manager = SyncStateManager(state_dir=Path("/tmp/test_state"))
+        engine = SyncEngine(mock_client, state_manager=custom_state_manager)
+
+        assert engine.state_manager is custom_state_manager
+
+    def test_init_with_custom_pause_controller(self, mock_client):
+        """Test initializing with custom pause controller."""
+        custom_controller = SyncPauseController()
+        engine = SyncEngine(mock_client, pause_controller=custom_controller)
+
+        assert engine.pause_controller is custom_controller
+
+    def test_init_with_custom_concurrency_limits(self, mock_client):
+        """Test initializing with custom concurrency limits."""
+        custom_limits = ConcurrencyLimits(transfers_limit=5, operations_limit=10)
+        engine = SyncEngine(mock_client, concurrency_limits=custom_limits)
+
+        assert engine.concurrency_limits is custom_limits
+
+    def test_init_defaults(self, mock_client):
+        """Test default initialization creates all components."""
+        engine = SyncEngine(mock_client)
+
+        assert engine.output is not None
+        assert engine.operations is not None
+        assert engine.state_manager is not None
+        assert engine.pause_controller is not None
+        assert engine.concurrency_limits is not None
+
+
+class TestSyncEngineHelperMethods:
+    """Tests for helper methods in SyncEngine."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mock Drime client."""
+        return Mock(spec=DrimeClient)
+
+    @pytest.fixture
+    def mock_output_quiet(self):
+        """Create a quiet mock output formatter."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = True
+        return output
+
+    @pytest.fixture
+    def sync_engine(self, mock_client, mock_output_quiet):
+        """Create a sync engine instance."""
+        return SyncEngine(mock_client, mock_output_quiet)
+
+    def test_create_empty_stats(self, sync_engine):
+        """Test _create_empty_stats creates correct dictionary."""
+        stats = sync_engine._create_empty_stats()
+
+        assert stats == {
+            "uploads": 0,
+            "downloads": 0,
+            "deletes_local": 0,
+            "deletes_remote": 0,
+            "renames_local": 0,
+            "renames_remote": 0,
+            "skips": 0,
+            "conflicts": 0,
+        }
+
+    def test_categorize_decisions_with_renames(self, sync_engine):
+        """Test _categorize_decisions handles rename actions."""
+        decisions = [
+            SyncDecision(
+                action=SyncAction.RENAME_LOCAL,
+                reason="Renamed in remote",
+                local_file=None,
+                remote_file=None,
+                relative_path="old.txt",
+                new_path="new.txt",
+            ),
+            SyncDecision(
+                action=SyncAction.RENAME_REMOTE,
+                reason="Renamed in local",
+                local_file=None,
+                remote_file=None,
+                relative_path="old2.txt",
+                new_path="new2.txt",
+            ),
+            SyncDecision(
+                action=SyncAction.DELETE_LOCAL,
+                reason="Deleted in remote",
+                local_file=None,
+                remote_file=None,
+                relative_path="deleted_local.txt",
+            ),
+            SyncDecision(
+                action=SyncAction.DELETE_REMOTE,
+                reason="Deleted in local",
+                local_file=None,
+                remote_file=None,
+                relative_path="deleted_remote.txt",
+            ),
+        ]
+
+        stats = sync_engine._categorize_decisions(decisions)
+
+        assert stats["renames_local"] == 1
+        assert stats["renames_remote"] == 1
+        assert stats["deletes_local"] == 1
+        assert stats["deletes_remote"] == 1
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for testing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    def test_display_sync_plan_with_all_actions(self, mock_client, temp_dir):
+        """Test _display_sync_plan displays all action types."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = False
+        engine = SyncEngine(mock_client, output)
+
+        stats = {
+            "uploads": 2,
+            "downloads": 3,
+            "deletes_local": 1,
+            "deletes_remote": 1,
+            "renames_local": 1,
+            "renames_remote": 1,
+            "skips": 5,
+            "conflicts": 1,
+        }
+
+        decisions = [
+            SyncDecision(
+                action=SyncAction.CONFLICT,
+                reason="Modified both sides",
+                local_file=None,
+                remote_file=None,
+                relative_path="conflict.txt",
+            ),
+        ]
+
+        engine._display_sync_plan(stats, decisions, dry_run=True)
+
+        # Verify output calls
+        assert output.info.call_count >= 8  # Multiple info calls
+        output.warning.assert_called()  # Warning for conflicts
+
+    def test_display_sync_plan_quiet(self, sync_engine):
+        """Test _display_sync_plan is silent in quiet mode."""
+        stats = {
+            "uploads": 1,
+            "downloads": 0,
+            "deletes_local": 0,
+            "deletes_remote": 0,
+            "skips": 0,
+            "conflicts": 0,
+        }
+
+        # Should not raise and should be silent
+        sync_engine._display_sync_plan(stats, [], dry_run=True)
+
+    def test_display_summary_dry_run(self, mock_client):
+        """Test _display_summary for dry run."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = False
+        engine = SyncEngine(mock_client, output)
+
+        stats = {
+            "uploads": 2,
+            "downloads": 1,
+            "deletes_local": 0,
+            "deletes_remote": 0,
+            "renames_local": 0,
+            "renames_remote": 0,
+        }
+
+        engine._display_summary(stats, dry_run=True)
+
+        output.success.assert_called_with("Dry run complete!")
+
+    def test_display_summary_real_run(self, mock_client):
+        """Test _display_summary for actual run."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = False
+        engine = SyncEngine(mock_client, output)
+
+        stats = {
+            "uploads": 2,
+            "downloads": 1,
+            "deletes_local": 1,
+            "deletes_remote": 1,
+            "renames_local": 1,
+            "renames_remote": 1,
+        }
+
+        engine._display_summary(stats, dry_run=False)
+
+        output.success.assert_called_with("Sync complete!")
+
+    def test_display_summary_no_changes(self, mock_client):
+        """Test _display_summary with no changes."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = False
+        engine = SyncEngine(mock_client, output)
+
+        stats = {
+            "uploads": 0,
+            "downloads": 0,
+            "deletes_local": 0,
+            "deletes_remote": 0,
+            "renames_local": 0,
+            "renames_remote": 0,
+        }
+
+        engine._display_summary(stats, dry_run=False)
+
+        output.info.assert_any_call("No changes needed - everything is in sync!")
+
+
+class TestSyncEngineExecuteDecision:
+    """Tests for _execute_single_decision and related methods."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mock Drime client."""
+        client = Mock(spec=DrimeClient)
+        return client
+
+    @pytest.fixture
+    def mock_output_quiet(self):
+        """Create a quiet mock output formatter."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = True
+        return output
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for testing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
+    def sync_engine(self, mock_client, mock_output_quiet):
+        """Create a sync engine instance."""
+        return SyncEngine(mock_client, mock_output_quiet)
+
+    def test_execute_decision_cancelled(self, sync_engine, temp_dir):
+        """Test _execute_single_decision returns early when cancelled."""
+        sync_engine.cancel()
+
+        decision = SyncDecision(
+            action=SyncAction.UPLOAD,
+            reason="Test",
+            local_file=None,
+            remote_file=None,
+            relative_path="test.txt",
+        )
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        # Should not raise - just returns early
+        sync_engine._execute_single_decision(decision, pair, 1024, 1024, None)
+
+    def test_execute_upload_file_not_exists(self, sync_engine, temp_dir):
+        """Test _execute_upload skips if file doesn't exist."""
+        local_file = LocalFile(
+            path=temp_dir / "nonexistent.txt",
+            relative_path="nonexistent.txt",
+            size=100,
+            mtime=time.time(),
+        )
+        decision = SyncDecision(
+            action=SyncAction.UPLOAD,
+            reason="New local file",
+            local_file=local_file,
+            remote_file=None,
+            relative_path="nonexistent.txt",
+        )
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        # Should not raise - just logs and returns
+        sync_engine._execute_upload(decision, pair, 1024, 1024, None)
+
+    def test_execute_upload_no_local_file(self, sync_engine, temp_dir):
+        """Test _execute_upload returns early if no local_file."""
+        decision = SyncDecision(
+            action=SyncAction.UPLOAD,
+            reason="Test",
+            local_file=None,
+            remote_file=None,
+            relative_path="test.txt",
+        )
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        # Should not raise
+        sync_engine._execute_upload(decision, pair, 1024, 1024, None)
+
+    def test_execute_download_no_remote_file(self, sync_engine, temp_dir):
+        """Test _execute_download returns early if no remote_file."""
+        decision = SyncDecision(
+            action=SyncAction.DOWNLOAD,
+            reason="Test",
+            local_file=None,
+            remote_file=None,
+            relative_path="test.txt",
+        )
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        # Should not raise
+        sync_engine._execute_download(decision, pair, None)
+
+    def test_execute_delete_local_file_not_exists(self, sync_engine, temp_dir):
+        """Test _execute_delete_local skips if file doesn't exist."""
+        local_file = LocalFile(
+            path=temp_dir / "nonexistent.txt",
+            relative_path="nonexistent.txt",
+            size=100,
+            mtime=time.time(),
+        )
+        decision = SyncDecision(
+            action=SyncAction.DELETE_LOCAL,
+            reason="Deleted in remote",
+            local_file=local_file,
+            remote_file=None,
+            relative_path="nonexistent.txt",
+        )
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        # Should not raise - logs and returns
+        sync_engine._execute_delete_local(decision, pair)
+
+    def test_execute_delete_local_no_local_file(self, sync_engine, temp_dir):
+        """Test _execute_delete_local returns early if no local_file."""
+        decision = SyncDecision(
+            action=SyncAction.DELETE_LOCAL,
+            reason="Test",
+            local_file=None,
+            remote_file=None,
+            relative_path="test.txt",
+        )
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        # Should not raise
+        sync_engine._execute_delete_local(decision, pair)
+
+    def test_execute_delete_remote_no_remote_file(self, sync_engine, temp_dir):
+        """Test _execute_delete_remote returns early if no remote_file."""
+        decision = SyncDecision(
+            action=SyncAction.DELETE_REMOTE,
+            reason="Test",
+            local_file=None,
+            remote_file=None,
+            relative_path="test.txt",
+        )
+
+        # Should not raise
+        sync_engine._execute_delete_remote(decision)
+
+    def test_execute_rename_local_no_local_file(self, sync_engine, temp_dir):
+        """Test _execute_rename_local returns early if no local_file."""
+        decision = SyncDecision(
+            action=SyncAction.RENAME_LOCAL,
+            reason="Test",
+            local_file=None,
+            remote_file=None,
+            relative_path="test.txt",
+            new_path="new.txt",
+        )
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        # Should not raise
+        sync_engine._execute_rename_local(decision, pair)
+
+    def test_execute_rename_local_no_new_path(self, sync_engine, temp_dir):
+        """Test _execute_rename_local returns early if no new_path."""
+        local_file = LocalFile(
+            path=temp_dir / "test.txt",
+            relative_path="test.txt",
+            size=100,
+            mtime=time.time(),
+        )
+        decision = SyncDecision(
+            action=SyncAction.RENAME_LOCAL,
+            reason="Test",
+            local_file=local_file,
+            remote_file=None,
+            relative_path="test.txt",
+            new_path=None,
+        )
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        # Should not raise
+        sync_engine._execute_rename_local(decision, pair)
+
+    def test_execute_rename_local_file_not_exists(self, sync_engine, temp_dir):
+        """Test _execute_rename_local skips if file doesn't exist."""
+        local_file = LocalFile(
+            path=temp_dir / "nonexistent.txt",
+            relative_path="nonexistent.txt",
+            size=100,
+            mtime=time.time(),
+        )
+        decision = SyncDecision(
+            action=SyncAction.RENAME_LOCAL,
+            reason="Test",
+            local_file=local_file,
+            remote_file=None,
+            relative_path="nonexistent.txt",
+            old_path="nonexistent.txt",
+            new_path="new.txt",
+        )
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        # Should not raise - logs and returns
+        sync_engine._execute_rename_local(decision, pair)
+
+    def test_execute_rename_remote_no_remote_file(self, sync_engine):
+        """Test _execute_rename_remote returns early if no remote_file."""
+        decision = SyncDecision(
+            action=SyncAction.RENAME_REMOTE,
+            reason="Test",
+            local_file=None,
+            remote_file=None,
+            relative_path="test.txt",
+            new_path="new.txt",
+        )
+
+        # Should not raise
+        sync_engine._execute_rename_remote(decision)
+
+    def test_execute_rename_remote_no_new_path(self, sync_engine):
+        """Test _execute_rename_remote returns early if no new_path."""
+        mock_entry = Mock(spec=FileEntry)
+        mock_entry.id = 123
+        mock_entry.name = "test.txt"
+        mock_entry.file_size = 100
+        mock_entry.updated_at = "2025-01-01T00:00:00Z"
+        mock_entry.hash = "abc123"
+
+        remote_file = RemoteFile(entry=mock_entry, relative_path="test.txt")
+        decision = SyncDecision(
+            action=SyncAction.RENAME_REMOTE,
+            reason="Test",
+            local_file=None,
+            remote_file=remote_file,
+            relative_path="test.txt",
+            new_path=None,
+        )
+
+        # Should not raise
+        sync_engine._execute_rename_remote(decision)
+
+
+class TestSyncEngineBatchExecution:
+    """Tests for batch execution methods."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mock Drime client."""
+        return Mock(spec=DrimeClient)
+
+    @pytest.fixture
+    def mock_output_quiet(self):
+        """Create a quiet mock output formatter."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = True
+        return output
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for testing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
+    def sync_engine(self, mock_client, mock_output_quiet):
+        """Create a sync engine instance."""
+        return SyncEngine(mock_client, mock_output_quiet)
+
+    def test_execute_batch_decisions_empty(self, sync_engine, temp_dir):
+        """Test _execute_batch_decisions with empty list."""
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        stats = sync_engine._execute_batch_decisions(
+            batch_decisions=[],
+            pair=pair,
+            chunk_size=1024,
+            multipart_threshold=1024,
+            progress_callback=None,
+            max_workers=1,
+        )
+
+        assert stats["uploads"] == 0
+        assert stats["downloads"] == 0
+
+    def test_execute_batch_decisions_with_skips_and_conflicts(
+        self, sync_engine, temp_dir
+    ):
+        """Test _execute_batch_decisions counts skips and conflicts."""
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        decisions = [
+            SyncDecision(
+                action=SyncAction.SKIP,
+                reason="Already synced",
+                local_file=None,
+                remote_file=None,
+                relative_path="skip.txt",
+            ),
+            SyncDecision(
+                action=SyncAction.CONFLICT,
+                reason="Both modified",
+                local_file=None,
+                remote_file=None,
+                relative_path="conflict.txt",
+            ),
+        ]
+
+        stats = sync_engine._execute_batch_decisions(
+            batch_decisions=decisions,
+            pair=pair,
+            chunk_size=1024,
+            multipart_threshold=1024,
+            progress_callback=None,
+            max_workers=1,
+        )
+
+        assert stats["skips"] == 1
+        assert stats["conflicts"] == 1
+
+    def test_execute_decision_with_stats_error(self, sync_engine, temp_dir):
+        """Test _execute_decision_with_stats handles errors gracefully."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = False
+        engine = SyncEngine(sync_engine.client, output)
+
+        # Mock the operations to raise an exception
+        with patch.object(engine, "_execute_single_decision") as mock_exec:
+            mock_exec.side_effect = Exception("Test error")
+
+            decision = SyncDecision(
+                action=SyncAction.UPLOAD,
+                reason="Test",
+                local_file=Mock(),
+                remote_file=None,
+                relative_path="fail.txt",
+            )
+            pair = SyncPair(
+                local=temp_dir,
+                remote="/remote",
+                sync_mode=SyncMode.TWO_WAY,
+            )
+            stats = {
+                "uploads": 0,
+                "downloads": 0,
+                "deletes_local": 0,
+                "deletes_remote": 0,
+            }
+
+            # Should not raise, but should not increment stats
+            engine._execute_decision_with_stats(
+                decision=decision,
+                pair=pair,
+                chunk_size=1024,
+                multipart_threshold=1024,
+                progress_callback=None,
+                stats=stats,
+            )
+
+            assert stats["uploads"] == 0  # Not incremented due to error
+            output.error.assert_called_once()  # Error message shown
+
+
+class TestSyncEngineUploadFolder:
+    """Tests for upload_folder method."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mock Drime client."""
+        client = Mock(spec=DrimeClient)
+        client.upload_file = Mock(return_value={"id": 123})
+        return client
+
+    @pytest.fixture
+    def mock_output_quiet(self):
+        """Create a quiet mock output formatter."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = True
+        return output
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for testing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    def test_upload_folder_nonexistent_path(self, mock_client, mock_output_quiet):
+        """Test upload_folder with non-existent path."""
+        engine = SyncEngine(mock_client, mock_output_quiet)
+
+        with pytest.raises(ValueError, match="does not exist"):
+            engine.upload_folder(Path("/nonexistent"), "/remote")
+
+    def test_upload_folder_not_directory(
+        self, mock_client, mock_output_quiet, temp_dir
+    ):
+        """Test upload_folder with file instead of directory."""
+        test_file = temp_dir / "test.txt"
+        test_file.write_text("content")
+
+        engine = SyncEngine(mock_client, mock_output_quiet)
+
+        with pytest.raises(ValueError, match="not a directory"):
+            engine.upload_folder(test_file, "/remote")
+
+    def test_upload_folder_empty(self, mock_client, mock_output_quiet, temp_dir):
+        """Test upload_folder with empty directory."""
+        engine = SyncEngine(mock_client, mock_output_quiet)
+
+        stats = engine.upload_folder(temp_dir, "/remote")
+
+        assert stats["uploads"] == 0
+        assert stats["skips"] == 0
+        assert stats["errors"] == 0
+
+    def test_upload_folder_with_files_to_skip(
+        self, mock_client, mock_output_quiet, temp_dir
+    ):
+        """Test upload_folder respects files_to_skip."""
+        # Create test files
+        (temp_dir / "keep.txt").write_text("keep")
+        (temp_dir / "skip.txt").write_text("skip")
+
+        engine = SyncEngine(mock_client, mock_output_quiet)
+
+        with patch.object(engine, "_execute_upload_decisions") as mock_exec:
+            mock_exec.return_value = {"uploads": 1, "errors": 0}
+
+            stats = engine.upload_folder(
+                temp_dir,
+                "/remote",
+                files_to_skip={"skip.txt"},
+            )
+
+        assert stats["skips"] == 1
+        # Verify only 1 file passed to execute (the non-skipped one)
+        call_args = mock_exec.call_args
+        assert len(call_args[0][0]) == 1  # First positional arg is decisions list
+
+    def test_upload_folder_with_file_renames(
+        self, mock_client, mock_output_quiet, temp_dir
+    ):
+        """Test upload_folder applies file_renames."""
+        # Create test file
+        (temp_dir / "original.txt").write_text("content")
+
+        engine = SyncEngine(mock_client, mock_output_quiet)
+
+        with patch.object(engine, "_execute_upload_decisions") as mock_exec:
+            mock_exec.return_value = {"uploads": 1, "errors": 0}
+
+            engine.upload_folder(
+                temp_dir,
+                "/remote",
+                file_renames={"original.txt": "renamed.txt"},
+            )
+
+        # Verify the renamed path is used
+        call_args = mock_exec.call_args
+        decisions = call_args[0][0]
+        assert decisions[0].relative_path == "renamed.txt"
+
+
+class TestSyncEngineDownloadFolder:
+    """Tests for download_folder method."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mock Drime client."""
+        client = Mock(spec=DrimeClient)
+        return client
+
+    @pytest.fixture
+    def mock_output_quiet(self):
+        """Create a quiet mock output formatter."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = True
+        return output
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for testing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    def test_download_folder_to_file_path(
+        self, mock_client, mock_output_quiet, temp_dir
+    ):
+        """Test download_folder raises error when destination is a file."""
+        test_file = temp_dir / "file.txt"
+        test_file.write_text("content")
+
+        engine = SyncEngine(mock_client, mock_output_quiet)
+        mock_entry = Mock(spec=FileEntry)
+        mock_entry.id = 123
+        mock_entry.name = "folder"
+
+        with pytest.raises(ValueError, match="a file with this name exists"):
+            engine.download_folder(mock_entry, test_file)
+
+    def test_download_folder_empty_remote(
+        self, mock_client, mock_output_quiet, temp_dir
+    ):
+        """Test download_folder with empty remote folder."""
+        engine = SyncEngine(mock_client, mock_output_quiet)
+        mock_entry = Mock(spec=FileEntry)
+        mock_entry.id = 123
+        mock_entry.name = "folder"
+
+        with patch("pydrime.sync.engine.FileEntriesManager") as mock_manager_class:
+            mock_manager = Mock()
+            mock_manager.get_all_recursive.return_value = []
+            mock_manager_class.return_value = mock_manager
+
+            stats = engine.download_folder(
+                mock_entry,
+                temp_dir / "dest",
+            )
+
+        assert stats["downloads"] == 0
+        assert stats["skips"] == 0
+        assert stats["errors"] == 0
+
+
+class TestSyncEngineParallelExecution:
+    """Tests for parallel execution methods."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mock Drime client."""
+        return Mock(spec=DrimeClient)
+
+    @pytest.fixture
+    def mock_output_quiet(self):
+        """Create a quiet mock output formatter."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = True
+        return output
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for testing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
+    def sync_engine(self, mock_client, mock_output_quiet):
+        """Create a sync engine instance."""
+        return SyncEngine(mock_client, mock_output_quiet)
+
+    def test_execute_decisions_parallel_cancelled(self, sync_engine, temp_dir):
+        """Test parallel execution stops when cancelled."""
+        sync_engine.cancel()
+
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        decisions = [
+            SyncDecision(
+                action=SyncAction.UPLOAD,
+                reason="Test",
+                local_file=None,
+                remote_file=None,
+                relative_path=f"file{i}.txt",
+            )
+            for i in range(5)
+        ]
+
+        stats = sync_engine._execute_decisions_parallel(
+            decisions=decisions,
+            pair=pair,
+            chunk_size=1024,
+            multipart_threshold=1024,
+            progress_callback=None,
+            max_workers=2,
+        )
+
+        # All should fail due to cancellation
+        assert stats["uploads"] == 0
+
+    def test_execute_decisions_with_start_delay(self, sync_engine, temp_dir):
+        """Test parallel execution with start delay."""
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        # Create a file that exists
+        test_file = temp_dir / "test.txt"
+        test_file.write_text("content")
+
+        local_file = LocalFile(
+            path=test_file,
+            relative_path="test.txt",
+            size=7,
+            mtime=test_file.stat().st_mtime,
+        )
+
+        decisions = [
+            SyncDecision(
+                action=SyncAction.SKIP,
+                reason="Test",
+                local_file=local_file,
+                remote_file=None,
+                relative_path="test.txt",
+            ),
+        ]
+
+        # Should work with start_delay
+        stats = sync_engine._execute_decisions_parallel(
+            decisions=decisions,
+            pair=pair,
+            chunk_size=1024,
+            multipart_threshold=1024,
+            progress_callback=None,
+            max_workers=2,
+            start_delay=0.01,
+        )
+
+        # SKIP actions don't count as uploads
+        assert stats["uploads"] == 0
+
+
+class TestSyncEngineEnsureRemoteFolders:
+    """Tests for _ensure_remote_folders_exist method."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mock Drime client."""
+        client = Mock(spec=DrimeClient)
+        client.create_folder = Mock(return_value={"status": "success"})
+        return client
+
+    @pytest.fixture
+    def mock_output_quiet(self):
+        """Create a quiet mock output formatter."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = True
+        return output
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for testing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    def test_ensure_remote_folders_no_uploads(
+        self, mock_client, mock_output_quiet, temp_dir
+    ):
+        """Test _ensure_remote_folders_exist with no upload decisions."""
+        engine = SyncEngine(mock_client, mock_output_quiet)
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        decisions = [
+            SyncDecision(
+                action=SyncAction.DOWNLOAD,
+                reason="Test",
+                local_file=None,
+                remote_file=None,
+                relative_path="test.txt",
+            ),
+        ]
+
+        engine._ensure_remote_folders_exist(decisions, pair)
+
+        # Should not call create_folder
+        mock_client.create_folder.assert_not_called()
+
+    def test_ensure_remote_folders_flat_files(
+        self, mock_client, mock_output_quiet, temp_dir
+    ):
+        """Test _ensure_remote_folders_exist with flat files (no subfolders)."""
+        engine = SyncEngine(mock_client, mock_output_quiet)
+        pair = SyncPair(
+            local=temp_dir,
+            remote="",  # No remote prefix
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        decisions = [
+            SyncDecision(
+                action=SyncAction.UPLOAD,
+                reason="Test",
+                local_file=Mock(),
+                remote_file=None,
+                relative_path="file.txt",  # No folder
+            ),
+        ]
+
+        engine._ensure_remote_folders_exist(decisions, pair)
+
+        # No folders to create for flat files
+        mock_client.create_folder.assert_not_called()
+
+    def test_ensure_remote_folders_with_subfolders(
+        self, mock_client, mock_output_quiet, temp_dir
+    ):
+        """Test _ensure_remote_folders_exist creates needed folders."""
+        engine = SyncEngine(mock_client, mock_output_quiet)
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        decisions = [
+            SyncDecision(
+                action=SyncAction.UPLOAD,
+                reason="Test",
+                local_file=Mock(),
+                remote_file=None,
+                relative_path="subdir/file.txt",
+            ),
+        ]
+
+        with patch("pydrime.sync.engine.FileEntriesManager") as mock_manager_class:
+            mock_manager = Mock()
+            mock_manager.find_folder_by_name.return_value = None
+            mock_manager_class.return_value = mock_manager
+
+            engine._ensure_remote_folders_exist(decisions, pair)
+
+        # Should create the folder
+        mock_client.create_folder.assert_called()
+
+    def test_ensure_remote_folders_handles_error(
+        self, mock_client, mock_output_quiet, temp_dir
+    ):
+        """Test _ensure_remote_folders_exist handles errors gracefully."""
+        mock_client.create_folder = Mock(side_effect=Exception("API Error"))
+
+        engine = SyncEngine(mock_client, mock_output_quiet)
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        decisions = [
+            SyncDecision(
+                action=SyncAction.UPLOAD,
+                reason="Test",
+                local_file=Mock(),
+                remote_file=None,
+                relative_path="subdir/file.txt",
+            ),
+        ]
+
+        with patch("pydrime.sync.engine.FileEntriesManager") as mock_manager_class:
+            mock_manager = Mock()
+            mock_manager.find_folder_by_name.return_value = None
+            mock_manager_class.return_value = mock_manager
+
+            # Should not raise
+            engine._ensure_remote_folders_exist(decisions, pair)
+
+
+class TestSyncEngineExecuteOrderedOperations:
+    """Tests for ordered execution methods."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mock Drime client."""
+        return Mock(spec=DrimeClient)
+
+    @pytest.fixture
+    def mock_output_quiet(self):
+        """Create a quiet mock output formatter."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = True
+        return output
+
+    @pytest.fixture
+    def mock_output(self):
+        """Create an output formatter with output enabled."""
+        output = Mock(spec=OutputFormatter)
+        output.quiet = False
+        return output
+
+    @pytest.fixture
+    def temp_dir(self):
+        """Create a temporary directory for testing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    def test_execute_ordered_quiet_empty_lists(
+        self, mock_client, mock_output_quiet, temp_dir
+    ):
+        """Test _execute_ordered_quiet with empty lists."""
+        engine = SyncEngine(mock_client, mock_output_quiet)
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        # Should not raise with empty lists
+        engine._execute_ordered_quiet(
+            rename_local=[],
+            rename_remote=[],
+            delete_local=[],
+            delete_remote=[],
+            uploads=[],
+            downloads=[],
+            pair=pair,
+            chunk_size=1024,
+            multipart_threshold=1024,
+            progress_callback=None,
+            max_workers=1,
+            start_delay=0.0,
+        )
+
+    def test_execute_ordered_with_progress_empty_lists(
+        self, mock_client, mock_output, temp_dir
+    ):
+        """Test _execute_ordered_with_progress with empty lists."""
+        engine = SyncEngine(mock_client, mock_output)
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        # Should not raise with empty lists
+        engine._execute_ordered_with_progress(
+            rename_local=[],
+            rename_remote=[],
+            delete_local=[],
+            delete_remote=[],
+            uploads=[],
+            downloads=[],
+            pair=pair,
+            chunk_size=1024,
+            multipart_threshold=1024,
+            progress_callback=None,
+            max_workers=1,
+            start_delay=0.0,
+        )
+
+    def test_execute_decisions_empty_actionable(
+        self, mock_client, mock_output_quiet, temp_dir
+    ):
+        """Test _execute_decisions with only skips returns early."""
+        engine = SyncEngine(mock_client, mock_output_quiet)
+        pair = SyncPair(
+            local=temp_dir,
+            remote="/remote",
+            sync_mode=SyncMode.TWO_WAY,
+        )
+
+        decisions = [
+            SyncDecision(
+                action=SyncAction.SKIP,
+                reason="Test",
+                local_file=None,
+                remote_file=None,
+                relative_path="test.txt",
+            ),
+        ]
+
+        # Should return early without doing anything
+        engine._execute_decisions(
+            decisions=decisions,
+            pair=pair,
+            chunk_size=1024,
+            multipart_threshold=1024,
+            progress_callback=None,
+            max_workers=1,
+        )
