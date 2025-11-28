@@ -2,6 +2,54 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- _(No Category)_ Error logging and handling of remote "/" root folder sync
+
+## 0.5.9 - 2025-11-29
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- _(No Category)_ "/" is correctly used as root now when using a config
+
+## 0.5.8 - 2025-11-29
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- _(No Category)_ Parent folder listing in file entries manager
+
+## 0.5.7 - 2025-11-29
+
+### <!-- 0 -->⛰️ Features
+
+- _(No Category)_ More verbose logging
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- _(No Category)_ Unicde signs removed for windows
+
+## 0.5.6 - 2025-11-29
+
+### <!-- 0 -->⛰️ Features
+
+- _(No Category)_ Handle SSL errors
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- _(No Category)_ Fix symbols for windows
+- _(No Category)_ Missing parent_id added
+- _(No Category)_ Unit test and add new benchmark
+
+### <!-- 3 -->📚 Documentation
+
+- _(No Category)_ Update changelog
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- _(No Category)_ Fix pre-commit
+
 ## 0.5.5 - 2025-11-29
 
 ### <!-- 0 -->⛰️ Features
