@@ -106,6 +106,34 @@ class DrimeNetworkError(DrimeAPIError):
     - Connection failures
     - Timeouts
     - DNS resolution errors
+    - SSL/TLS errors (certificate issues, connection reset, EOF errors)
+
+    For SSL errors, the error message will include diagnostic hints.
+    Common SSL issues include:
+    - Server closing connection unexpectedly (UNEXPECTED_EOF_WHILE_READING)
+    - Certificate verification failures
+    - TLS version mismatches
+    """
+
+    pass
+
+
+class DrimeSSLError(DrimeNetworkError):
+    """Exception raised specifically for SSL/TLS errors.
+
+    This is a subclass of DrimeNetworkError for more specific error handling.
+
+    Raised when:
+    - SSL handshake fails
+    - Certificate verification fails
+    - Connection reset during SSL communication
+    - Unexpected EOF during SSL read (server dropped connection)
+
+    Common causes:
+    - Unstable network connection
+    - Server-side rate limiting or load balancing
+    - VPN or firewall interference
+    - Proxy stripping SSL connections
     """
 
     pass

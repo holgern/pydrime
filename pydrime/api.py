@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ssl
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
@@ -20,6 +21,7 @@ from .exceptions import (
     DrimeNotFoundError,
     DrimePermissionError,
     DrimeRateLimitError,
+    DrimeSSLError,
     DrimeUploadError,
 )
 
@@ -28,6 +30,105 @@ if TYPE_CHECKING:
 
 FileEntryType = Literal["folder", "image", "text", "audio", "video", "pdf"]
 Permission = Literal["view", "edit", "download"]
+
+# Default timeouts for different operations
+DEFAULT_API_TIMEOUT = 30.0  # General API requests
+DEFAULT_S3_TIMEOUT = 120.0  # S3 uploads (increased from 60s)
+DEFAULT_DOWNLOAD_TIMEOUT = 120.0  # Downloads
+
+# S3 retry configuration
+DEFAULT_S3_MAX_RETRIES = 3
+DEFAULT_S3_RETRY_DELAY = 2.0  # Initial delay in seconds
+
+
+def _is_ssl_error(exception: Exception) -> bool:
+    """Check if an exception is SSL-related.
+
+    Args:
+        exception: The exception to check
+
+    Returns:
+        True if the exception is SSL-related
+    """
+    # Check for Python ssl module errors
+    if isinstance(exception, ssl.SSLError):
+        return True
+
+    # Check for httpx wrapped SSL errors
+    if isinstance(exception, httpx.RequestError):
+        cause = exception.__cause__
+        if cause is not None and isinstance(cause, ssl.SSLError):
+            return True
+
+    # Check error message for common SSL error patterns
+    error_str = str(exception).upper()
+    ssl_patterns = [
+        "SSL",
+        "TLS",
+        "CERTIFICATE",
+        "UNEXPECTED_EOF",
+        "EOF OCCURRED",
+        "SSLV3_ALERT",
+        "TLSV1_ALERT",
+        "HANDSHAKE",
+    ]
+    return any(pattern in error_str for pattern in ssl_patterns)
+
+
+def _get_ssl_error_hint(exception: Exception) -> str:
+    """Get a helpful hint message for SSL errors.
+
+    Args:
+        exception: The SSL-related exception
+
+    Returns:
+        A hint message to help diagnose the issue
+    """
+    error_str = str(exception).upper()
+
+    if "UNEXPECTED_EOF" in error_str or "EOF OCCURRED" in error_str:
+        return (
+            "The server closed the connection unexpectedly. "
+            "This can happen due to: network instability, server-side rate limiting, "
+            "VPN/firewall interference, or proxy issues. "
+            "Try: reducing parallel workers (--workers 1), checking your network, "
+            "or disabling VPN temporarily."
+        )
+    elif "CERTIFICATE" in error_str:
+        return (
+            "SSL certificate verification failed. "
+            "This may indicate a network security issue or proxy interference."
+        )
+    elif "HANDSHAKE" in error_str:
+        return (
+            "SSL handshake failed. This may be caused by TLS version mismatch, "
+            "firewall blocking, or network issues."
+        )
+    else:
+        return (
+            "An SSL/TLS error occurred. This is often caused by network instability "
+            "or intermediary (proxy/firewall) interference."
+        )
+
+
+def _create_network_error(exception: Exception, context: str = "") -> DrimeNetworkError:
+    """Create an appropriate network error with helpful messaging.
+
+    Args:
+        exception: The original exception
+        context: Optional context about what operation was being performed
+
+    Returns:
+        DrimeSSLError for SSL issues, DrimeNetworkError otherwise
+    """
+    context_prefix = f"{context}: " if context else ""
+
+    if _is_ssl_error(exception):
+        hint = _get_ssl_error_hint(exception)
+        message = f"{context_prefix}SSL error: {exception}\n\nHint: {hint}"
+        return DrimeSSLError(message)
+    else:
+        return DrimeNetworkError(f"{context_prefix}Network error: {exception}")
 
 
 class DrimeClient:
@@ -39,22 +140,31 @@ class DrimeClient:
         api_url: str | None = None,
         max_retries: int = 3,
         retry_delay: float = 1.0,
-        timeout: float = 30.0,
+        timeout: float = DEFAULT_API_TIMEOUT,
+        s3_timeout: float = DEFAULT_S3_TIMEOUT,
+        s3_max_retries: int = DEFAULT_S3_MAX_RETRIES,
+        s3_retry_delay: float = DEFAULT_S3_RETRY_DELAY,
     ):
         """Initialize Drime API client.
 
         Args:
             api_key: Optional API key (uses config if not provided)
             api_url: Optional API URL (uses config if not provided)
-            max_retries: Maximum number of retry attempts (default: 3)
+            max_retries: Maximum number of retry attempts for API requests (default: 3)
             retry_delay: Initial delay between retries in seconds (default: 1.0)
-            timeout: Request timeout in seconds (default: 30.0)
+            timeout: Request timeout in seconds for API requests (default: 30.0)
+            s3_timeout: Request timeout for S3 uploads/downloads (default: 120.0)
+            s3_max_retries: Maximum retries for S3 operations (default: 3)
+            s3_retry_delay: Initial delay between S3 retries (default: 2.0)
         """
         self.api_key = api_key or config.api_key
         self.api_url = api_url or config.api_url
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.timeout = timeout
+        self.s3_timeout = s3_timeout
+        self.s3_max_retries = s3_max_retries
+        self.s3_retry_delay = s3_retry_delay
 
         if not self.api_key:
             raise DrimeConfigError(
@@ -64,12 +174,30 @@ class DrimeClient:
         self._client: httpx.Client | None = None
 
     def _get_client(self) -> httpx.Client:
-        """Get or create the httpx client."""
+        """Get or create the httpx client.
+
+        Creates a client with proper timeout and transport configuration
+        for reliable connections.
+        """
         if self._client is None or self._client.is_closed:
+            # Configure timeouts: connect, read, write, pool
+            timeout_config = httpx.Timeout(
+                connect=10.0,  # Connection establishment timeout
+                read=self.timeout,  # Read timeout
+                write=self.timeout,  # Write timeout
+                pool=5.0,  # Pool checkout timeout
+            )
+
+            # Configure transport with connection pooling
+            transport = httpx.HTTPTransport(
+                retries=0,  # We handle retries at application level
+            )
+
             self._client = httpx.Client(
                 headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=httpx.Timeout(self.timeout),
+                timeout=timeout_config,
                 follow_redirects=True,
+                transport=transport,
             )
         return self._client
 
@@ -260,7 +388,7 @@ class DrimeClient:
                 # (don't retry authentication/permission errors)
                 raise
             except httpx.RequestError as e:
-                error = DrimeNetworkError(f"Network error: {e}")
+                error = _create_network_error(e, f"Request to {endpoint}")
                 last_exception = error
                 if self._should_retry(error, attempt):
                     delay = self._calculate_retry_delay(attempt)
@@ -272,6 +400,87 @@ class DrimeClient:
         if last_exception:
             raise last_exception
         raise DrimeAPIError("Request failed after all retry attempts")
+
+    def _s3_request_with_retry(
+        self,
+        method: str,
+        url: str,
+        content: bytes | Any,
+        headers: dict[str, str],
+        context: str = "S3 operation",
+    ) -> httpx.Response:
+        """Make an S3 request with retry logic for transient errors.
+
+        This method handles retries for direct S3 operations (presigned URL uploads,
+        multipart chunk uploads) which bypass the normal API retry logic.
+
+        Args:
+            method: HTTP method (PUT, POST, etc.)
+            url: Full S3 URL (presigned URL)
+            content: Request body content (bytes or generator)
+            headers: Request headers
+            context: Description of operation for error messages
+
+        Returns:
+            httpx.Response on success
+
+        Raises:
+            DrimeUploadError: If upload fails after all retries
+        """
+        import random
+
+        last_exception: Exception | None = None
+
+        for attempt in range(self.s3_max_retries + 1):
+            try:
+                response = httpx.request(
+                    method,
+                    url,
+                    content=content,
+                    headers=headers,
+                    timeout=self.s3_timeout,
+                )
+                response.raise_for_status()
+                return response
+
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code
+                # Retry on server errors (5xx) and rate limits (429)
+                is_retryable = status_code >= 500 or status_code == 429
+
+                if is_retryable and attempt < self.s3_max_retries:
+                    delay = self.s3_retry_delay * (2**attempt)
+                    # Add jitter
+                    delay += delay * 0.25 * (2 * random.random() - 1)
+                    time.sleep(delay)
+                    last_exception = e
+                    continue
+
+                raise DrimeUploadError(
+                    f"{context} failed with status {status_code}: {e}"
+                ) from e
+
+            except httpx.RequestError as e:
+                # Network errors (including SSL) - always retry
+                if attempt < self.s3_max_retries:
+                    delay = self.s3_retry_delay * (2**attempt)
+                    # Add jitter
+                    delay += delay * 0.25 * (random.random() * 2 - 1)
+                    time.sleep(delay)
+                    last_exception = e
+                    continue
+
+                # Create appropriate error with SSL detection
+                network_error = _create_network_error(e, context)
+                raise DrimeUploadError(str(network_error)) from e
+
+        # Should not reach here, but just in case
+        if last_exception:
+            raise DrimeUploadError(
+                f"{context} failed after {self.s3_max_retries + 1} attempts: "
+                f"{last_exception}"
+            ) from last_exception
+        raise DrimeUploadError(f"{context} failed after all retry attempts")
 
     # =========================
     # Upload Operations
@@ -476,16 +685,19 @@ class DrimeClient:
                         if not signed_url:
                             raise DrimeUploadError(f"No signed URL for part {pn}")
 
-                        # Upload chunk to S3
+                        # Upload chunk to S3 with retry logic
                         headers = {
                             "Content-Type": "application/octet-stream",
                             "Content-Length": str(len(chunk)),
                         }
 
-                        response = httpx.put(
-                            signed_url, content=chunk, headers=headers, timeout=60
+                        response = self._s3_request_with_retry(
+                            method="PUT",
+                            url=signed_url,
+                            content=chunk,
+                            headers=headers,
+                            context=f"S3 multipart upload part {pn}",
                         )
-                        response.raise_for_status()
 
                         etag = response.headers.get("ETag", "").strip('"')
                         uploaded_parts.append(
@@ -606,40 +818,33 @@ class DrimeClient:
             raise DrimeUploadError(f"Invalid presign response: {presign_response}")
 
         # Step 2: Upload to S3 using presigned URL with progress tracking
-        try:
-            s3_headers = {
-                "Content-Type": mime_type,
-                "Content-Length": str(file_size),
-                "x-amz-acl": "private",
-            }
+        s3_headers = {
+            "Content-Type": mime_type,
+            "Content-Length": str(file_size),
+            "x-amz-acl": "private",
+        }
 
-            # Create a generator for streaming upload with progress tracking
-            def file_reader() -> Any:
-                bytes_uploaded = 0
-                chunk_size = 64 * 1024  # 64KB chunks for progress updates
-                with open(file_path, "rb") as f:
-                    while True:
-                        chunk = f.read(chunk_size)
-                        if not chunk:
-                            break
-                        bytes_uploaded += len(chunk)
-                        if progress_callback:
-                            progress_callback(bytes_uploaded, file_size)
-                        yield chunk
+        # Read entire file for retry support (streaming doesn't support retry)
+        # For large files, use multipart upload instead
+        with open(file_path, "rb") as f:
+            file_content = f.read()
 
-            # Use httpx directly for S3 upload (not going through Drime API)
-            s3_response = httpx.put(
-                presigned_url,
-                content=file_reader(),
-                headers=s3_headers,
-                timeout=60.0,
-            )
-            s3_response.raise_for_status()
+        # Report initial progress
+        if progress_callback:
+            progress_callback(0, file_size)
 
-        except httpx.HTTPStatusError as e:
-            raise DrimeUploadError(f"S3 upload failed: {e}") from e
-        except httpx.RequestError as e:
-            raise DrimeUploadError(f"Network error during S3 upload: {e}") from e
+        # Use retry-enabled S3 request
+        self._s3_request_with_retry(
+            method="PUT",
+            url=presigned_url,
+            content=file_content,
+            headers=s3_headers,
+            context=f"S3 presigned upload of {file_path.name}",
+        )
+
+        # Report completion
+        if progress_callback:
+            progress_callback(file_size, file_size)
 
         # Step 3: Create file entry
         entry_payload = {
@@ -1834,25 +2039,19 @@ class DrimeClient:
         if not presigned_url or not key:
             raise DrimeUploadError(f"Invalid presign response: {presign_response}")
 
-        # Step 2: Upload encrypted content to S3 using presigned URL
-        try:
-            s3_headers = {
-                "Content-Type": mime_type,
-                "x-amz-acl": "private",
-            }
+        # Step 2: Upload encrypted content to S3 using presigned URL with retry
+        s3_headers = {
+            "Content-Type": mime_type,
+            "x-amz-acl": "private",
+        }
 
-            s3_response = httpx.put(
-                presigned_url,
-                content=encrypted_content,
-                headers=s3_headers,
-                timeout=60.0,
-            )
-            s3_response.raise_for_status()
-
-        except httpx.HTTPStatusError as e:
-            raise DrimeUploadError(f"S3 upload failed: {e}") from e
-        except httpx.RequestError as e:
-            raise DrimeUploadError(f"Network error during S3 upload: {e}") from e
+        self._s3_request_with_retry(
+            method="PUT",
+            url=presigned_url,
+            content=encrypted_content,
+            headers=s3_headers,
+            context=f"S3 vault upload of {file_path.name}",
+        )
 
         # Step 3: Create file entry with encryption info
         # Use full IVs format: "nameIv,contentIv" for entries

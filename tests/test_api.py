@@ -1711,11 +1711,11 @@ class TestMimeTypeDetection:
         finally:
             test_file.unlink()
 
-    @patch("pydrime.api.httpx.put")
+    @patch("pydrime.api.httpx.request")
     @patch("pydrime.api.DrimeClient._detect_mime_type")
     @patch("pydrime.api.DrimeClient._request")
     def test_upload_file_uses_mime_detection_small_file(
-        self, mock_request, mock_detect_mime, mock_put
+        self, mock_request, mock_detect_mime, mock_httpx_request
     ):
         """Test that upload_file uses MIME detection for small files."""
         import tempfile
@@ -1728,10 +1728,10 @@ class TestMimeTypeDetection:
             {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
             {"status": "success", "fileEntry": {"id": 123}},
         ]
-        # Mock S3 response
+        # Mock S3 response (now using httpx.request instead of httpx.put)
         mock_s3_response = MagicMock()
         mock_s3_response.raise_for_status = MagicMock()
-        mock_put.return_value = mock_s3_response
+        mock_httpx_request.return_value = mock_s3_response
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("small file")
@@ -1753,7 +1753,7 @@ class TestMimeTypeDetection:
 
     @patch("pydrime.api.DrimeClient._detect_mime_type")
     @patch("pydrime.api.DrimeClient._request")
-    @patch("pydrime.api.httpx.put")
+    @patch("pydrime.api.httpx.request")
     @patch("builtins.open", create=True)
     @patch("pathlib.Path.stat")
     @patch("pathlib.Path.exists")
@@ -1762,7 +1762,7 @@ class TestMimeTypeDetection:
         mock_exists,
         mock_stat,
         mock_open,
-        mock_put,
+        mock_httpx_request,
         mock_request,
         mock_detect_mime,
     ):
@@ -1790,10 +1790,10 @@ class TestMimeTypeDetection:
             {"status": "success", "fileEntry": {"id": 123}},  # entry creation
         ]
 
-        # Mock S3 PUT response
-        mock_put_response = Mock()
-        mock_put_response.headers = {"ETag": "test-etag"}
-        mock_put.return_value = mock_put_response
+        # Mock S3 request response (now using httpx.request instead of httpx.put)
+        mock_s3_response = Mock()
+        mock_s3_response.headers = {"ETag": "test-etag"}
+        mock_httpx_request.return_value = mock_s3_response
 
         test_file = Path("/fake/path/test.bin")
 
@@ -1813,11 +1813,11 @@ class TestMimeTypeDetection:
 class TestUploadVerification:
     """Tests for upload verification and retry logic."""
 
-    @patch("pydrime.api.httpx.put")
+    @patch("pydrime.api.httpx.request")
     @patch("pydrime.api.DrimeClient._detect_mime_type")
     @patch("pydrime.api.DrimeClient._request")
     def test_upload_file_with_verification_success(
-        self, mock_request, mock_detect_mime, mock_put
+        self, mock_request, mock_detect_mime, mock_httpx_request
     ):
         """Test upload with successful verification."""
         import tempfile
@@ -1848,7 +1848,7 @@ class TestUploadVerification:
 
         mock_s3_response = MagicMock()
         mock_s3_response.raise_for_status = MagicMock()
-        mock_put.return_value = mock_s3_response
+        mock_httpx_request.return_value = mock_s3_response
 
         try:
             client = DrimeClient(api_key="test_key")
@@ -1863,11 +1863,11 @@ class TestUploadVerification:
         finally:
             test_file.unlink()
 
-    @patch("pydrime.api.httpx.put")
+    @patch("pydrime.api.httpx.request")
     @patch("pydrime.api.DrimeClient._detect_mime_type")
     @patch("pydrime.api.DrimeClient._request")
     def test_upload_file_retry_on_missing_users(
-        self, mock_request, mock_detect_mime, mock_put
+        self, mock_request, mock_detect_mime, mock_httpx_request
     ):
         """Test upload retries when users field is missing in response."""
         import tempfile
@@ -1906,7 +1906,7 @@ class TestUploadVerification:
 
         mock_s3_response = MagicMock()
         mock_s3_response.raise_for_status = MagicMock()
-        mock_put.return_value = mock_s3_response
+        mock_httpx_request.return_value = mock_s3_response
 
         try:
             client = DrimeClient(api_key="test_key")
@@ -1925,11 +1925,11 @@ class TestUploadVerification:
         finally:
             test_file.unlink()
 
-    @patch("pydrime.api.httpx.put")
+    @patch("pydrime.api.httpx.request")
     @patch("pydrime.api.DrimeClient._detect_mime_type")
     @patch("pydrime.api.DrimeClient._request")
     def test_upload_file_fails_after_max_retries(
-        self, mock_request, mock_detect_mime, mock_put
+        self, mock_request, mock_detect_mime, mock_httpx_request
     ):
         """Test upload fails after maximum retries."""
         import tempfile
@@ -1966,7 +1966,7 @@ class TestUploadVerification:
 
         mock_s3_response = MagicMock()
         mock_s3_response.raise_for_status = MagicMock()
-        mock_put.return_value = mock_s3_response
+        mock_httpx_request.return_value = mock_s3_response
 
         try:
             client = DrimeClient(api_key="test_key")
