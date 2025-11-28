@@ -1,6 +1,7 @@
 """Directory scanning utilities for sync operations."""
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -65,6 +66,42 @@ class LocalFile:
             size=stat.st_size,
             mtime=stat.st_mtime,
             file_id=stat.st_ino,
+            creation_time=creation_time,
+        )
+
+    @classmethod
+    def from_dir_entry(
+        cls, entry: os.DirEntry, base_path: Path, stat_result: os.stat_result
+    ) -> "LocalFile":
+        """Create LocalFile from an os.DirEntry with pre-fetched stat.
+
+        This is more efficient than from_path() because os.scandir() provides
+        cached stat information on most platforms, avoiding extra syscalls.
+
+        Args:
+            entry: Directory entry from os.scandir()
+            base_path: Base path for calculating relative paths
+            stat_result: Pre-fetched stat result (cached or explicit)
+
+        Returns:
+            LocalFile instance
+        """
+        file_path = Path(entry.path)
+        # Use as_posix() to ensure forward slashes on all platforms
+        relative_path = file_path.relative_to(base_path).as_posix()
+
+        # Get creation time if available (platform-dependent)
+        creation_time: Optional[float] = None
+        stat_any: Any = stat_result
+        if hasattr(stat_any, "st_birthtime"):
+            creation_time = stat_any.st_birthtime
+
+        return cls(
+            path=file_path,
+            relative_path=relative_path,
+            size=stat_result.st_size,
+            mtime=stat_result.st_mtime,
+            file_id=stat_result.st_ino,
             creation_time=creation_time,
         )
 
@@ -190,13 +227,35 @@ class DirectoryScanner:
         Returns:
             True if path should be ignored
         """
+        return self._should_ignore_name(path.name, path, base_path, is_dir)
+
+    def _should_ignore_name(
+        self,
+        name: str,
+        path: Path,
+        base_path: Path,
+        is_dir: bool = False,
+    ) -> bool:
+        """Check if a path should be ignored based on patterns.
+
+        Internal method that takes name separately to avoid extra Path operations.
+
+        Args:
+            name: File or directory name
+            path: Full path to check
+            base_path: Base path for relative path calculation
+            is_dir: Whether the path is a directory
+
+        Returns:
+            True if path should be ignored
+        """
         # Never ignore the ignore file itself from scanning perspective
         # (but it won't be synced as it starts with .)
-        if path.name == IGNORE_FILE_NAME:
+        if name == IGNORE_FILE_NAME:
             return True
 
         # Check dot files (but allow .pydrignore to be read)
-        if self.exclude_dot_files and path.name.startswith("."):
+        if self.exclude_dot_files and name.startswith("."):
             return True
 
         # Check using ignore manager if available
@@ -213,10 +272,15 @@ class DirectoryScanner:
     ) -> list[LocalFile]:
         """Recursively scan a local directory.
 
-        This method scans a directory tree, loading .pydrignore files from
-        each directory and applying their rules hierarchically. Rules from
-        parent directories apply to all descendants, while rules from
-        subdirectories only apply within that subtree.
+        This method scans a directory tree using os.scandir() for efficient
+        file enumeration. It loads .pydrignore files from each directory and
+        applies their rules hierarchically. Rules from parent directories apply
+        to all descendants, while rules from subdirectories only apply within
+        that subtree.
+
+        Uses os.scandir() which provides cached stat information on most platforms,
+        significantly improving performance for large directories by avoiding
+        separate stat() calls per file.
 
         Args:
             directory: Directory to scan
@@ -250,22 +314,41 @@ class DirectoryScanner:
             if self.use_ignore_files and self._ignore_manager is not None:
                 self._ignore_manager.load_from_directory(directory)
 
-            for item in directory.iterdir():
-                # Check if should be ignored
-                is_dir = item.is_dir()
-                if self.should_ignore(item, base_path, is_dir=is_dir):
-                    continue
-
-                if item.is_file():
+            # Use os.scandir() for efficient directory scanning with cached stat
+            with os.scandir(directory) as entries:
+                for entry in entries:
                     try:
-                        local_file = LocalFile.from_path(item, base_path)
-                        files.append(local_file)
+                        # Get cached stat info - on most platforms (Linux, Windows),
+                        # this uses cached info from the directory listing itself.
+                        # Only on some platforms or for some attributes will it
+                        # need to make an additional syscall.
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                        is_file = entry.is_file(follow_symlinks=False)
+
+                        # Check if should be ignored using the entry name directly
+                        item_path = Path(entry.path)
+                        if self._should_ignore_name(
+                            entry.name, item_path, base_path, is_dir=is_dir
+                        ):
+                            continue
+
+                        if is_file:
+                            try:
+                                # Get stat result - cached on most platforms
+                                stat_result = entry.stat(follow_symlinks=False)
+                                local_file = LocalFile.from_dir_entry(
+                                    entry, base_path, stat_result
+                                )
+                                files.append(local_file)
+                            except (OSError, PermissionError):
+                                # Skip files we can't read
+                                continue
+                        elif is_dir:
+                            # Recursively scan subdirectories
+                            files.extend(self.scan_local(item_path, base_path))
                     except (OSError, PermissionError):
-                        # Skip files we can't read
+                        # Skip entries we can't access
                         continue
-                elif is_dir:
-                    # Recursively scan subdirectories
-                    files.extend(self.scan_local(item, base_path))
         except PermissionError:
             # Skip directories we can't read
             pass
