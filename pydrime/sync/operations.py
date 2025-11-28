@@ -1,11 +1,75 @@
 """Sync operations wrapper for unified upload/download interface."""
 
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..api import DrimeClient
 from ..utils import DEFAULT_CHUNK_SIZE, DEFAULT_MULTIPART_THRESHOLD
 from .scanner import LocalFile, RemoteFile
+
+# Local trash directory name
+LOCAL_TRASH_DIR_NAME = ".pydrime.trash.local"
+
+
+def get_local_trash_path(sync_root: Path) -> Path:
+    """Get the path to the local trash directory.
+
+    Args:
+        sync_root: Root directory of the sync operation
+
+    Returns:
+        Path to the .pydrime.trash.local directory
+    """
+    return sync_root / LOCAL_TRASH_DIR_NAME
+
+
+def move_to_local_trash(
+    file_path: Path,
+    sync_root: Path,
+) -> Path:
+    """Move a file to the local trash directory.
+
+    The file will be moved to .pydrime.trash.local at the sync root,
+    preserving its relative path structure. A timestamp is added to
+    avoid name collisions when the same file is deleted multiple times.
+
+    Args:
+        file_path: Path to the file to move to trash
+        sync_root: Root directory of the sync operation
+
+    Returns:
+        Path where the file was moved to
+
+    Raises:
+        FileNotFoundError: If the file does not exist
+        OSError: If the file cannot be moved
+    """
+    if not file_path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    # Get the trash directory
+    trash_dir = get_local_trash_path(sync_root)
+
+    # Get the relative path from sync root
+    try:
+        relative_path = file_path.relative_to(sync_root)
+    except ValueError:
+        # File is not under sync_root, use just the filename
+        relative_path = Path(file_path.name)
+
+    # Create a timestamped trash path to avoid collisions
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    trash_path = trash_dir / f"{timestamp}" / relative_path
+
+    # Ensure parent directory exists
+    trash_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Move the file
+    shutil.move(str(file_path), str(trash_path))
+
+    return trash_path
 
 
 class SyncOperations:
@@ -100,24 +164,24 @@ class SyncOperations:
         self,
         local_file: LocalFile,
         use_trash: bool = True,
+        sync_root: Optional[Path] = None,
     ) -> None:
         """Delete a local file.
 
+        When use_trash is True and sync_root is provided, the file is moved to
+        the .pydrime.trash.local directory at the sync root. This allows easy
+        recovery of accidentally deleted files while keeping them out of sync.
+
         Args:
             local_file: Local file to delete
-            use_trash: If True and available, move to trash;
-                otherwise delete permanently
+            use_trash: If True, move to local trash directory;
+                if False, delete permanently
+            sync_root: Root directory of the sync operation (required for trash)
         """
-        if use_trash:
-            # Try to use system trash if available
-            try:
-                import send2trash
-
-                send2trash.send2trash(str(local_file.path))
-                return
-            except ImportError:
-                # send2trash not available, fall back to permanent delete
-                pass
+        if use_trash and sync_root is not None:
+            # Move to local trash directory
+            move_to_local_trash(local_file.path, sync_root)
+            return
 
         # Permanent delete
         local_file.path.unlink()

@@ -36,6 +36,14 @@ logger = logging.getLogger(__name__)
 # Default ignore file name
 IGNORE_FILE_NAME = ".pydrignore"
 
+# Local trash directory name (always excluded from sync)
+LOCAL_TRASH_DIR_NAME = ".pydrime.trash.local"
+
+# Default patterns that are always ignored
+DEFAULT_IGNORE_PATTERNS = [
+    LOCAL_TRASH_DIR_NAME,  # Local trash directory for deleted files
+]
+
 
 @dataclass
 class IgnoreRule:
@@ -240,6 +248,13 @@ class IgnoreFileManager:
     cli_patterns: list[str] = field(default_factory=list)
     """Patterns provided via CLI --ignore option"""
 
+    def __post_init__(self) -> None:
+        """Initialize with default ignore patterns."""
+        # Load default patterns that are always ignored
+        for pattern in DEFAULT_IGNORE_PATTERNS:
+            rule = IgnoreRule(pattern=pattern)
+            self.rules.append(rule)
+
     def load_cli_patterns(self, patterns: list[str]) -> None:
         """Load ignore patterns from CLI arguments.
 
@@ -385,11 +400,16 @@ class IgnoreFileManager:
         return list(self.rules)
 
     def clear(self) -> None:
-        """Clear all loaded rules and reset state."""
+        """Clear all loaded rules and reset state.
+
+        Note: This also clears default patterns. Call __post_init__ to reload them.
+        """
         self.rules.clear()
         self._loaded_files.clear()
         self.cli_patterns.clear()
         self.base_path = None
+        # Reload default patterns
+        self.__post_init__()
 
 
 def load_ignore_file(filepath: Path) -> list[str]:

@@ -1294,6 +1294,7 @@ class SyncEngine:
                     self.operations.delete_local(
                         local_file=local_file,
                         use_trash=pair.use_local_trash,
+                        sync_root=pair.local,
                     )
 
             elif decision.action == SyncAction.DELETE_REMOTE:

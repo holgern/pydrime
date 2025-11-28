@@ -1,8 +1,10 @@
 """API client for Drime Cloud."""
 
+from __future__ import annotations
+
 import time
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 import httpx
 
@@ -21,6 +23,9 @@ from .exceptions import (
     DrimeUploadError,
 )
 
+if TYPE_CHECKING:
+    from .models import FileEntry
+
 FileEntryType = Literal["folder", "image", "text", "audio", "video", "pdf"]
 Permission = Literal["view", "edit", "download"]
 
@@ -30,8 +35,8 @@ class DrimeClient:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        api_url: Optional[str] = None,
+        api_key: str | None = None,
+        api_url: str | None = None,
         max_retries: int = 3,
         retry_delay: float = 1.0,
         timeout: float = 30.0,
@@ -56,7 +61,7 @@ class DrimeClient:
                 "API key not configured. Please set DRIME_API_KEY environment variable."
             )
 
-        self._client: Optional[httpx.Client] = None
+        self._client: httpx.Client | None = None
 
     def _get_client(self) -> httpx.Client:
         """Get or create the httpx client."""
@@ -200,7 +205,7 @@ class DrimeClient:
             DrimeAPIError: If the request fails after all retries
         """
         url = f"{self.api_url}/{endpoint.lstrip('/')}"
-        last_exception: Optional[Exception] = None
+        last_exception: Exception | None = None
         client = self._get_client()
 
         for attempt in range(self.max_retries + 1):
@@ -386,10 +391,10 @@ class DrimeClient:
     def upload_file_multipart(
         self,
         file_path: Path,
-        relative_path: Optional[str] = None,
+        relative_path: str | None = None,
         workspace_id: int = 0,
         chunk_size: int = 25 * 1024 * 1024,  # 25MB chunks
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> Any:
         """Upload a large file using multipart upload.
 
@@ -539,9 +544,9 @@ class DrimeClient:
     def upload_file_presign(
         self,
         file_path: Path,
-        relative_path: Optional[str] = None,
+        relative_path: str | None = None,
         workspace_id: int = 0,
-        parent_id: Optional[int] = None,
+        parent_id: int | None = None,
     ) -> Any:
         """Upload a file using presigned S3 URL.
 
@@ -638,12 +643,12 @@ class DrimeClient:
     def upload_file(
         self,
         file_path: Path,
-        parent_id: Optional[int] = None,
-        relative_path: Optional[str] = None,
+        parent_id: int | None = None,
+        relative_path: str | None = None,
         workspace_id: int = 0,
         use_multipart_threshold: int = 30 * 1024 * 1024,  # 30MB
         chunk_size: int = 25 * 1024 * 1024,  # 25MB chunks
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> Any:
         """Upload a file to Drime Cloud.
 
@@ -718,20 +723,20 @@ class DrimeClient:
     def get_file_entries(
         self,
         per_page: int = 50,
-        page: Optional[int] = None,
-        deleted_only: Optional[bool] = None,
-        starred_only: Optional[bool] = None,
-        recent_only: Optional[bool] = None,
-        shared_only: Optional[bool] = None,
-        query: Optional[str] = None,
-        entry_type: Optional[FileEntryType] = None,
-        parent_ids: Optional[list[int]] = None,
+        page: int | None = None,
+        deleted_only: bool | None = None,
+        starred_only: bool | None = None,
+        recent_only: bool | None = None,
+        shared_only: bool | None = None,
+        query: str | None = None,
+        entry_type: FileEntryType | None = None,
+        parent_ids: list[int] | None = None,
         workspace_id: int = 0,
-        folder_id: Optional[str] = None,
-        page_id: Optional[str] = None,
+        folder_id: str | None = None,
+        page_id: str | None = None,
         backup: int = 0,
-        order_by: Optional[str] = None,
-        order_dir: Optional[str] = None,
+        order_by: str | None = None,
+        order_dir: str | None = None,
     ) -> Any:
         """Get the list of all file entries you have access to.
 
@@ -790,8 +795,8 @@ class DrimeClient:
     def update_file_entry(
         self,
         entry_id: int,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
+        name: str | None = None,
+        description: str | None = None,
     ) -> Any:
         """Update an existing file entry.
 
@@ -839,7 +844,7 @@ class DrimeClient:
     def move_file_entries(
         self,
         entry_ids: list[int],
-        destination_id: Optional[int] = None,
+        destination_id: int | None = None,
     ) -> Any:
         """Move specified entries to a different folder.
 
@@ -861,7 +866,7 @@ class DrimeClient:
     def duplicate_file_entries(
         self,
         entry_ids: list[int],
-        destination_id: Optional[int] = None,
+        destination_id: int | None = None,
     ) -> Any:
         """Duplicate specified entries.
 
@@ -943,7 +948,7 @@ class DrimeClient:
     def get_folder_path(
         self,
         folder_hash: str,
-        vault_id: Optional[int] = None,
+        vault_id: int | None = None,
     ) -> Any:
         """Get the path hierarchy of a folder.
 
@@ -993,7 +998,7 @@ class DrimeClient:
     def create_folder(
         self,
         name: str,
-        parent_id: Optional[int] = None,
+        parent_id: int | None = None,
     ) -> Any:
         """Create a new folder.
 
@@ -1125,8 +1130,8 @@ class DrimeClient:
     def create_shareable_link(
         self,
         entry_id: int,
-        password: Optional[str] = None,
-        expires_at: Optional[str] = None,
+        password: str | None = None,
+        expires_at: str | None = None,
         allow_edit: bool = False,
         allow_download: bool = False,
     ) -> Any:
@@ -1158,10 +1163,10 @@ class DrimeClient:
     def update_shareable_link(
         self,
         entry_id: int,
-        password: Optional[str] = None,
-        expires_at: Optional[str] = None,
-        allow_edit: Optional[bool] = None,
-        allow_download: Optional[bool] = None,
+        password: str | None = None,
+        expires_at: str | None = None,
+        allow_edit: bool | None = None,
+        allow_download: bool | None = None,
     ) -> Any:
         """Update shareable link details.
 
@@ -1262,8 +1267,8 @@ class DrimeClient:
     def download_file(
         self,
         hash_value: str,
-        output_path: Optional[Path] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        output_path: Path | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
         timeout: int = 60,
     ) -> Path:
         """Download a file from Drime Cloud.
@@ -1506,8 +1511,8 @@ class DrimeClient:
     def download_vault_file(
         self,
         hash_value: str,
-        output_path: Optional[Path] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        output_path: Path | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
         timeout: int = 60,
     ) -> Path:
         """Download an encrypted file from the vault.
@@ -1600,7 +1605,7 @@ class DrimeClient:
         name_iv: str,
         content_iv: str,
         vault_id: int,
-        parent_id: Optional[int] = None,
+        parent_id: int | None = None,
     ) -> Any:
         """Upload an encrypted file to the vault using presigned URL.
 
@@ -1759,7 +1764,7 @@ class DrimeClient:
         self,
         name: str,
         vault_id: int,
-        parent_id: Optional[int] = None,
+        parent_id: int | None = None,
     ) -> Any:
         """Create a folder in the vault.
 
@@ -1794,8 +1799,8 @@ class DrimeClient:
 
     def list_files(
         self,
-        parent_id: Optional[int] = None,
-        query: Optional[str] = None,
+        parent_id: int | None = None,
+        query: str | None = None,
     ) -> Any:
         """List files in a directory (convenience method).
 
@@ -1809,7 +1814,7 @@ class DrimeClient:
         parent_ids = [parent_id] if parent_id is not None else None
         return self.get_file_entries(parent_ids=parent_ids, query=query)
 
-    def create_directory(self, name: str, parent_id: Optional[int] = None) -> Any:
+    def create_directory(self, name: str, parent_id: int | None = None) -> Any:
         """Create a directory (alias for create_folder).
 
         Args:
@@ -1824,7 +1829,7 @@ class DrimeClient:
     def get_folder_by_name(
         self,
         folder_name: str,
-        parent_id: Optional[int] = None,
+        parent_id: int | None = None,
         case_sensitive: bool = True,
         workspace_id: int = 0,
     ) -> dict[str, Any]:
@@ -1855,7 +1860,7 @@ class DrimeClient:
         from .models import FileEntriesResult
 
         # Search for the folder by name in the specified parent
-        parent_ids: Optional[list[int]] = [parent_id] if parent_id is not None else None
+        parent_ids: list[int] | None = [parent_id] if parent_id is not None else None
 
         result = self.get_file_entries(
             workspace_id=workspace_id,
@@ -1927,7 +1932,7 @@ class DrimeClient:
     def resolve_folder_identifier(
         self,
         identifier: str,
-        parent_id: Optional[int] = None,
+        parent_id: int | None = None,
         workspace_id: int = 0,
     ) -> int:
         """Resolve folder identifier (ID or name) to folder ID.
@@ -1975,7 +1980,7 @@ class DrimeClient:
     def resolve_entry_identifier(
         self,
         identifier: str,
-        parent_id: Optional[int] = None,
+        parent_id: int | None = None,
         workspace_id: int = 0,
     ) -> int:
         """Resolve entry identifier (ID or name) to entry ID.
@@ -2011,7 +2016,7 @@ class DrimeClient:
             return int(identifier)
 
         # It's an entry name - search for it
-        parent_ids: Optional[list[int]] = [parent_id] if parent_id is not None else None
+        parent_ids: list[int] | None = [parent_id] if parent_id is not None else None
 
         result = self.get_file_entries(
             workspace_id=workspace_id,
@@ -2088,7 +2093,7 @@ class DrimeClient:
         path = path.lstrip("/")
 
         parts = path.split("/")
-        current_parent: Optional[int] = None
+        current_parent: int | None = None
 
         # Navigate through each path component
         for i, part in enumerate(parts):
@@ -2098,7 +2103,7 @@ class DrimeClient:
             is_last = i == len(parts) - 1
 
             # Search for the entry in the current folder
-            parent_ids: Optional[list[int]] = (
+            parent_ids: list[int] | None = (
                 [current_parent] if current_parent is not None else None
             )
             result = self.get_file_entries(
@@ -2190,3 +2195,76 @@ class DrimeClient:
             }
 
         raise DrimeNotFoundError(f"Folder with ID {folder_id} not found")
+
+    def resolve_entries_by_pattern(
+        self,
+        pattern: str,
+        parent_id: int | None = None,
+        workspace_id: int = 0,
+        entry_type: FileEntryType | None = None,
+    ) -> list[FileEntry]:
+        """Resolve entries matching a glob pattern.
+
+        If the pattern contains glob characters (*, ?, [), returns all entries
+        matching the pattern. Otherwise, returns entries with an exact name match.
+
+        Args:
+            pattern: Glob pattern or exact name to match
+            parent_id: Parent folder to search in (None for root)
+            workspace_id: Workspace ID (default: 0 for personal)
+            entry_type: Filter by entry type (e.g., 'folder')
+
+        Returns:
+            List of FileEntry objects matching the pattern
+
+        Examples:
+            >>> client = DrimeClient(api_key="your_key")
+            >>> # Get all .txt files
+            >>> entries = client.resolve_entries_by_pattern("*.txt")
+            >>> # Get entries starting with "bench"
+            >>> entries = client.resolve_entries_by_pattern("bench*")
+            >>> # Get exact match (no glob)
+            >>> entries = client.resolve_entries_by_pattern("file.txt")
+        """
+        from .models import FileEntriesResult
+        from .utils import glob_match, is_glob_pattern
+
+        # Get entries in the folder
+        parent_ids: list[int] | None = [parent_id] if parent_id is not None else None
+
+        # For glob patterns, we need to get all entries and filter locally
+        # For exact matches, we can use the query parameter
+        if is_glob_pattern(pattern):
+            # Get all entries and filter locally
+            result = self.get_file_entries(
+                workspace_id=workspace_id,
+                parent_ids=parent_ids,
+                entry_type=entry_type,
+                per_page=1000,  # Get more entries for pattern matching
+            )
+        else:
+            # Use API query for exact match (more efficient)
+            result = self.get_file_entries(
+                workspace_id=workspace_id,
+                parent_ids=parent_ids,
+                query=pattern,
+                entry_type=entry_type,
+            )
+
+        if not result or not result.get("data"):
+            return []
+
+        file_entries = FileEntriesResult.from_api_response(result)
+
+        if is_glob_pattern(pattern):
+            # Filter entries by glob pattern
+            return [e for e in file_entries.entries if glob_match(pattern, e.name)]
+        else:
+            # Return exact matches
+            matching = [e for e in file_entries.entries if e.name == pattern]
+            if not matching:
+                # Try case-insensitive
+                matching = [
+                    e for e in file_entries.entries if e.name.lower() == pattern.lower()
+                ]
+            return matching

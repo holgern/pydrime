@@ -1,8 +1,16 @@
 """Utility functions for Drime Cloud."""
 
+from __future__ import annotations
+
 import base64
+import fnmatch
+import re
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .api import DrimeClient
+    from .models import FileEntry
 
 # =============================================================================
 # Constants for file operations
@@ -27,7 +35,7 @@ DEFAULT_DELETE_BATCH_SIZE: int = 10
 # =============================================================================
 
 
-def parse_iso_timestamp(timestamp_str: Optional[str]) -> Optional[datetime]:
+def parse_iso_timestamp(timestamp_str: str | None) -> datetime | None:
     """Parse ISO format timestamp from Drime API.
 
     Args:
@@ -215,9 +223,9 @@ class RemoteFileVerificationResult:
         all_verified: bool,
         verified_count: int,
         total_count: int,
-        expected_count: Optional[int] = None,
-        unverified_files: Optional[list[str]] = None,
-        errors: Optional[list[str]] = None,
+        expected_count: int | None = None,
+        unverified_files: list[str] | None = None,
+        errors: list[str] | None = None,
     ):
         self.all_verified = all_verified
         self.verified_count = verified_count
@@ -239,9 +247,9 @@ class RemoteFileVerificationResult:
 
 
 def verify_remote_files_have_users(
-    client: "DrimeClient",  # noqa: F821  # type: ignore[name-defined]
+    client: DrimeClient,
     remote_folder: str,
-    expected_count: Optional[int] = None,
+    expected_count: int | None = None,
     verbose: bool = True,
     workspace_id: int = 0,
 ) -> RemoteFileVerificationResult:
@@ -389,3 +397,110 @@ def verify_remote_files_have_users(
             expected_count=expected_count,
             errors=[error_msg],
         )
+
+
+# =============================================================================
+# Glob pattern matching utilities
+# =============================================================================
+
+
+def is_glob_pattern(pattern: str) -> bool:
+    """Check if a string contains glob pattern characters.
+
+    Args:
+        pattern: String to check
+
+    Returns:
+        True if the pattern contains glob characters (*, ?, [)
+
+    Examples:
+        >>> is_glob_pattern("file.txt")
+        False
+        >>> is_glob_pattern("*.txt")
+        True
+        >>> is_glob_pattern("file?.txt")
+        True
+        >>> is_glob_pattern("file[0-9].txt")
+        True
+        >>> is_glob_pattern("bench*")
+        True
+    """
+    glob_chars = {"*", "?", "["}
+    return any(c in pattern for c in glob_chars)
+
+
+def glob_match(pattern: str, name: str) -> bool:
+    """Match a name against a glob pattern.
+
+    Supports shell-style wildcards:
+    - * matches any sequence of characters
+    - ? matches any single character
+    - [seq] matches any character in seq
+    - [!seq] matches any character not in seq
+
+    Args:
+        pattern: Glob pattern to match against
+        name: Name to match
+
+    Returns:
+        True if the name matches the pattern
+
+    Examples:
+        >>> glob_match("*.txt", "file.txt")
+        True
+        >>> glob_match("*.txt", "file.py")
+        False
+        >>> glob_match("bench*", "benchmark.py")
+        True
+        >>> glob_match("file?.txt", "file1.txt")
+        True
+        >>> glob_match("file?.txt", "file12.txt")
+        False
+        >>> glob_match("[abc]*.py", "api.py")
+        True
+    """
+    return fnmatch.fnmatch(name, pattern)
+
+
+def glob_match_entries(
+    pattern: str,
+    entries: list[FileEntry],
+) -> list[FileEntry]:
+    """Match file entries against a glob pattern.
+
+    Args:
+        pattern: Glob pattern to match against
+        entries: List of FileEntry objects to filter
+
+    Returns:
+        List of FileEntry objects whose names match the pattern
+
+    Examples:
+        >>> # Filter entries to only include .txt files
+        >>> txt_files = glob_match_entries("*.txt", entries)
+        >>> # Get all entries starting with "test"
+        >>> test_entries = glob_match_entries("test*", entries)
+    """
+    return [e for e in entries if glob_match(pattern, e.name)]
+
+
+def glob_to_regex(pattern: str) -> re.Pattern[str]:
+    """Convert a glob pattern to a compiled regex pattern.
+
+    This is useful when you need to match against many strings
+    and want the performance benefit of a compiled regex.
+
+    Args:
+        pattern: Glob pattern to convert
+
+    Returns:
+        Compiled regex pattern
+
+    Examples:
+        >>> regex = glob_to_regex("*.txt")
+        >>> bool(regex.match("file.txt"))
+        True
+        >>> bool(regex.match("file.py"))
+        False
+    """
+    return re.compile(fnmatch.translate(pattern))

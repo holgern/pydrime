@@ -5,7 +5,10 @@ import pytest
 from pydrime.utils import (
     calculate_drime_hash,
     decode_drime_hash,
+    glob_match,
+    glob_to_regex,
     is_file_id,
+    is_glob_pattern,
     normalize_to_hash,
 )
 
@@ -212,3 +215,128 @@ class TestIntegration:
             # Test normalization
             normalized = normalize_to_hash(str(file_id))
             assert normalized == expected_hash
+
+
+class TestIsGlobPattern:
+    """Tests for is_glob_pattern function."""
+
+    def test_asterisk_is_glob(self):
+        """Test that * is recognized as a glob pattern."""
+        assert is_glob_pattern("*.txt") is True
+        assert is_glob_pattern("file*") is True
+        assert is_glob_pattern("*") is True
+        assert is_glob_pattern("bench*") is True
+        assert is_glob_pattern("*test*") is True
+
+    def test_question_mark_is_glob(self):
+        """Test that ? is recognized as a glob pattern."""
+        assert is_glob_pattern("file?.txt") is True
+        assert is_glob_pattern("?file") is True
+        assert is_glob_pattern("???") is True
+
+    def test_bracket_is_glob(self):
+        """Test that [] is recognized as a glob pattern."""
+        assert is_glob_pattern("[abc].txt") is True
+        assert is_glob_pattern("file[0-9].txt") is True
+        assert is_glob_pattern("[!abc]file") is True
+
+    def test_plain_names_are_not_glob(self):
+        """Test that plain filenames are not glob patterns."""
+        assert is_glob_pattern("file.txt") is False
+        assert is_glob_pattern("my_document") is False
+        assert is_glob_pattern("test123") is False
+        assert is_glob_pattern("benchmark.py") is False
+        assert is_glob_pattern("") is False
+
+    def test_paths_without_glob_chars(self):
+        """Test that paths without glob chars are not patterns."""
+        assert is_glob_pattern("folder/file.txt") is False
+        assert is_glob_pattern("a/b/c/d.txt") is False
+
+
+class TestGlobMatch:
+    """Tests for glob_match function."""
+
+    def test_asterisk_matches_any_sequence(self):
+        """Test that * matches any sequence of characters."""
+        assert glob_match("*.txt", "file.txt") is True
+        assert glob_match("*.txt", "document.txt") is True
+        assert glob_match("*.txt", "file.py") is False
+        assert glob_match("bench*", "benchmark.py") is True
+        assert glob_match("bench*", "benchmark_test.py") is True
+        assert glob_match("bench*", "test.py") is False
+        assert glob_match("*test*", "my_test_file.py") is True
+
+    def test_question_mark_matches_single_char(self):
+        """Test that ? matches exactly one character."""
+        assert glob_match("file?.txt", "file1.txt") is True
+        assert glob_match("file?.txt", "file2.txt") is True
+        assert glob_match("file?.txt", "file12.txt") is False
+        assert glob_match("file?.txt", "file.txt") is False
+        assert glob_match("???.txt", "abc.txt") is True
+        assert glob_match("???.txt", "ab.txt") is False
+
+    def test_bracket_matches_character_set(self):
+        """Test that [seq] matches any character in seq."""
+        assert glob_match("[abc].txt", "a.txt") is True
+        assert glob_match("[abc].txt", "b.txt") is True
+        assert glob_match("[abc].txt", "d.txt") is False
+        assert glob_match("file[0-9].txt", "file1.txt") is True
+        assert glob_match("file[0-9].txt", "file9.txt") is True
+        assert glob_match("file[0-9].txt", "filea.txt") is False
+        assert glob_match("[a-z]*.py", "api.py") is True
+        assert glob_match("[a-z]*.py", "Api.py") is False
+
+    def test_negated_bracket(self):
+        """Test that [!seq] matches any character not in seq."""
+        assert glob_match("[!abc].txt", "d.txt") is True
+        assert glob_match("[!abc].txt", "a.txt") is False
+
+    def test_case_sensitivity(self):
+        """Test that glob matching is case-sensitive."""
+        assert glob_match("*.TXT", "file.TXT") is True
+        assert glob_match("*.TXT", "file.txt") is False
+        assert glob_match("File*", "File.txt") is True
+        assert glob_match("File*", "file.txt") is False
+
+    def test_exact_match_without_glob(self):
+        """Test that patterns without glob chars match exactly."""
+        assert glob_match("file.txt", "file.txt") is True
+        assert glob_match("file.txt", "other.txt") is False
+
+    def test_empty_pattern_and_name(self):
+        """Test empty pattern and name handling."""
+        assert glob_match("", "") is True
+        assert glob_match("*", "") is True
+        assert glob_match("", "file") is False
+
+
+class TestGlobToRegex:
+    """Tests for glob_to_regex function."""
+
+    def test_compiles_to_regex(self):
+        """Test that glob pattern compiles to regex."""
+        import re
+
+        regex = glob_to_regex("*.txt")
+        assert isinstance(regex, re.Pattern)
+
+    def test_regex_matches_correctly(self):
+        """Test that compiled regex matches correctly."""
+        regex = glob_to_regex("*.txt")
+        assert regex.match("file.txt") is not None
+        assert regex.match("document.txt") is not None
+        assert regex.match("file.py") is None
+
+    def test_complex_pattern(self):
+        """Test complex pattern conversion."""
+        regex = glob_to_regex("test_[0-9]*.py")
+        assert regex.match("test_1.py") is not None
+        assert regex.match("test_123.py") is not None
+        assert regex.match("test_abc.py") is None
+
+    def test_question_mark_regex(self):
+        """Test that ? converts correctly to regex."""
+        regex = glob_to_regex("file?.txt")
+        assert regex.match("file1.txt") is not None
+        assert regex.match("file12.txt") is None
