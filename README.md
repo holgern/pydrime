@@ -326,6 +326,23 @@ pydrime sync ./backup:localBackup:/Backup
 - `cloudToLocal` (`ctl`) - Download cloud changes only
 - `cloudBackup` (`cb`) - Download from cloud, never delete
 
+**Ignore Files (.pydrignore):**
+
+You can exclude files from sync and upload operations by creating `.pydrignore` files.
+These work like `.gitignore` files with support for gitignore-style patterns:
+
+```bash
+# Example .pydrignore file
+*.log           # Ignore all .log files
+node_modules/   # Ignore node_modules directory
+!important.log  # But keep important.log
+/build          # Ignore build only at root
+**/cache/**     # Ignore cache directories anywhere
+```
+
+`.pydrignore` files are hierarchical - rules in subdirectories can override parent
+rules.
+
 ### Find Duplicates
 
 Find and optionally delete duplicate files:
