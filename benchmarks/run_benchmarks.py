@@ -431,7 +431,7 @@ def main() -> int:
         report_path = Path(args.report)
         report_content = generate_markdown_report(summary)
         report_path.write_text(report_content)
-        print(f"\n📄 Report written to: {report_path}")
+        print(f"\n[REPORT] Report written to: {report_path}")
 
     return 0 if summary.all_passed else 1
 
