@@ -21,6 +21,12 @@ from .ignore import (
 from .modes import SyncMode
 from .operations import SyncOperations, get_local_trash_path, move_to_local_trash
 from .pair import SyncPair
+from .progress import (
+    SyncProgressCallback,
+    SyncProgressEvent,
+    SyncProgressInfo,
+    SyncProgressTracker,
+)
 from .scanner import DirectoryScanner, LocalFile, RemoteFile
 from .state import (
     LocalItemState,
@@ -61,6 +67,11 @@ __all__ = [
     "load_ignore_file",
     "get_local_trash_path",
     "move_to_local_trash",
+    # Progress tracking
+    "SyncProgressCallback",
+    "SyncProgressEvent",
+    "SyncProgressInfo",
+    "SyncProgressTracker",
     # Concurrency utilities
     "Semaphore",
     "AsyncSemaphore",

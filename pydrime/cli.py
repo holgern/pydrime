@@ -1636,6 +1636,7 @@ def sync(
         pydrime sync ./data -b 100                   # Process 100 files per batch
         pydrime sync ./data --no-streaming           # Scan all files upfront
     """
+    from .cli_progress import run_sync_with_progress
     from .sync import (
         SyncConfigError,
         SyncEngine,
@@ -1746,24 +1747,40 @@ def sync(
 
             try:
                 # Create output formatter for engine (respect no_progress)
+                # When using progress display, set engine to quiet mode
+                use_progress_display = not no_progress and not out.quiet and not dry_run
                 engine_out = OutputFormatter(
-                    json_output=out.json_output, quiet=no_progress or out.quiet
+                    json_output=out.json_output,
+                    quiet=use_progress_display or no_progress or out.quiet,
                 )
 
                 # Create sync engine
                 engine = SyncEngine(client, engine_out)
 
-                # Execute sync
-                stats = engine.sync_pair(
-                    pair,
-                    dry_run=dry_run,
-                    chunk_size=chunk_size_bytes,
-                    multipart_threshold=multipart_threshold_bytes,
-                    batch_size=batch_size,
-                    use_streaming=not no_streaming,
-                    max_workers=workers,
-                    start_delay=start_delay,
-                )
+                # Execute sync - use progress display for non-dry-run
+                if use_progress_display:
+                    stats = run_sync_with_progress(
+                        engine=engine,
+                        pair=pair,
+                        dry_run=dry_run,
+                        chunk_size=chunk_size_bytes,
+                        multipart_threshold=multipart_threshold_bytes,
+                        batch_size=batch_size,
+                        use_streaming=not no_streaming,
+                        max_workers=workers,
+                        start_delay=start_delay,
+                    )
+                else:
+                    stats = engine.sync_pair(
+                        pair,
+                        dry_run=dry_run,
+                        chunk_size=chunk_size_bytes,
+                        multipart_threshold=multipart_threshold_bytes,
+                        batch_size=batch_size,
+                        use_streaming=not no_streaming,
+                        max_workers=workers,
+                        start_delay=start_delay,
+                    )
 
                 # Add pair info to stats
                 stats["pair_index"] = i
@@ -1901,24 +1918,41 @@ def sync(
 
     try:
         # Create output formatter for engine (respect no_progress)
+        # When using progress display, set engine to quiet mode
+        # to avoid duplicate output
+        use_progress_display = not no_progress and not out.quiet and not dry_run
         engine_out = OutputFormatter(
-            json_output=out.json_output, quiet=no_progress or out.quiet
+            json_output=out.json_output,
+            quiet=use_progress_display or no_progress or out.quiet,
         )
 
         # Create sync engine
         engine = SyncEngine(client, engine_out)
 
-        # Execute sync
-        stats = engine.sync_pair(
-            pair,
-            dry_run=dry_run,
-            chunk_size=chunk_size_bytes,
-            multipart_threshold=multipart_threshold_bytes,
-            batch_size=batch_size,
-            use_streaming=not no_streaming,
-            max_workers=workers,
-            start_delay=start_delay,
-        )
+        # Execute sync - use progress display for non-dry-run
+        if use_progress_display:
+            stats = run_sync_with_progress(
+                engine=engine,
+                pair=pair,
+                dry_run=dry_run,
+                chunk_size=chunk_size_bytes,
+                multipart_threshold=multipart_threshold_bytes,
+                batch_size=batch_size,
+                use_streaming=not no_streaming,
+                max_workers=workers,
+                start_delay=start_delay,
+            )
+        else:
+            stats = engine.sync_pair(
+                pair,
+                dry_run=dry_run,
+                chunk_size=chunk_size_bytes,
+                multipart_threshold=multipart_threshold_bytes,
+                batch_size=batch_size,
+                use_streaming=not no_streaming,
+                max_workers=workers,
+                start_delay=start_delay,
+            )
 
         # Output results
         if out.json_output:
