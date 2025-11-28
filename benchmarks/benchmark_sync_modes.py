@@ -38,7 +38,7 @@ def run_sync_command(
         Tuple of (exit_code, captured_output)
     """
     print(
-        f"\n🔹 Running: pydrime sync {sync_pair} "
+        f"\n>>> Running: pydrime sync {sync_pair} "
         f"--workers {workers} --batch-size {batch_size}"
     )
     print("=" * 80)
@@ -98,7 +98,7 @@ def create_test_files(directory: Path, count: int = 10, size_kb: int = 1) -> lis
     directory.mkdir(parents=True, exist_ok=True)
     created_files = []
 
-    print(f"\n📝 Creating {count} test files ({size_kb}KB each) in {directory}")
+    print(f"\n[INFO] Creating {count} test files ({size_kb}KB each) in {directory}")
 
     for i in range(count):
         file_path = directory / f"test_file_{i:03d}.txt"
@@ -106,7 +106,7 @@ def create_test_files(directory: Path, count: int = 10, size_kb: int = 1) -> lis
         content = f"Test file {i}\n" + (os.urandom(size_kb * 1024 - 20).hex())
         file_path.write_text(content)
         created_files.append(file_path)
-        print(f"  ✓ Created: {file_path.name}")
+        print(f"  [OK] Created: {file_path.name}")
 
     return created_files
 
@@ -185,44 +185,44 @@ def test_cloud_upload(base_dir: Path, remote_folder: str) -> bool:
 
     # First sync - should upload all files
     # Use workers=4 for parallel uploads with staggered starts
-    print("\n🔄 First sync (should upload 15 files)...")
+    print("\n[SYNC] First sync (should upload 15 files)...")
     sync_pair = f"{local_dir}:localToCloud:/{remote_folder}"
     exit_code, stdout = run_sync_command(sync_pair, workers=1, batch_size=10)
 
     if exit_code != 0:
-        print(f"❌ First sync failed with exit code {exit_code}")
+        print(f"[FAIL] First sync failed with exit code {exit_code}")
         return False
 
     stats1 = parse_sync_output(stdout)
-    print(f"\n📊 First sync stats: {stats1}")
+    print(f"\n[STATS] First sync stats: {stats1}")
 
     # Verify 15 files were uploaded
     if stats1["uploaded"] != 15:
-        print(f"❌ Expected 15 uploads, got {stats1['uploaded']}")
+        print(f"[FAIL] Expected 15 uploads, got {stats1['uploaded']}")
         return False
 
-    print("✅ First sync uploaded 15 files as expected")
+    print("[PASS] First sync uploaded 15 files as expected")
 
     # Wait a bit to ensure cloud sync completes
     time.sleep(2)
 
     # Second sync - should upload nothing (idempotency)
-    print("\n🔄 Second sync (should upload 0 files - idempotency test)...")
+    print("\n[SYNC] Second sync (should upload 0 files - idempotency test)...")
     exit_code, stdout = run_sync_command(sync_pair, workers=1, batch_size=10)
 
     if exit_code != 0:
-        print(f"❌ Second sync failed with exit code {exit_code}")
+        print(f"[FAIL] Second sync failed with exit code {exit_code}")
         return False
 
     stats2 = parse_sync_output(stdout)
-    print(f"\n📊 Second sync stats: {stats2}")
+    print(f"\n[STATS] Second sync stats: {stats2}")
 
     # Verify nothing was uploaded
     if stats2["uploaded"] != 0:
-        print(f"❌ Expected 0 uploads (idempotency), got {stats2['uploaded']}")
+        print(f"[FAIL] Expected 0 uploads (idempotency), got {stats2['uploaded']}")
         return False
 
-    print("✅ Second sync uploaded 0 files - idempotency confirmed")
+    print("[PASS] Second sync uploaded 0 files - idempotency confirmed")
 
     return True
 
@@ -247,53 +247,55 @@ def test_cloud_download(base_dir: Path, remote_folder: str) -> bool:
 
     # First sync - should download all files (15 files)
     # Use workers=1 initially to avoid parallel download issues
-    print("\n🔄 First download sync (should download 15 files)...")
+    print("\n[SYNC] First download sync (should download 15 files)...")
     sync_pair = f"{local_dir}:cloudToLocal:/{remote_folder}"
     exit_code, stdout = run_sync_command(sync_pair, workers=1, batch_size=10)
 
     if exit_code != 0:
-        print(f"❌ First download sync failed with exit code {exit_code}")
+        print(f"[FAIL] First download sync failed with exit code {exit_code}")
         return False
 
     stats1 = parse_sync_output(stdout)
-    print(f"\n📊 First download sync stats: {stats1}")
+    print(f"\n[STATS] First download sync stats: {stats1}")
 
     # Verify files were downloaded
     # With sequential uploads (workers=1), all files should be available
     # Expect 100% download success
     expected = 15
     if stats1["downloaded"] != expected:
-        print(f"❌ Expected {expected} downloads, got {stats1['downloaded']}")
+        print(f"[FAIL] Expected {expected} downloads, got {stats1['downloaded']}")
         return False
 
     # Verify files exist locally
     local_files = list(local_dir.glob("test_file_*.txt"))
     if len(local_files) != expected:
-        print(f"❌ Expected {expected} local files, found {len(local_files)}")
+        print(f"[FAIL] Expected {expected} local files, found {len(local_files)}")
         return False
 
-    print(f"✅ First download sync downloaded {stats1['downloaded']} files")
+    print(f"[PASS] First download sync downloaded {stats1['downloaded']} files")
 
     # Wait a bit
     time.sleep(2)
 
     # Second sync - should download nothing (idempotency)
-    print("\n🔄 Second download sync (should download 0 files - idempotency test)...")
+    print(
+        "\n[SYNC] Second download sync (should download 0 files - idempotency test)..."
+    )
     exit_code, stdout = run_sync_command(sync_pair, workers=1, batch_size=10)
 
     if exit_code != 0:
-        print(f"❌ Second download sync failed with exit code {exit_code}")
+        print(f"[FAIL] Second download sync failed with exit code {exit_code}")
         return False
 
     stats2 = parse_sync_output(stdout)
-    print(f"\n📊 Second download sync stats: {stats2}")
+    print(f"\n[STATS] Second download sync stats: {stats2}")
 
     # Idempotency check: second sync should download 0 files
     if stats2["downloaded"] != 0:
-        print(f"❌ Expected 0 downloads (idempotency), got {stats2['downloaded']}")
+        print(f"[FAIL] Expected 0 downloads (idempotency), got {stats2['downloaded']}")
         return False
 
-    print("✅ Second download sync uploaded 0 files - idempotency confirmed")
+    print("[PASS] Second download sync uploaded 0 files - idempotency confirmed")
 
     return True
 
@@ -308,15 +310,15 @@ def cleanup_test_folder(remote_folder: str, base_dir: Path) -> None:
     import shutil
     import subprocess
 
-    print("\n🧹 Cleaning up test data...")
+    print("\n[CLEANUP] Cleaning up test data...")
 
     # Delete local directory
     if base_dir.exists():
         try:
             shutil.rmtree(base_dir)
-            print(f"   ✓ Deleted local directory: {base_dir}")
+            print(f"   [OK] Deleted local directory: {base_dir}")
         except Exception as e:
-            print(f"   ⚠ Failed to delete local directory: {e}")
+            print(f"   [WARN] Failed to delete local directory: {e}")
 
     # Delete remote folder permanently using --yes to skip confirmation
     # Use folder name without leading slash
@@ -324,11 +326,11 @@ def cleanup_test_folder(remote_folder: str, base_dir: Path) -> None:
         cmd = ["pydrime", "--verbose", "rm", remote_folder, "--no-trash", "--yes"]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0:
-            print(f"   ✓ Deleted remote folder: {remote_folder}")
+            print(f"   [OK] Deleted remote folder: {remote_folder}")
         else:
-            print(f"   ⚠ Failed to delete remote folder: {result.stderr.strip()}")
+            print(f"   [WARN] Failed to delete remote folder: {result.stderr.strip()}")
     except Exception as e:
-        print(f"   ⚠ Failed to delete remote folder: {e}")
+        print(f"   [WARN] Failed to delete remote folder: {e}")
 
 
 def main():
@@ -341,46 +343,46 @@ def main():
     test_uuid = str(uuid.uuid4())
     remote_folder = f"benchmark_{test_uuid}"
 
-    print(f"\n📁 Test folder: {remote_folder}")
+    print(f"\n[INFO] Test folder: {remote_folder}")
     print("   This folder will be created in the cloud workspace root")
 
     # Create unique base directory in current workspace
     base_dir = Path.cwd() / f"benchmark_temp_{test_uuid[:8]}"
     base_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\n📂 Local test directory: {base_dir}")
+    print(f"\n[INFO] Local test directory: {base_dir}")
 
     try:
         # Test 1: Cloud Upload
         test1_passed = test_cloud_upload(base_dir, remote_folder)
 
         if not test1_passed:
-            print("\n❌ TEST 1 FAILED - Stopping benchmarks")
+            print("\n[FAIL] TEST 1 FAILED - Stopping benchmarks")
             cleanup_test_folder(remote_folder, base_dir)
             sys.exit(1)
 
         # Wait for API to process uploaded files before downloading
         # With sequential uploads, files should be ready sooner
-        print("\n⏳ Waiting 10 seconds for API to process uploaded files...")
+        print("\n[WAIT] Waiting 10 seconds for API to process uploaded files...")
         time.sleep(10)
 
         # Test 2: Cloud Download
         test2_passed = test_cloud_download(base_dir, remote_folder)
 
         if not test2_passed:
-            print("\n❌ TEST 2 FAILED")
+            print("\n[FAIL] TEST 2 FAILED")
             cleanup_test_folder(remote_folder, base_dir)
             sys.exit(1)
 
         # All tests passed
         print("\n" + "=" * 80)
-        print("✅ ALL TESTS PASSED")
+        print("[PASS] ALL TESTS PASSED")
         print("=" * 80)
-        print("\n📊 Summary:")
-        print("   ✓ Cloud upload (localToCloud) mode works correctly")
-        print("   ✓ Upload idempotency confirmed (no duplicate uploads)")
-        print("   ✓ Cloud download (cloudToLocal) mode works correctly")
-        print("   ✓ Download idempotency confirmed (no duplicate downloads)")
-        print("\n📁 Test data:")
+        print("\n[SUMMARY]:")
+        print("   [OK] Cloud upload (localToCloud) mode works correctly")
+        print("   [OK] Upload idempotency confirmed (no duplicate uploads)")
+        print("   [OK] Cloud download (cloudToLocal) mode works correctly")
+        print("   [OK] Download idempotency confirmed (no duplicate downloads)")
+        print("\n[INFO] Test data:")
         print(f"   Local: {base_dir}")
         print(f"   Remote: /{remote_folder}")
 
@@ -388,12 +390,12 @@ def main():
         cleanup_test_folder(remote_folder, base_dir)
 
     except KeyboardInterrupt:
-        print("\n\n⚠️  Benchmark interrupted by user")
+        print("\n\n[WARN] Benchmark interrupted by user")
         if "base_dir" in locals() and "remote_folder" in locals():
             cleanup_test_folder(remote_folder, base_dir)
         sys.exit(130)
     except Exception as e:
-        print(f"\n\n❌ Unexpected error: {e}")
+        print(f"\n\n[ERROR] Unexpected error: {e}")
         import traceback
 
         traceback.print_exc()
