@@ -597,6 +597,95 @@ class DrimeClient:
         result: str = available_name
         return result
 
+    def upload_file_simple(
+        self,
+        file_path: Path,
+        relative_path: str | None = None,
+        workspace_id: int = 0,
+        parent_id: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> Any:
+        """Upload a file using simple multipart form upload.
+
+        This method uploads the file directly to the API server using
+        multipart form data. This is the most reliable method for smaller
+        files (< 30MB).
+
+        Args:
+            file_path: Local path to the file
+            relative_path: Relative path where file should be stored
+            workspace_id: ID of the workspace (default: 0 for personal)
+            parent_id: Optional parent folder ID
+            progress_callback: Optional callback function(bytes_uploaded,
+                total_bytes) for tracking upload progress
+
+        Returns:
+            Upload response data with 'status' and 'fileEntry' keys
+
+        Raises:
+            DrimeUploadError: If upload fails
+            DrimeFileNotFoundError: If file doesn't exist
+        """
+        if not file_path.exists():
+            raise DrimeFileNotFoundError(str(file_path))
+
+        file_size = file_path.stat().st_size
+        file_name = file_path.name
+        mime_type = self._detect_mime_type(file_path)
+
+        # Build the relative path including filename
+        if relative_path:
+            full_relative_path = f"{relative_path}/{file_name}"
+        else:
+            full_relative_path = file_name
+
+        # Report initial progress
+        if progress_callback:
+            progress_callback(0, file_size)
+
+        try:
+            with open(file_path, "rb") as f:
+                # Use multipart form data upload
+                files = {"file": (file_name, f, mime_type)}
+                data: dict[str, Any] = {
+                    "relativePath": full_relative_path,
+                    "workspaceId": str(workspace_id),
+                }
+                if parent_id is not None:
+                    data["parentId"] = str(parent_id)
+
+                client = self._get_client()
+                response = client.post(
+                    f"{self.api_url}/uploads",
+                    files=files,
+                    data=data,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=self.s3_timeout,
+                )
+
+            # Report completion
+            if progress_callback:
+                progress_callback(file_size, file_size)
+
+            # Check response
+            if response.status_code == 401:
+                raise DrimeAuthenticationError("Invalid API key")
+            elif response.status_code >= 400:
+                try:
+                    error_data = response.json()
+                    message = error_data.get("message", str(error_data))
+                except Exception:
+                    message = response.text
+                raise DrimeUploadError(f"Upload failed: {message}")
+
+            result: dict[str, Any] = response.json()
+            return result
+
+        except (DrimeAuthenticationError, DrimeUploadError):
+            raise
+        except Exception as e:
+            raise DrimeUploadError(f"Simple upload failed: {e}") from e
+
     def upload_file_multipart(
         self,
         file_path: Path,
@@ -965,8 +1054,8 @@ class DrimeClient:
                     progress_callback=progress_callback,
                 )
 
-            # Use presigned URL upload for smaller files (better progress tracking)
-            return self.upload_file_presign(
+            # Use simple form upload for smaller files (more reliable)
+            return self.upload_file_simple(
                 file_path=file_path,
                 relative_path=relative_path,
                 workspace_id=workspace_id,
