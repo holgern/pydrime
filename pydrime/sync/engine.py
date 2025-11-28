@@ -182,16 +182,30 @@ class SyncEngine:
         # Choose between streaming and traditional mode
         # Always use traditional (scan-all) mode for dry-run to show complete plan
         if use_streaming and not dry_run and pair.sync_mode.requires_remote_scan:
-            # Use streaming mode for better performance
-            return self._sync_pair_streaming(
-                pair,
-                chunk_size,
-                multipart_threshold,
-                progress_callback,
-                batch_size,
-                max_workers,
-                start_delay,
-            )
+            # Check if this is a local-to-cloud only mode (no remote scan needed for
+            # sync decisions - we only upload)
+            if pair.sync_mode in (SyncMode.LOCAL_TO_CLOUD, SyncMode.LOCAL_BACKUP):
+                # Use incremental mode for local-to-cloud
+                return self._sync_pair_incremental(
+                    pair,
+                    chunk_size,
+                    multipart_threshold,
+                    progress_callback,
+                    batch_size,
+                    max_workers,
+                    start_delay,
+                )
+            else:
+                # Use streaming mode for better performance
+                return self._sync_pair_streaming(
+                    pair,
+                    chunk_size,
+                    multipart_threshold,
+                    progress_callback,
+                    batch_size,
+                    max_workers,
+                    start_delay,
+                )
         else:
             # Use traditional mode (scan all files upfront)
             return self._sync_pair_traditional(
@@ -483,6 +497,192 @@ class SyncEngine:
             )
 
         # Step 5: Display summary
+        if not self.output.quiet:
+            self._display_summary(stats, dry_run=False)
+
+        return stats
+
+    def _sync_pair_incremental(
+        self,
+        pair: SyncPair,
+        chunk_size: int,
+        multipart_threshold: int,
+        progress_callback: Optional[Callable[[int, int], None]],
+        batch_size: int,
+        max_workers: int,
+        start_delay: float = 0.0,
+    ) -> dict:
+        """Incremental sync: process directories level by level.
+
+        This mode is optimized for LOCAL_TO_CLOUD and LOCAL_BACKUP sync modes
+        with huge local directories. Instead of scanning the entire local tree
+        upfront, it:
+        1. Scans one directory level at a time
+        2. Compares files with remote (if needed)
+        3. Uploads files immediately
+        4. Then descends into subdirectories
+
+        This provides immediate feedback and avoids memory/time overhead of
+        scanning millions of files before starting any uploads.
+
+        Args:
+            pair: Sync pair to synchronize
+            chunk_size: Chunk size for multipart uploads
+            multipart_threshold: Threshold for multipart upload
+            progress_callback: Optional callback for progress updates
+            batch_size: Number of files per batch (for parallel uploads)
+            max_workers: Number of parallel workers
+            start_delay: Delay in seconds between starting each parallel operation
+
+        Returns:
+            Dictionary with sync statistics
+        """
+        start_time = time.time()
+        logger.debug(f"Starting incremental sync at {start_time:.2f}")
+
+        if not self.output.quiet:
+            self.output.info("Using incremental sync mode (level-by-level)...")
+
+        # Initialize scanner
+        scanner = DirectoryScanner(
+            ignore_patterns=pair.ignore,
+            exclude_dot_files=pair.exclude_dot_files,
+        )
+
+        # Initialize file entries manager for remote operations
+        manager = FileEntriesManager(self.client, pair.workspace_id)
+
+        # Track statistics
+        stats = self._create_empty_stats()
+
+        # Get or create remote folder
+        remote_folder_id = self._resolve_remote_folder_id(pair, manager)
+
+        # If remote folder doesn't exist for LOCAL_TO_CLOUD, create it
+        if pair.remote and pair.remote != "/" and remote_folder_id is None:
+            try:
+                folder_name = pair.remote.lstrip("/")
+                result = self.client.create_folder(name=folder_name, parent_id=None)
+                if result.get("status") == "success":
+                    remote_folder_id = result.get("id")
+                    logger.debug(f"Created remote folder: {folder_name}")
+            except Exception as e:
+                logger.debug(f"Could not create remote folder: {e}")
+
+        # Get existing remote files for comparison (if we need to skip existing)
+        # For LOCAL_BACKUP mode, we need to know what already exists to skip
+        remote_file_set: set[str] = set()
+        if pair.sync_mode == SyncMode.LOCAL_BACKUP:
+            # Get remote files to know what already exists
+            try:
+                entries_with_paths = manager.get_all_recursive(
+                    folder_id=remote_folder_id,
+                    path_prefix="",
+                )
+                for entry, rel_path in entries_with_paths:
+                    if entry.type != "folder":
+                        remote_file_set.add(rel_path)
+                logger.debug(f"Found {len(remote_file_set)} existing remote files")
+            except Exception as e:
+                logger.debug(f"Could not get remote files: {e}")
+
+        # Process directories using BFS (breadth-first) for level-by-level traversal
+        # Start with root directory
+        dirs_to_process = [pair.local]
+        total_files_processed = 0
+        total_dirs_processed = 0
+
+        while dirs_to_process:
+            current_dir = dirs_to_process.pop(0)
+            total_dirs_processed += 1
+
+            # Check for cancellation
+            if self.pause_controller.removed:
+                logger.debug("Sync cancelled")
+                break
+
+            # Scan single level of this directory
+            try:
+                files, subdirs = scanner.scan_local_single_level(
+                    current_dir, base_path=pair.local
+                )
+            except (OSError, PermissionError) as e:
+                logger.debug(f"Cannot scan {current_dir}: {e}")
+                continue
+
+            # Add subdirectories to processing queue
+            for subdir_rel in subdirs:
+                subdir_abs = pair.local / subdir_rel
+                dirs_to_process.append(subdir_abs)
+
+            if not files:
+                continue
+
+            # Filter files that already exist remotely (for LOCAL_BACKUP)
+            upload_files = []
+            for local_file in files:
+                if local_file.relative_path in remote_file_set:
+                    stats["skips"] += 1
+                else:
+                    upload_files.append(local_file)
+
+            if not upload_files:
+                continue
+
+            # Create upload decisions for this batch
+            upload_decisions = []
+            for local_file in upload_files:
+                decision = SyncDecision(
+                    action=SyncAction.UPLOAD,
+                    reason="New local file",
+                    local_file=local_file,
+                    remote_file=None,
+                    relative_path=local_file.relative_path,
+                )
+                upload_decisions.append(decision)
+
+            # Show progress
+            if not self.output.quiet:
+                rel_dir = (
+                    str(current_dir.relative_to(pair.local))
+                    if current_dir != pair.local
+                    else "."
+                )
+                self.output.info(
+                    f"Processing {rel_dir}: {len(upload_decisions)} file(s) to upload"
+                )
+
+            # Execute uploads for this batch
+            batch_stats = self._execute_batch_decisions(
+                batch_decisions=upload_decisions,
+                pair=pair,
+                chunk_size=chunk_size,
+                multipart_threshold=multipart_threshold,
+                progress_callback=progress_callback,
+                max_workers=max_workers,
+                start_delay=start_delay,
+            )
+
+            # Update stats
+            stats["uploads"] += batch_stats.get("uploads", 0)
+            total_files_processed += len(files)
+
+            # Log progress periodically
+            if total_dirs_processed % 100 == 0:
+                elapsed = time.time() - start_time
+                logger.debug(
+                    f"Progress: {total_dirs_processed} dirs, "
+                    f"{total_files_processed} files, "
+                    f"{stats['uploads']} uploads in {elapsed:.1f}s"
+                )
+
+        # Display summary
+        elapsed = time.time() - start_time
+        logger.debug(
+            f"Incremental sync completed: {total_dirs_processed} dirs, "
+            f"{total_files_processed} files in {elapsed:.1f}s"
+        )
+
         if not self.output.quiet:
             self._display_summary(stats, dry_run=False)
 
