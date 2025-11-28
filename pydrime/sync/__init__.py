@@ -1,6 +1,13 @@
 """Sync engine for Pydrime - unified upload/download/sync operations."""
 
 from .comparator import FileComparator, SyncDecision
+from .concurrency import (
+    AsyncSemaphore,
+    AsyncSyncPauseController,
+    ConcurrencyLimits,
+    Semaphore,
+    SyncPauseController,
+)
 from .config import SyncConfigError, load_sync_pairs_from_json
 from .engine import SyncEngine
 from .ignore import (
@@ -54,4 +61,10 @@ __all__ = [
     "load_ignore_file",
     "get_local_trash_path",
     "move_to_local_trash",
+    # Concurrency utilities
+    "Semaphore",
+    "AsyncSemaphore",
+    "ConcurrencyLimits",
+    "SyncPauseController",
+    "AsyncSyncPauseController",
 ]

@@ -19,6 +19,7 @@ from ..utils import (
     DEFAULT_RETRY_DELAY,
 )
 from .comparator import FileComparator, SyncAction, SyncDecision
+from .concurrency import ConcurrencyLimits, SyncPauseController
 from .modes import SyncMode
 from .operations import SyncOperations
 from .pair import SyncPair
@@ -33,13 +34,32 @@ logger = logging.getLogger(__name__)
 
 
 class SyncEngine:
-    """Core sync engine that orchestrates file synchronization."""
+    """Core sync engine that orchestrates file synchronization.
+
+    The engine supports:
+    - Multiple sync modes (TWO_WAY, LOCAL_BACKUP, CLOUD_BACKUP, etc.)
+    - Parallel uploads/downloads with semaphore-based concurrency control
+    - Pause/resume/cancel operations
+    - Rename/move detection
+    - Ignore patterns
+    - State tracking for incremental sync
+
+    Attributes:
+        client: Drime API client
+        output: Output formatter for displaying progress/status
+        operations: Sync operations handler
+        state_manager: State manager for tracking sync history
+        pause_controller: Controller for pause/resume/cancel operations
+        concurrency_limits: Concurrency limits for transfers and operations
+    """
 
     def __init__(
         self,
         client: DrimeClient,
         output: Optional[OutputFormatter] = None,
         state_manager: Optional[SyncStateManager] = None,
+        pause_controller: Optional[SyncPauseController] = None,
+        concurrency_limits: Optional[ConcurrencyLimits] = None,
     ):
         """Initialize sync engine.
 
@@ -48,11 +68,63 @@ class SyncEngine:
             output: Output formatter for displaying progress/status
             state_manager: Optional state manager for tracking sync history.
                           If None, a default one will be created for TWO_WAY mode.
+            pause_controller: Optional controller for pause/resume/cancel.
+                             If None, a default one will be created.
+            concurrency_limits: Optional concurrency limits for operations.
+                               Defaults to 10 transfers, 20 normal operations.
         """
         self.client = client
         self.output = output or OutputFormatter()
         self.operations = SyncOperations(client)
         self.state_manager = state_manager or SyncStateManager()
+        self.pause_controller = pause_controller or SyncPauseController()
+        self.concurrency_limits = concurrency_limits or ConcurrencyLimits()
+
+    def pause(self) -> None:
+        """Pause sync operations.
+
+        Workers will wait at the next checkpoint until resumed.
+        This does not abort current file transfers.
+        """
+        self.pause_controller.pause()
+        if not self.output.quiet:
+            self.output.info("Sync paused")
+
+    def resume(self) -> None:
+        """Resume paused sync operations.
+
+        Workers waiting at checkpoints will continue.
+        """
+        self.pause_controller.resume()
+        if not self.output.quiet:
+            self.output.info("Sync resumed")
+
+    def cancel(self) -> None:
+        """Cancel sync operations.
+
+        This sets removed=True and unpauses to allow workers to exit gracefully.
+        Current file transfers may complete before workers exit.
+        """
+        self.pause_controller.cancel()
+        if not self.output.quiet:
+            self.output.info("Sync cancelled")
+
+    @property
+    def paused(self) -> bool:
+        """Check if sync is currently paused."""
+        return self.pause_controller.paused
+
+    @property
+    def cancelled(self) -> bool:
+        """Check if sync has been cancelled."""
+        return self.pause_controller.removed
+
+    def reset(self) -> None:
+        """Reset the sync engine for a new sync operation.
+
+        This resets the pause controller state.
+        """
+        self.pause_controller.reset()
 
     def sync_pair(
         self,
@@ -1478,6 +1550,200 @@ class SyncEngine:
                         pass  # Already logged
                     progress.update(task, advance=1)
 
+    def _execute_upload(
+        self,
+        decision: SyncDecision,
+        pair: SyncPair,
+        chunk_size: int,
+        multipart_threshold: int,
+        progress_callback: Optional[Callable[[int, int], None]],
+    ) -> None:
+        """Execute an upload operation with race condition handling."""
+        local_file = decision.local_file
+        if not local_file:
+            return
+
+        # Check if local file still exists (race condition handling)
+        if not local_file.path.exists():
+            logger.debug(
+                f"Local file {decision.relative_path} no longer exists, skipping upload"
+            )
+            return
+
+        logger.debug(f"Uploading {decision.relative_path}...")
+        action_start = time.time()
+
+        # Construct full remote path including the remote folder
+        if pair.remote:
+            full_remote_path = f"{pair.remote}/{decision.relative_path}"
+        else:
+            full_remote_path = decision.relative_path
+
+        self.operations.upload_file(
+            local_file=local_file,
+            remote_path=full_remote_path,
+            workspace_id=pair.workspace_id,
+            chunk_size=chunk_size,
+            multipart_threshold=multipart_threshold,
+            progress_callback=progress_callback,
+        )
+        action_elapsed = time.time() - action_start
+        logger.debug(f"Upload of {decision.relative_path} took {action_elapsed:.2f}s")
+
+    def _execute_download(
+        self,
+        decision: SyncDecision,
+        pair: SyncPair,
+        progress_callback: Optional[Callable[[int, int], None]],
+    ) -> None:
+        """Execute a download operation with retry logic."""
+        remote_file = decision.remote_file
+        if not remote_file:
+            return
+
+        logger.debug(f"Downloading {decision.relative_path}...")
+        action_start = time.time()
+        local_path = pair.local / decision.relative_path
+
+        # Retry download for transient errors
+        max_retries = DEFAULT_MAX_RETRIES
+        retry_delay = DEFAULT_RETRY_DELAY
+
+        for attempt in range(max_retries):
+            # Check for pause/cancel between retry attempts
+            if not self.pause_controller.wait_if_paused():
+                logger.debug(
+                    f"Sync cancelled during download of {decision.relative_path}"
+                )
+                return
+
+            try:
+                self.operations.download_file(
+                    remote_file=remote_file,
+                    local_path=local_path,
+                    progress_callback=progress_callback,
+                )
+                break  # Success, exit retry loop
+            except Exception as e:
+                error_str = str(e)
+                is_retryable = any(
+                    code in error_str for code in ["429", "500", "502", "503", "504"]
+                )
+                if is_retryable and attempt < max_retries - 1:
+                    logger.debug(
+                        f"Download failed (attempt {attempt + 1}/{max_retries}), "
+                        f"retrying in {retry_delay:.1f}s: {e}"
+                    )
+                    if not self.output.quiet:
+                        self.output.warning(
+                            f"Retrying {decision.relative_path} "
+                            f"({attempt + 1}/{max_retries})..."
+                        )
+                    time.sleep(retry_delay)
+                    retry_delay *= 2.0  # Exponential backoff
+                else:
+                    raise
+
+        action_elapsed = time.time() - action_start
+        logger.debug(
+            "Download of %s took %.2fs", decision.relative_path, action_elapsed
+        )
+
+    def _execute_delete_local(self, decision: SyncDecision, pair: SyncPair) -> None:
+        """Execute a local delete operation with race condition handling."""
+        local_file = decision.local_file
+        if not local_file:
+            return
+
+        # Race condition handling: check if file still exists
+        if not local_file.path.exists():
+            logger.debug(
+                f"Local file {decision.relative_path} already deleted, skipping"
+            )
+            return
+
+        try:
+            self.operations.delete_local(
+                local_file=local_file,
+                use_trash=pair.use_local_trash,
+                sync_root=pair.local,
+            )
+        except FileNotFoundError:
+            logger.debug(
+                f"Local file {decision.relative_path} was deleted during "
+                "operation, continuing"
+            )
+
+    def _execute_delete_remote(self, decision: SyncDecision) -> None:
+        """Execute a remote delete operation with race condition handling."""
+        remote_file = decision.remote_file
+        if not remote_file:
+            return
+
+        try:
+            self.operations.delete_remote(remote_file=remote_file, permanent=False)
+        except Exception as e:
+            # Race condition handling: ignore if file doesn't exist
+            error_str = str(e).lower()
+            if "not found" in error_str or "404" in str(e):
+                logger.debug(f"Remote file {decision.relative_path} already deleted")
+            else:
+                raise
+
+    def _execute_rename_local(self, decision: SyncDecision, pair: SyncPair) -> None:
+        """Execute a local rename operation with race condition handling."""
+        local_file = decision.local_file
+        if not local_file or not decision.new_path:
+            return
+
+        # Race condition handling: check if source still exists
+        if not local_file.path.exists():
+            logger.debug(
+                f"Local file {decision.old_path} no longer exists, skipping rename"
+            )
+            return
+
+        logger.debug(f"Renaming local {decision.old_path} -> {decision.new_path}")
+        action_start = time.time()
+
+        try:
+            self.operations.rename_local(
+                local_file=local_file,
+                new_relative_path=decision.new_path,
+                sync_root=pair.local,
+            )
+            action_elapsed = time.time() - action_start
+            logger.debug(f"Local rename took {action_elapsed:.2f}s")
+        except FileNotFoundError:
+            logger.debug(f"Local file {decision.old_path} was deleted during rename")
+
+    def _execute_rename_remote(self, decision: SyncDecision) -> None:
+        """Execute a remote rename operation with race condition handling."""
+        remote_file = decision.remote_file
+        if not remote_file or not decision.new_path:
+            return
+
+        logger.debug(f"Renaming remote {decision.old_path} -> {decision.new_path}")
+        action_start = time.time()
+
+        try:
+            # Extract just the filename from the new path
+            new_name = decision.new_path.rsplit("/", 1)[-1]
+            self.operations.rename_remote(
+                remote_file=remote_file,
+                new_name=new_name,
+                new_parent_id=None,  # Same folder for now
+            )
+            action_elapsed = time.time() - action_start
+            logger.debug(f"Remote rename took {action_elapsed:.2f}s")
+        except Exception as e:
+            # Race condition handling: ignore if file doesn't exist
+            error_str = str(e).lower()
+            if "not found" in error_str or "404" in str(e):
+                logger.debug(f"Remote file {decision.old_path} no longer exists")
+            else:
+                raise
+
     def _execute_single_decision(
         self,
         decision: SyncDecision,
@@ -1488,144 +1754,39 @@ class SyncEngine:
     ) -> None:
         """Execute a single sync decision.
 
+        Dispatches to appropriate handler method based on action type.
+        Includes pause checkpoint before execution.
+
         Args:
             decision: Sync decision to execute
             pair: Sync pair configuration
             chunk_size: Chunk size for multipart uploads
             multipart_threshold: Threshold for multipart uploads
             progress_callback: Optional progress callback
+
+        Raises:
+            Exception: If the operation fails and file still exists
         """
+        # Check for pause/cancel before each operation
+        if not self.pause_controller.wait_if_paused():
+            logger.debug(f"Sync cancelled, skipping {decision.relative_path}")
+            return
+
         try:
-            action_start = time.time()
-
             if decision.action == SyncAction.UPLOAD:
-                local_file = decision.local_file
-                if local_file:
-                    logger.debug(f"Uploading {decision.relative_path}...")
-
-                    # Construct full remote path including the remote folder
-                    if pair.remote:
-                        full_remote_path = f"{pair.remote}/{decision.relative_path}"
-                    else:
-                        full_remote_path = decision.relative_path
-
-                    self.operations.upload_file(
-                        local_file=local_file,
-                        remote_path=full_remote_path,
-                        workspace_id=pair.workspace_id,
-                        chunk_size=chunk_size,
-                        multipart_threshold=multipart_threshold,
-                        progress_callback=progress_callback,
-                    )
-                    action_elapsed = time.time() - action_start
-                    logger.debug(
-                        f"Upload of {decision.relative_path} took {action_elapsed:.2f}s"
-                    )
-
+                self._execute_upload(
+                    decision, pair, chunk_size, multipart_threshold, progress_callback
+                )
             elif decision.action == SyncAction.DOWNLOAD:
-                remote_file = decision.remote_file
-                if remote_file:
-                    logger.debug(f"Downloading {decision.relative_path}...")
-                    local_path = pair.local / decision.relative_path
-
-                    # Retry download for transient errors
-                    # This handles cases where recently uploaded files aren't
-                    # immediately available for download, or server-side issues
-                    max_retries = DEFAULT_MAX_RETRIES
-                    retry_delay = DEFAULT_RETRY_DELAY
-
-                    for attempt in range(max_retries):
-                        try:
-                            self.operations.download_file(
-                                remote_file=remote_file,
-                                local_path=local_path,
-                                progress_callback=progress_callback,
-                            )
-                            break  # Success, exit retry loop
-                        except Exception as e:
-                            error_str = str(e)
-                            # Retry on 429 (rate limit), 500/502/503/504 (server errors)
-                            # Note: 403 usually means permission denied, not transient
-                            is_retryable = any(
-                                code in error_str
-                                for code in ["429", "500", "502", "503", "504"]
-                            )
-                            if is_retryable and attempt < max_retries - 1:
-                                # Transient error, wait and retry
-                                msg = (
-                                    f"Download failed "
-                                    f"(attempt {attempt + 1}/{max_retries}), "
-                                    f"retrying in {retry_delay:.1f}s: {e}"
-                                )
-                                logger.debug(msg)
-                                if not self.output.quiet:
-                                    self.output.warning(
-                                        f"Retrying {decision.relative_path} "
-                                        f"({attempt + 1}/{max_retries})..."
-                                    )
-                                time.sleep(retry_delay)
-                                retry_delay *= 2.0  # Exponential backoff
-                            else:
-                                # Not retryable or final attempt, re-raise
-                                raise
-
-                    action_elapsed = time.time() - action_start
-                    logger.debug(
-                        "Download of %s took %.2fs",
-                        decision.relative_path,
-                        action_elapsed,
-                    )
-
+                self._execute_download(decision, pair, progress_callback)
             elif decision.action == SyncAction.DELETE_LOCAL:
-                local_file = decision.local_file
-                if local_file:
-                    self.operations.delete_local(
-                        local_file=local_file,
-                        use_trash=pair.use_local_trash,
-                        sync_root=pair.local,
-                    )
-
+                self._execute_delete_local(decision, pair)
             elif decision.action == SyncAction.DELETE_REMOTE:
-                remote_file = decision.remote_file
-                if remote_file:
-                    self.operations.delete_remote(
-                        remote_file=remote_file,
-                        permanent=False,
-                    )
-
+                self._execute_delete_remote(decision)
             elif decision.action == SyncAction.RENAME_LOCAL:
-                # Rename local file to match remote rename
-                local_file = decision.local_file
-                if local_file and decision.new_path:
-                    logger.debug(
-                        f"Renaming local {decision.old_path} -> {decision.new_path}"
-                    )
-                    self.operations.rename_local(
-                        local_file=local_file,
-                        new_relative_path=decision.new_path,
-                        sync_root=pair.local,
-                    )
-                    action_elapsed = time.time() - action_start
-                    logger.debug(f"Local rename took {action_elapsed:.2f}s")
-
+                self._execute_rename_local(decision, pair)
             elif decision.action == SyncAction.RENAME_REMOTE:
-                # Rename remote file to match local rename
-                remote_file = decision.remote_file
-                if remote_file and decision.new_path:
-                    logger.debug(
-                        f"Renaming remote {decision.old_path} -> {decision.new_path}"
-                    )
-                    # Extract just the filename from the new path
-                    new_name = decision.new_path.rsplit("/", 1)[-1]
-                    # TODO: For full move support, need to resolve new parent folder ID
-                    # For now, just do rename (same folder)
-                    self.operations.rename_remote(
-                        remote_file=remote_file,
-                        new_name=new_name,
-                        new_parent_id=None,  # Same folder for now
-                    )
-                    action_elapsed = time.time() - action_start
-                    logger.debug(f"Remote rename took {action_elapsed:.2f}s")
+                self._execute_rename_remote(decision)
 
         except Exception as e:
             if not self.output.quiet:
@@ -1722,6 +1883,10 @@ class SyncEngine:
     ) -> dict:
         """Execute sync decisions in parallel using ThreadPoolExecutor.
 
+        Uses semaphore-based concurrency control following filen-sync's pattern:
+        - Transfers (uploads/downloads) use a separate semaphore (default: 10)
+        - Normal operations use a separate semaphore (default: 20)
+
         Args:
             decisions: List of sync decisions to execute
             pair: Sync pair configuration
@@ -1750,42 +1915,61 @@ class SyncEngine:
             "renames_remote": 0,
         }
 
-        def execute_with_timing(
+        def execute_with_semaphore(
             decision: SyncDecision,
             worker_delay: float,
         ) -> tuple[str, float, bool, SyncAction]:
-            """Execute a single decision and return timing info."""
+            """Execute a single decision with semaphore control."""
+            # Check for cancellation before starting
+            if self.pause_controller.removed:
+                return decision.relative_path, 0.0, False, decision.action
+
             # Apply staggered start delay
             if worker_delay > 0:
                 time.sleep(worker_delay)
 
-            start = time.time()
-            success = True
-            try:
-                self._execute_single_decision(
-                    decision,
-                    pair,
-                    chunk_size,
-                    multipart_threshold,
-                    progress_callback,
-                )
-            except Exception as e:
-                if not self.output.quiet:
-                    self.output.error(f"Error syncing {decision.relative_path}: {e}")
-                success = False
-            elapsed = time.time() - start
-            return decision.relative_path, elapsed, success, decision.action
+            # Determine if this is a transfer operation
+            is_transfer = decision.action in [SyncAction.UPLOAD, SyncAction.DOWNLOAD]
+            semaphore = self.concurrency_limits.get_semaphore_for_operation(is_transfer)
 
-        # Execute in parallel with staggered start delays
+            # Acquire semaphore before execution
+            with semaphore:
+                start = time.time()
+                success = True
+                try:
+                    self._execute_single_decision(
+                        decision,
+                        pair,
+                        chunk_size,
+                        multipart_threshold,
+                        progress_callback,
+                    )
+                except Exception as e:
+                    if not self.output.quiet:
+                        self.output.error(
+                            f"Error syncing {decision.relative_path}: {e}"
+                        )
+                    success = False
+                elapsed = time.time() - start
+                return decision.relative_path, elapsed, success, decision.action
+
+        # Execute in parallel with staggered start delays and semaphore control
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(
-                    execute_with_timing, decision, i * start_delay
+                    execute_with_semaphore, decision, i * start_delay
                 ): decision
                 for i, decision in enumerate(decisions)
             }
 
             for future in as_completed(futures):
+                # Check for cancellation
+                if self.pause_controller.removed:
+                    logger.debug("Sync cancelled, stopping parallel execution")
+                    # Note: We don't cancel running futures as they may leave
+                    # files in inconsistent state. They will complete naturally.
+                    break
+
                 try:
                     path, elapsed, success, action = future.result()
                     if success:
