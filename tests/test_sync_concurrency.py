@@ -360,9 +360,13 @@ class TestAsyncSyncPauseController:
 
     def test_initial_state(self):
         """Test initial state is not paused and not removed."""
-        controller = AsyncSyncPauseController()
-        assert controller.paused is False
-        assert controller.removed is False
+
+        async def run_test():
+            controller = AsyncSyncPauseController()
+            assert controller.paused is False
+            assert controller.removed is False
+
+        asyncio.run(run_test())
 
     def test_pause(self):
         """Test pausing sync."""
