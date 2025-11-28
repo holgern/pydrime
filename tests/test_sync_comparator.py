@@ -26,7 +26,7 @@ class TestHandleLocalOnly:
         comparator = FileComparator(SyncMode.TWO_WAY)
         local_file = self._create_local_file()
 
-        decision = comparator._handle_local_only("test.txt", local_file)
+        decision = comparator._handle_local_only("test.txt", local_file, {}, {})
 
         assert decision.action == SyncAction.UPLOAD
         assert decision.reason == "New local file"
@@ -36,7 +36,7 @@ class TestHandleLocalOnly:
         comparator = FileComparator(SyncMode.LOCAL_TO_CLOUD)
         local_file = self._create_local_file()
 
-        decision = comparator._handle_local_only("test.txt", local_file)
+        decision = comparator._handle_local_only("test.txt", local_file, {}, {})
 
         assert decision.action == SyncAction.UPLOAD
         assert decision.reason == "New local file"
@@ -46,7 +46,7 @@ class TestHandleLocalOnly:
         comparator = FileComparator(SyncMode.LOCAL_BACKUP)
         local_file = self._create_local_file()
 
-        decision = comparator._handle_local_only("test.txt", local_file)
+        decision = comparator._handle_local_only("test.txt", local_file, {}, {})
 
         assert decision.action == SyncAction.UPLOAD
         assert decision.reason == "New local file"
@@ -56,7 +56,7 @@ class TestHandleLocalOnly:
         comparator = FileComparator(SyncMode.CLOUD_TO_LOCAL)
         local_file = self._create_local_file()
 
-        decision = comparator._handle_local_only("test.txt", local_file)
+        decision = comparator._handle_local_only("test.txt", local_file, {}, {})
 
         assert decision.action == SyncAction.DELETE_LOCAL
         assert decision.reason == "File deleted from cloud"
@@ -66,7 +66,7 @@ class TestHandleLocalOnly:
         comparator = FileComparator(SyncMode.CLOUD_BACKUP)
         local_file = self._create_local_file()
 
-        decision = comparator._handle_local_only("test.txt", local_file)
+        decision = comparator._handle_local_only("test.txt", local_file, {}, {})
 
         assert decision.action == SyncAction.SKIP
         assert "prevents action" in decision.reason
@@ -93,7 +93,7 @@ class TestHandleRemoteOnly:
         comparator = FileComparator(SyncMode.TWO_WAY)
         remote_file = self._create_remote_file()
 
-        decision = comparator._handle_remote_only("test.txt", remote_file)
+        decision = comparator._handle_remote_only("test.txt", remote_file, {}, {})
 
         assert decision.action == SyncAction.DOWNLOAD
         assert decision.reason == "New remote file"
@@ -103,7 +103,7 @@ class TestHandleRemoteOnly:
         comparator = FileComparator(SyncMode.CLOUD_TO_LOCAL)
         remote_file = self._create_remote_file()
 
-        decision = comparator._handle_remote_only("test.txt", remote_file)
+        decision = comparator._handle_remote_only("test.txt", remote_file, {}, {})
 
         assert decision.action == SyncAction.DOWNLOAD
         assert decision.reason == "New remote file"
@@ -113,7 +113,7 @@ class TestHandleRemoteOnly:
         comparator = FileComparator(SyncMode.LOCAL_TO_CLOUD)
         remote_file = self._create_remote_file()
 
-        decision = comparator._handle_remote_only("test.txt", remote_file)
+        decision = comparator._handle_remote_only("test.txt", remote_file, {}, {})
 
         assert decision.action == SyncAction.DELETE_REMOTE
         assert decision.reason == "File deleted locally"
@@ -123,7 +123,7 @@ class TestHandleRemoteOnly:
         comparator = FileComparator(SyncMode.LOCAL_BACKUP)
         remote_file = self._create_remote_file()
 
-        decision = comparator._handle_remote_only("test.txt", remote_file)
+        decision = comparator._handle_remote_only("test.txt", remote_file, {}, {})
 
         assert decision.action == SyncAction.SKIP
         assert "prevents action" in decision.reason

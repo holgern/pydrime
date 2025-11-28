@@ -156,15 +156,21 @@ class SyncEngine:
         Returns:
             Dictionary with sync statistics
         """
-        # Load previous sync state for TWO_WAY mode (for deletion detection)
+        # Load previous sync state for TWO_WAY mode (for deletion and rename detection)
         previous_synced_files: set[str] = set()
+        previous_local_tree = None
+        previous_remote_tree = None
         if pair.sync_mode == SyncMode.TWO_WAY:
             state = self.state_manager.load_state(pair.local, pair.remote)
             if state:
                 previous_synced_files = state.synced_files
+                previous_local_tree = state.local_tree
+                previous_remote_tree = state.remote_tree
                 logger.debug(
                     f"Loaded previous sync state with "
-                    f"{len(previous_synced_files)} files"
+                    f"{len(previous_synced_files)} files, "
+                    f"local_tree: {state.local_tree.size}, "
+                    f"remote_tree: {state.remote_tree.size}"
                 )
 
         # Step 1: Scan files
@@ -201,8 +207,13 @@ class SyncEngine:
         local_file_map = {f.relative_path: f for f in local_files}
         remote_file_map = {f.relative_path: f for f in remote_files}
 
-        # Step 2: Compare files and determine actions
-        comparator = FileComparator(pair.sync_mode, previous_synced_files)
+        # Step 2: Compare files and determine actions (with rename detection)
+        comparator = FileComparator(
+            pair.sync_mode,
+            previous_synced_files,
+            previous_local_tree,
+            previous_remote_tree,
+        )
         decisions = comparator.compare_files(local_file_map, remote_file_map)
 
         # Step 3: Display plan
@@ -308,6 +319,8 @@ class SyncEngine:
         logger.debug(f"Starting streaming sync at {start_time:.2f}")
 
         # Load previous sync state for TWO_WAY mode (for deletion detection)
+        # NOTE: Rename detection using previous trees is not yet implemented
+        # for streaming mode - only traditional mode supports it
         previous_synced_files: set[str] = set()
         if pair.sync_mode == SyncMode.TWO_WAY:
             state = self.state_manager.load_state(pair.local, pair.remote)
@@ -315,7 +328,9 @@ class SyncEngine:
                 previous_synced_files = state.synced_files
                 logger.debug(
                     f"Loaded previous sync state with "
-                    f"{len(previous_synced_files)} files"
+                    f"{len(previous_synced_files)} files, "
+                    f"local_tree: {state.local_tree.size}, "
+                    f"remote_tree: {state.remote_tree.size}"
                 )
 
         # Step 1: Scan local files if needed
@@ -444,6 +459,8 @@ class SyncEngine:
             "downloads": 0,
             "deletes_local": 0,
             "deletes_remote": 0,
+            "renames_local": 0,
+            "renames_remote": 0,
             "skips": 0,
             "conflicts": 0,
         }
@@ -838,6 +855,10 @@ class SyncEngine:
                 stats["deletes_local"] += 1
             elif decision.action == SyncAction.DELETE_REMOTE:
                 stats["deletes_remote"] += 1
+            elif decision.action == SyncAction.RENAME_LOCAL:
+                stats["renames_local"] = stats.get("renames_local", 0) + 1
+            elif decision.action == SyncAction.RENAME_REMOTE:
+                stats["renames_remote"] = stats.get("renames_remote", 0) + 1
         except Exception as e:
             if not self.output.quiet:
                 self.output.error(f"Failed to sync {decision.relative_path}: {e}")
@@ -1002,6 +1023,8 @@ class SyncEngine:
             "downloads": 0,
             "deletes_local": 0,
             "deletes_remote": 0,
+            "renames_local": 0,
+            "renames_remote": 0,
             "skips": 0,
             "conflicts": 0,
         }
@@ -1015,6 +1038,10 @@ class SyncEngine:
                 stats["deletes_local"] += 1
             elif decision.action == SyncAction.DELETE_REMOTE:
                 stats["deletes_remote"] += 1
+            elif decision.action == SyncAction.RENAME_LOCAL:
+                stats["renames_local"] += 1
+            elif decision.action == SyncAction.RENAME_REMOTE:
+                stats["renames_remote"] += 1
             elif decision.action == SyncAction.CONFLICT:
                 stats["conflicts"] += 1
             elif decision.action == SyncAction.SKIP:
@@ -1043,6 +1070,10 @@ class SyncEngine:
             self.output.info(f"  ↑ Upload: {stats['uploads']} file(s)")
         if stats["downloads"] > 0:
             self.output.info(f"  ↓ Download: {stats['downloads']} file(s)")
+        if stats.get("renames_local", 0) > 0:
+            self.output.info(f"  → Rename local: {stats['renames_local']} file(s)")
+        if stats.get("renames_remote", 0) > 0:
+            self.output.info(f"  → Rename remote: {stats['renames_remote']} file(s)")
         if stats["deletes_local"] > 0:
             self.output.info(f"  ✗ Delete local: {stats['deletes_local']} file(s)")
         if stats["deletes_remote"] > 0:
@@ -1101,7 +1132,15 @@ class SyncEngine:
         max_workers: int = 1,
         start_delay: float = 0.0,
     ) -> None:
-        """Execute sync decisions.
+        """Execute sync decisions in optimal order.
+
+        Execution order (based on filen-sync best practices):
+        1. Local renames/moves - do first to preserve file identity
+        2. Remote renames/moves - do second to preserve file identity
+        3. Local deletions - clean up before creating new files
+        4. Remote deletions - clean up before uploading new files
+        5. File uploads (can be parallel)
+        6. File downloads (can be parallel)
 
         Args:
             decisions: List of sync decisions
@@ -1121,18 +1160,276 @@ class SyncEngine:
         if not actionable:
             return
 
+        # Sort decisions by execution order priority
+        # Order: renames (local then remote) -> deletes -> uploads -> downloads
+        def get_action_priority(decision: SyncDecision) -> int:
+            priorities = {
+                SyncAction.RENAME_LOCAL: 0,  # Local renames first
+                SyncAction.RENAME_REMOTE: 1,  # Remote renames second
+                SyncAction.DELETE_LOCAL: 2,  # Local deletes third
+                SyncAction.DELETE_REMOTE: 3,  # Remote deletes fourth
+                SyncAction.UPLOAD: 4,  # Uploads fifth
+                SyncAction.DOWNLOAD: 5,  # Downloads sixth
+            }
+            return priorities.get(decision.action, 99)
+
+        ordered_decisions = sorted(actionable, key=get_action_priority)
+
+        # Group decisions by action type for execution
+        rename_local = [
+            d for d in ordered_decisions if d.action == SyncAction.RENAME_LOCAL
+        ]
+        rename_remote = [
+            d for d in ordered_decisions if d.action == SyncAction.RENAME_REMOTE
+        ]
+        delete_local = [
+            d for d in ordered_decisions if d.action == SyncAction.DELETE_LOCAL
+        ]
+        delete_remote = [
+            d for d in ordered_decisions if d.action == SyncAction.DELETE_REMOTE
+        ]
+        uploads = [d for d in ordered_decisions if d.action == SyncAction.UPLOAD]
+        downloads = [d for d in ordered_decisions if d.action == SyncAction.DOWNLOAD]
+
         # Pre-create remote folders before parallel uploads to avoid race conditions
         # when multiple uploads try to create the same parent folder simultaneously
-        if max_workers > 1:
-            upload_count = sum(1 for d in actionable if d.action == SyncAction.UPLOAD)
-            if upload_count > 1:
-                self._ensure_remote_folders_exist(actionable, pair)
+        if max_workers > 1 and len(uploads) > 1:
+            self._ensure_remote_folders_exist(uploads, pair)
 
+        # Execute in order (sequential for renames and deletes, parallel for transfers)
         if self.output.quiet:
-            # Execute without progress display
-            if max_workers > 1 and len(actionable) > 1:
+            self._execute_ordered_quiet(
+                rename_local,
+                rename_remote,
+                delete_local,
+                delete_remote,
+                uploads,
+                downloads,
+                pair,
+                chunk_size,
+                multipart_threshold,
+                progress_callback,
+                max_workers,
+                start_delay,
+            )
+        else:
+            self._execute_ordered_with_progress(
+                rename_local,
+                rename_remote,
+                delete_local,
+                delete_remote,
+                uploads,
+                downloads,
+                pair,
+                chunk_size,
+                multipart_threshold,
+                progress_callback,
+                max_workers,
+                start_delay,
+            )
+
+    def _execute_ordered_quiet(
+        self,
+        rename_local: list[SyncDecision],
+        rename_remote: list[SyncDecision],
+        delete_local: list[SyncDecision],
+        delete_remote: list[SyncDecision],
+        uploads: list[SyncDecision],
+        downloads: list[SyncDecision],
+        pair: SyncPair,
+        chunk_size: int,
+        multipart_threshold: int,
+        progress_callback: Optional[Callable[[int, int], None]],
+        max_workers: int,
+        start_delay: float,
+    ) -> None:
+        """Execute decisions in order without progress display.
+
+        Args:
+            rename_local: Local rename decisions
+            rename_remote: Remote rename decisions
+            delete_local: Local delete decisions
+            delete_remote: Remote delete decisions
+            uploads: Upload decisions
+            downloads: Download decisions
+            pair: Sync pair configuration
+            chunk_size: Chunk size for multipart uploads
+            multipart_threshold: Threshold for multipart uploads
+            progress_callback: Optional progress callback
+            max_workers: Number of parallel workers
+            start_delay: Delay between parallel operations
+        """
+        # 1. Execute local renames (sequential)
+        for decision in rename_local:
+            try:
+                self._execute_single_decision(
+                    decision, pair, chunk_size, multipart_threshold, None
+                )
+            except Exception:
+                pass  # Already logged
+
+        # 2. Execute remote renames (sequential)
+        for decision in rename_remote:
+            try:
+                self._execute_single_decision(
+                    decision, pair, chunk_size, multipart_threshold, None
+                )
+            except Exception:
+                pass  # Already logged
+
+        # 3. Execute local deletes (sequential)
+        for decision in delete_local:
+            try:
+                self._execute_single_decision(
+                    decision, pair, chunk_size, multipart_threshold, None
+                )
+            except Exception:
+                pass  # Already logged
+
+        # 4. Execute remote deletes (sequential)
+        for decision in delete_remote:
+            try:
+                self._execute_single_decision(
+                    decision, pair, chunk_size, multipart_threshold, None
+                )
+            except Exception:
+                pass  # Already logged
+
+        # 5. Execute uploads (can be parallel)
+        if max_workers > 1 and len(uploads) > 1:
+            self._execute_decisions_parallel(
+                uploads,
+                pair,
+                chunk_size,
+                multipart_threshold,
+                progress_callback,
+                max_workers,
+                start_delay,
+            )
+        else:
+            for decision in uploads:
+                try:
+                    self._execute_single_decision(
+                        decision,
+                        pair,
+                        chunk_size,
+                        multipart_threshold,
+                        progress_callback,
+                    )
+                except Exception:
+                    pass  # Already logged
+
+        # 6. Execute downloads (can be parallel)
+        if max_workers > 1 and len(downloads) > 1:
+            self._execute_decisions_parallel(
+                downloads,
+                pair,
+                chunk_size,
+                multipart_threshold,
+                progress_callback,
+                max_workers,
+                start_delay,
+            )
+        else:
+            for decision in downloads:
+                try:
+                    self._execute_single_decision(
+                        decision,
+                        pair,
+                        chunk_size,
+                        multipart_threshold,
+                        progress_callback,
+                    )
+                except Exception:
+                    pass  # Already logged
+
+    def _execute_ordered_with_progress(
+        self,
+        rename_local: list[SyncDecision],
+        rename_remote: list[SyncDecision],
+        delete_local: list[SyncDecision],
+        delete_remote: list[SyncDecision],
+        uploads: list[SyncDecision],
+        downloads: list[SyncDecision],
+        pair: SyncPair,
+        chunk_size: int,
+        multipart_threshold: int,
+        progress_callback: Optional[Callable[[int, int], None]],
+        max_workers: int,
+        start_delay: float,
+    ) -> None:
+        """Execute decisions in order with progress display.
+
+        Args:
+            rename_local: Local rename decisions
+            rename_remote: Remote rename decisions
+            delete_local: Local delete decisions
+            delete_remote: Remote delete decisions
+            uploads: Upload decisions
+            downloads: Download decisions
+            pair: Sync pair configuration
+            chunk_size: Chunk size for multipart uploads
+            multipart_threshold: Threshold for multipart uploads
+            progress_callback: Optional progress callback
+            max_workers: Number of parallel workers
+            start_delay: Delay between parallel operations
+        """
+        total = (
+            len(rename_local)
+            + len(rename_remote)
+            + len(delete_local)
+            + len(delete_remote)
+            + len(uploads)
+            + len(downloads)
+        )
+
+        with Progress() as progress:
+            task = progress.add_task("Syncing files...", total=total)
+
+            # 1. Execute local renames (sequential)
+            for decision in rename_local:
+                try:
+                    self._execute_single_decision(
+                        decision, pair, chunk_size, multipart_threshold, None
+                    )
+                except Exception:
+                    pass  # Already logged
+                progress.update(task, advance=1)
+
+            # 2. Execute remote renames (sequential)
+            for decision in rename_remote:
+                try:
+                    self._execute_single_decision(
+                        decision, pair, chunk_size, multipart_threshold, None
+                    )
+                except Exception:
+                    pass  # Already logged
+                progress.update(task, advance=1)
+
+            # 3. Execute local deletes (sequential)
+            for decision in delete_local:
+                try:
+                    self._execute_single_decision(
+                        decision, pair, chunk_size, multipart_threshold, None
+                    )
+                except Exception:
+                    pass  # Already logged
+                progress.update(task, advance=1)
+
+            # 4. Execute remote deletes (sequential)
+            for decision in delete_remote:
+                try:
+                    self._execute_single_decision(
+                        decision, pair, chunk_size, multipart_threshold, None
+                    )
+                except Exception:
+                    pass  # Already logged
+                progress.update(task, advance=1)
+
+            # 5. Execute uploads (can be parallel)
+            if max_workers > 1 and len(uploads) > 1:
                 self._execute_decisions_parallel(
-                    actionable,
+                    uploads,
                     pair,
                     chunk_size,
                     multipart_threshold,
@@ -1140,55 +1437,46 @@ class SyncEngine:
                     max_workers,
                     start_delay,
                 )
+                progress.update(task, advance=len(uploads))
             else:
-                for decision in actionable:
+                for decision in uploads:
                     try:
                         self._execute_single_decision(
-                            decision, pair, chunk_size, multipart_threshold, None
+                            decision,
+                            pair,
+                            chunk_size,
+                            multipart_threshold,
+                            progress_callback,
                         )
                     except Exception:
-                        # Log error but continue with remaining files
-                        pass  # Already logged in _execute_single_decision
-        else:
-            # Execute with progress display
-            if max_workers > 1 and len(actionable) > 1:
-                with Progress() as progress:
-                    task = progress.add_task("Syncing files...", total=len(actionable))
-                    # For parallel execution, we update progress as futures complete
-                    stats = self._execute_decisions_parallel(
-                        actionable,
-                        pair,
-                        chunk_size,
-                        multipart_threshold,
-                        progress_callback,
-                        max_workers,
-                        start_delay,
-                    )
-                    # Update progress to completion
-                    completed = (
-                        stats["uploads"]
-                        + stats["downloads"]
-                        + stats["deletes_local"]
-                        + stats["deletes_remote"]
-                    )
-                    progress.update(task, completed=completed)
-            else:
-                with Progress() as progress:
-                    task = progress.add_task("Syncing files...", total=len(actionable))
+                        pass  # Already logged
+                    progress.update(task, advance=1)
 
-                    for decision in actionable:
-                        try:
-                            self._execute_single_decision(
-                                decision,
-                                pair,
-                                chunk_size,
-                                multipart_threshold,
-                                progress_callback,
-                            )
-                        except Exception:
-                            # Log error but continue with remaining files
-                            pass  # Already logged in _execute_single_decision
-                        progress.update(task, advance=1)
+            # 6. Execute downloads (can be parallel)
+            if max_workers > 1 and len(downloads) > 1:
+                self._execute_decisions_parallel(
+                    downloads,
+                    pair,
+                    chunk_size,
+                    multipart_threshold,
+                    progress_callback,
+                    max_workers,
+                    start_delay,
+                )
+                progress.update(task, advance=len(downloads))
+            else:
+                for decision in downloads:
+                    try:
+                        self._execute_single_decision(
+                            decision,
+                            pair,
+                            chunk_size,
+                            multipart_threshold,
+                            progress_callback,
+                        )
+                    except Exception:
+                        pass  # Already logged
+                    progress.update(task, advance=1)
 
     def _execute_single_decision(
         self,
@@ -1304,6 +1592,40 @@ class SyncEngine:
                         remote_file=remote_file,
                         permanent=False,
                     )
+
+            elif decision.action == SyncAction.RENAME_LOCAL:
+                # Rename local file to match remote rename
+                local_file = decision.local_file
+                if local_file and decision.new_path:
+                    logger.debug(
+                        f"Renaming local {decision.old_path} -> {decision.new_path}"
+                    )
+                    self.operations.rename_local(
+                        local_file=local_file,
+                        new_relative_path=decision.new_path,
+                        sync_root=pair.local,
+                    )
+                    action_elapsed = time.time() - action_start
+                    logger.debug(f"Local rename took {action_elapsed:.2f}s")
+
+            elif decision.action == SyncAction.RENAME_REMOTE:
+                # Rename remote file to match local rename
+                remote_file = decision.remote_file
+                if remote_file and decision.new_path:
+                    logger.debug(
+                        f"Renaming remote {decision.old_path} -> {decision.new_path}"
+                    )
+                    # Extract just the filename from the new path
+                    new_name = decision.new_path.rsplit("/", 1)[-1]
+                    # TODO: For full move support, need to resolve new parent folder ID
+                    # For now, just do rename (same folder)
+                    self.operations.rename_remote(
+                        remote_file=remote_file,
+                        new_name=new_name,
+                        new_parent_id=None,  # Same folder for now
+                    )
+                    action_elapsed = time.time() - action_start
+                    logger.debug(f"Remote rename took {action_elapsed:.2f}s")
 
         except Exception as e:
             if not self.output.quiet:
@@ -1424,6 +1746,8 @@ class SyncEngine:
             "downloads": 0,
             "deletes_local": 0,
             "deletes_remote": 0,
+            "renames_local": 0,
+            "renames_remote": 0,
         }
 
         def execute_with_timing(
@@ -1474,6 +1798,10 @@ class SyncEngine:
                             stats["deletes_local"] += 1
                         elif action == SyncAction.DELETE_REMOTE:
                             stats["deletes_remote"] += 1
+                        elif action == SyncAction.RENAME_LOCAL:
+                            stats["renames_local"] += 1
+                        elif action == SyncAction.RENAME_REMOTE:
+                            stats["renames_remote"] += 1
 
                         logger.debug(f"Completed {path} in {elapsed:.2f}s")
                     else:
@@ -1657,6 +1985,8 @@ class SyncEngine:
             + stats["downloads"]
             + stats["deletes_local"]
             + stats["deletes_remote"]
+            + stats.get("renames_local", 0)
+            + stats.get("renames_remote", 0)
         )
 
         if total_actions > 0:
@@ -1665,6 +1995,10 @@ class SyncEngine:
                 self.output.info(f"  Uploaded: {stats['uploads']}")
             if stats["downloads"] > 0:
                 self.output.info(f"  Downloaded: {stats['downloads']}")
+            if stats.get("renames_local", 0) > 0:
+                self.output.info(f"  Renamed locally: {stats['renames_local']}")
+            if stats.get("renames_remote", 0) > 0:
+                self.output.info(f"  Renamed remotely: {stats['renames_remote']}")
             if stats["deletes_local"] > 0:
                 self.output.info(f"  Deleted locally: {stats['deletes_local']}")
             if stats["deletes_remote"] > 0:
