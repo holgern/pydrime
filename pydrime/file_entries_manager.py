@@ -221,9 +221,16 @@ class FileEntriesManager:
         Returns:
             FileEntry if found, None otherwise
         """
+        logger.debug(
+            f"find_folder_by_name: searching for '{folder_name}' "
+            f"in workspace_id={self.workspace_id}, parent_id={parent_id}"
+        )
         # Try search API first for faster lookups
         folders = self.search_by_name(
             query=folder_name, exact_match=True, entry_type="folder", per_page=50
+        )
+        logger.debug(
+            f"find_folder_by_name: search_by_name returned {len(folders)} folders"
         )
 
         # If parent_id specified, filter by parent

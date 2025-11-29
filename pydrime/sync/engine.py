@@ -592,12 +592,23 @@ class SyncEngine:
             exclude_dot_files=pair.exclude_dot_files,
         )
         manager = FileEntriesManager(self.client, pair.workspace_id)
+        logger.debug(
+            f"FileEntriesManager created with workspace_id={pair.workspace_id}"
+        )
         stats = self._create_empty_stats()
 
         # Setup remote folder and get existing files
         remote_folder_id = self._setup_incremental_remote(pair, manager, dry_run)
+        logger.debug(
+            f"Remote folder setup: remote='{pair.remote}', "
+            f"folder_id={remote_folder_id}, dry_run={dry_run}"
+        )
         remote_file_set, remote_file_ids, remote_file_sizes = self._get_remote_file_set(
             pair, manager, remote_folder_id
+        )
+        logger.debug(
+            f"Remote file set: {len(remote_file_set)} files found in workspace "
+            f"{pair.workspace_id}, folder_id={remote_folder_id}"
         )
 
         # Track all local files seen (for deletion detection)
@@ -1394,24 +1405,41 @@ class SyncEngine:
         if pair.remote and pair.remote != "/":
             try:
                 # Strip leading slash for folder lookup
-                folder_name = pair.remote.lstrip("/")
-                logger.debug("Resolving folder: %s", folder_name)
+                folder_path = pair.remote.lstrip("/")
+                logger.debug("Resolving folder path: %s", folder_path)
 
-                # Search in root folder (parent_id=0 for root)
-                folder_entry = manager.find_folder_by_name(folder_name, parent_id=0)
-                if folder_entry:
-                    remote_folder_id = folder_entry.id
-                    logger.debug(
-                        "Found remote folder '%s' with id=%s",
-                        folder_name,
-                        remote_folder_id,
-                    )
+                # Check if this is a nested path (contains /)
+                if "/" in folder_path:
+                    # Use the API's resolve_path_to_id for nested paths
+                    try:
+                        remote_folder_id = self.client.resolve_path_to_id(
+                            folder_path, workspace_id=pair.workspace_id
+                        )
+                        logger.debug(
+                            "Found remote folder '%s' via path resolution with id=%s",
+                            folder_path,
+                            remote_folder_id,
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            "Path resolution failed for '%s': %s", folder_path, e
+                        )
                 else:
-                    logger.debug(
-                        "Remote folder '%s' not found - will be created or "
-                        "files will be uploaded to root",
-                        folder_name,
-                    )
+                    # Simple single folder name - search in root
+                    folder_entry = manager.find_folder_by_name(folder_path, parent_id=0)
+                    if folder_entry:
+                        remote_folder_id = folder_entry.id
+                        logger.debug(
+                            "Found remote folder '%s' with id=%s",
+                            folder_path,
+                            remote_folder_id,
+                        )
+                    else:
+                        logger.debug(
+                            "Remote folder '%s' not found - will be created or "
+                            "files will be uploaded to root",
+                            folder_path,
+                        )
             except Exception as e:
                 # Remote folder doesn't exist yet
                 logger.debug("Folder resolution failed: %s", e)
