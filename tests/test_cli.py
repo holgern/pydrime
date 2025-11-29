@@ -2541,10 +2541,19 @@ class TestDownloadCommandWithIdSupport:
     def test_download_multiple_ids(self, mock_config, mock_client_class, runner):
         """Test downloading multiple files by ID."""
         mock_config.is_configured.return_value = True
+        mock_config.get_current_folder.return_value = None
+        mock_config.get_default_workspace.return_value = 0
         mock_client = Mock()
         mock_client_class.return_value = mock_client
         mock_client.download_file.return_value = Path("/tmp/file.txt")
+        # Mock resolve_entry_identifier to raise exception (not found as name)
+        from pydrime.exceptions import DrimeNotFoundError
+
+        mock_client.resolve_entry_identifier.side_effect = DrimeNotFoundError(
+            "Not found"
+        )
         # Mock get_file_entries to return files (not folders)
+        # With --workers=1, no folder check loop, just download loop
         mock_client.get_file_entries.side_effect = [
             {
                 "data": [
@@ -2568,7 +2577,9 @@ class TestDownloadCommandWithIdSupport:
             },
         ]
 
-        result = runner.invoke(main, ["download", "480424796", "480424802"])
+        result = runner.invoke(
+            main, ["download", "480424796", "480424802", "--workers=1"]
+        )
 
         assert result.exit_code == 0
         assert mock_client.download_file.call_count == 2
@@ -2592,6 +2603,7 @@ class TestDownloadCommandWithIdSupport:
             "Not found"
         )
         # Mock get_file_entries to return files (not folders)
+        # With --workers=1, no folder check loop, just download loop
         mock_client.get_file_entries.side_effect = [
             {
                 "data": [
@@ -2626,7 +2638,8 @@ class TestDownloadCommandWithIdSupport:
         ]
 
         result = runner.invoke(
-            main, ["download", "480424796", "NDgwNDI0ODAyfA", "480432024"]
+            main,
+            ["download", "480424796", "NDgwNDI0ODAyfA", "480432024", "--workers=1"],
         )
 
         assert result.exit_code == 0
@@ -4620,9 +4633,9 @@ class TestFolderStructureDetection:
             # Check that all paths use forward slashes
             for _file_path, rel_path in files:
                 assert "\\" not in rel_path, f"Path contains backslash: {rel_path}"
-                assert "/" in rel_path or rel_path in [
-                    "file3.txt"
-                ], f"Expected forward slashes in nested paths: {rel_path}"
+                assert "/" in rel_path or rel_path in ["file3.txt"], (
+                    f"Expected forward slashes in nested paths: {rel_path}"
+                )
 
             # Check expected structure
             rel_paths = [rel_path for _, rel_path in files]
@@ -4811,12 +4824,12 @@ class TestFolderStructureDetection:
             for file_info in files_arg:
                 rel_path = file_info.get("relativePath", "")
                 if rel_path:  # Only check non-empty paths
-                    assert (
-                        "\\" not in rel_path
-                    ), f"relativePath should not contain backslashes: {rel_path}"
-                    assert (
-                        "/" in rel_path or rel_path == ""
-                    ), f"relativePath should use forward slashes: {rel_path}"
+                    assert "\\" not in rel_path, (
+                        f"relativePath should not contain backslashes: {rel_path}"
+                    )
+                    assert "/" in rel_path or rel_path == "", (
+                        f"relativePath should use forward slashes: {rel_path}"
+                    )
 
 
 class TestWindowsPathHandling:
@@ -4911,9 +4924,9 @@ class TestWindowsPathHandling:
 
             # Check that relativePath uses forward slashes only
             assert "\\" not in rel_path, f"relativePath contains backslash: {rel_path}"
-            assert (
-                rel_path == f"{Path(tmpdir).name}/folder1/folder2"
-            ), f"Expected proper POSIX path, got: {rel_path}"
+            assert rel_path == f"{Path(tmpdir).name}/folder1/folder2", (
+                f"Expected proper POSIX path, got: {rel_path}"
+            )
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.auth.config")
@@ -4958,13 +4971,13 @@ class TestWindowsPathHandling:
                 if "📁" in line:
                     path_part = line.split("📁")[1].strip()
                     # Should not contain backslashes
-                    assert (
-                        "\\" not in path_part
-                    ), f"Folder path contains backslash: {path_part}"
+                    assert "\\" not in path_part, (
+                        f"Folder path contains backslash: {path_part}"
+                    )
                     # Should end with forward slash
-                    assert path_part.endswith(
-                        "/"
-                    ), f"Folder path should end with /: {path_part}"
+                    assert path_part.endswith("/"), (
+                        f"Folder path should end with /: {path_part}"
+                    )
 
     @patch("pydrime.cli.DrimeClient")
     @patch("pydrime.auth.config")
@@ -5005,9 +5018,9 @@ class TestWindowsPathHandling:
 
             for line in in_lines:
                 # Should not contain backslashes
-                assert (
-                    "\\" not in line
-                ), f"Directory grouping contains backslash: {line}"
+                assert "\\" not in line, (
+                    f"Directory grouping contains backslash: {line}"
+                )
                 # Should use forward slashes for nested paths
                 if "root" not in line.lower():
                     assert "/" in line, f"Expected forward slash in path: {line}"
@@ -5033,21 +5046,21 @@ class TestWindowsPathHandling:
         posix_parts = posix_path.parts
         posix_reconstructed = str(PurePosixPath(*posix_parts[:3]))
 
-        assert (
-            "\\" not in posix_reconstructed
-        ), "PurePosixPath should not have backslashes"
-        assert (
-            posix_reconstructed == "data/01/02"
-        ), f"Expected 'data/01/02', got '{posix_reconstructed}'"
+        assert "\\" not in posix_reconstructed, (
+            "PurePosixPath should not have backslashes"
+        )
+        assert posix_reconstructed == "data/01/02", (
+            f"Expected 'data/01/02', got '{posix_reconstructed}'"
+        )
 
         # Check parent extraction
         posix_parent = str(posix_path.parent)
-        assert (
-            posix_parent == "data/01/02"
-        ), f"Expected 'data/01/02', got '{posix_parent}'"
-        assert (
-            "\\" not in posix_parent
-        ), "PurePosixPath parent should not have backslashes"
+        assert posix_parent == "data/01/02", (
+            f"Expected 'data/01/02', got '{posix_parent}'"
+        )
+        assert "\\" not in posix_parent, (
+            "PurePosixPath parent should not have backslashes"
+        )
 
 
 class TestRemotePathDuplicateDetection:
@@ -5263,9 +5276,9 @@ class TestRemotePathDuplicateDetection:
                 if "duplicate" in line.lower()
             ]
             backup_in_duplicates = any("backup" in line for line in duplicate_lines)
-            assert (
-                not backup_in_duplicates
-            ), "backup folder should not be in duplicate warnings"
+            assert not backup_in_duplicates, (
+                "backup folder should not be in duplicate warnings"
+            )
 
 
 class TestSyncCommand:

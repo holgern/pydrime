@@ -6,6 +6,7 @@ import sys
 from typing import Any, Optional
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.syntax import Syntax
 
@@ -55,7 +56,7 @@ class OutputFormatter:
         Args:
             message: Error message
         """
-        self.console_err.print(f"[bold red]Error:[/bold red] {message}")
+        self.console_err.print(f"[bold red]Error:[/bold red] {escape(message)}")
 
     def warning(self, message: str) -> None:
         """Print a warning message to stderr.
@@ -64,7 +65,9 @@ class OutputFormatter:
             message: Warning message
         """
         if not self.quiet:
-            self.console_err.print(f"[bold yellow]Warning:[/bold yellow] {message}")
+            self.console_err.print(
+                f"[bold yellow]Warning:[/bold yellow] {escape(message)}"
+            )
 
     def success(self, message: str) -> None:
         """Print a success message.
@@ -73,7 +76,7 @@ class OutputFormatter:
             message: Success message
         """
         if not self.quiet:
-            self.console.print(f"[bold green]{message}[/bold green]")
+            self.console.print(f"[bold green]{escape(message)}[/bold green]")
 
     def info(self, message: str) -> None:
         """Print an info message.
@@ -82,7 +85,7 @@ class OutputFormatter:
             message: Info message
         """
         if not self.quiet:
-            self.console_err.print(f"[cyan]{message}[/cyan]")
+            self.console_err.print(f"[cyan]{escape(message)}[/cyan]")
 
     def output_json(self, data: Any) -> None:
         """Output data as JSON.
@@ -238,7 +241,7 @@ class OutputFormatter:
             message: Progress message
         """
         if not self.quiet:
-            self.console_err.print(f"[blue]{message}[/blue]")
+            self.console_err.print(f"[blue]{escape(message)}[/blue]")
 
     def print_summary(self, title: str, items: list[tuple[str, str]]) -> None:
         """Print a summary section.
@@ -252,11 +255,11 @@ class OutputFormatter:
 
         # Create a formatted summary panel
         summary_text = "\n".join(
-            [f"[bold]{key}:[/bold] {value}" for key, value in items]
+            [f"[bold]{escape(key)}:[/bold] {escape(value)}" for key, value in items]
         )
         panel = Panel(
             summary_text,
-            title=f"[bold cyan]{title}[/bold cyan]",
+            title=f"[bold cyan]{escape(title)}[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
