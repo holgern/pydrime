@@ -90,7 +90,7 @@ def display_upload_preview(
         sorted_folders = sorted(folders_to_create)
         out.print(f"Folders to create: {len(sorted_folders)}")
         for folder in sorted_folders:
-            out.print(f"  📁 {folder}/")
+            out.print(f"  [D] {folder}/")
         out.print("")
 
     # Show files to upload with structure
@@ -115,7 +115,7 @@ def display_upload_preview(
         else:
             out.print(f"\n  In {dir_path}/:")
         for filename, size in sorted(files_by_dir[dir_path]):
-            out.print(f"    📄 {filename} ({out.format_size(size)})")
+            out.print(f"    [F] {filename} ({out.format_size(size)})")
 
     # Calculate total size
     total_size = sum(f[0].stat().st_size for f in files_to_upload)

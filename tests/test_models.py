@@ -685,7 +685,7 @@ class TestFileEntry:
         folder_entry = FileEntry.from_dict(folder_data)
 
         assert file_entry.display_name == "test.txt"
-        assert folder_entry.display_name == "📁 test.txt"
+        assert folder_entry.display_name == "[D] test.txt"
 
 
 class TestFileEntryUser:
@@ -1010,7 +1010,7 @@ class TestFileEntriesResult:
 
         assert len(compact_list) == 2
         assert compact_list[0] == "file.txt"
-        assert "📁" in compact_list[1]
+        assert "[D]" in compact_list[1]
 
     def test_filter_by_type(self):
         """Test filtering by type."""
