@@ -47,7 +47,6 @@ class DuplicateHandler:
 
         self.files_to_skip: set[str] = set()
         self.rename_map: dict[str, str] = {}
-        self.entries_to_delete: list[int] = []
 
         # Performance optimization: cache for folder ID lookups
         self._folder_id_cache: dict[str, Optional[int]] = {}
@@ -842,41 +841,6 @@ class DuplicateHandler:
                 )
             else:
                 self.out.info(f"Will replace existing '{duplicate_name}'")
-
-    def delete_marked_entries(self) -> bool:
-        """Delete entries marked for replacement.
-
-        Returns:
-            True if successful or no entries to delete, False on error
-        """
-        if not self.entries_to_delete:
-            return True
-
-        try:
-            total_entries = len(self.entries_to_delete)
-            if not self.out.quiet:
-                self.out.info(f"Moving {total_entries} existing entries to trash...")
-
-            # Batch delete operations to avoid API limits
-            # Use smaller batches (10) to be safe
-            batch_size = 10
-            deleted_count = 0
-
-            for i in range(0, total_entries, batch_size):
-                batch = self.entries_to_delete[i : i + batch_size]
-                self.client.delete_file_entries(batch, delete_forever=False)
-                deleted_count += len(batch)
-
-                if not self.out.quiet and total_entries > batch_size:
-                    self.out.info(f"  Deleted {deleted_count}/{total_entries}...")
-
-            if not self.out.quiet:
-                self.out.success(f"✓ Moved {total_entries} entries to trash")
-            return True
-        except DrimeAPIError as e:
-            self.out.error(f"Failed to delete existing entries: {e}")
-            self.out.error("Aborting upload to avoid conflicts")
-            return False
 
     def apply_renames(self, rel_path: str) -> str:
         """Apply rename mappings to a relative path.

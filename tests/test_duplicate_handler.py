@@ -29,7 +29,6 @@ class TestDuplicateHandlerInit:
         assert handler.apply_to_all is False
         assert len(handler.files_to_skip) == 0
         assert len(handler.rename_map) == 0
-        assert len(handler.entries_to_delete) == 0
 
     def test_initialization_with_skip_mode(self):
         """Test initialization with skip mode."""
@@ -71,7 +70,6 @@ class TestValidateAndHandleDuplicates:
 
         assert len(handler.files_to_skip) == 0
         assert len(handler.rename_map) == 0
-        assert len(handler.entries_to_delete) == 0
 
     def test_filters_folder_duplicates(self, tmp_path):
         """Test filters out folder duplicates."""
@@ -187,8 +185,8 @@ class TestHandleRename:
 class TestHandleReplace:
     """Tests for replace action."""
 
-    def test_replace_does_not_mark_entries_for_deletion(self, tmp_path):
-        """Test replace action does NOT mark entries for deletion.
+    def test_replace_does_not_mark_for_skipping(self, tmp_path):
+        """Test replace action does NOT mark files for skipping.
 
         The API handles replacement automatically when uploading a file
         with the same name - no need to delete first.
@@ -220,53 +218,8 @@ class TestHandleReplace:
 
         handler.validate_and_handle_duplicates(files_to_upload)
 
-        # entries_to_delete should be empty - API handles replacement
-        assert 123 not in handler.entries_to_delete
-        assert len(handler.entries_to_delete) == 0
         # File should NOT be skipped - it will be uploaded and API handles replacement
         assert "test.txt" not in handler.files_to_skip
-
-
-class TestDeleteMarkedEntries:
-    """Tests for delete_marked_entries method."""
-
-    def test_delete_marked_entries_success(self):
-        """Test successful deletion of marked entries."""
-        mock_client = MagicMock()
-        out = OutputFormatter(json_output=False, quiet=False)
-        handler = DuplicateHandler(mock_client, out, 0, "replace")
-        handler.entries_to_delete = [1, 2, 3]
-
-        result = handler.delete_marked_entries()
-
-        assert result is True
-        mock_client.delete_file_entries.assert_called_once_with(
-            [1, 2, 3], delete_forever=False
-        )
-
-    def test_delete_no_entries_returns_true(self):
-        """Test with no entries to delete returns True."""
-        mock_client = MagicMock()
-        out = OutputFormatter(json_output=False, quiet=False)
-        handler = DuplicateHandler(mock_client, out, 0, "replace")
-        handler.entries_to_delete = []
-
-        result = handler.delete_marked_entries()
-
-        assert result is True
-        mock_client.delete_file_entries.assert_not_called()
-
-    def test_delete_api_error_returns_false(self):
-        """Test API error during deletion returns False."""
-        mock_client = MagicMock()
-        mock_client.delete_file_entries.side_effect = DrimeAPIError("API Error")
-        out = OutputFormatter(json_output=False, quiet=False)
-        handler = DuplicateHandler(mock_client, out, 0, "replace")
-        handler.entries_to_delete = [1, 2]
-
-        result = handler.delete_marked_entries()
-
-        assert result is False
 
 
 class TestApplyRenames:

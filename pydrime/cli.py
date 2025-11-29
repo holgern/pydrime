@@ -393,10 +393,6 @@ def upload(  # noqa: C901
         )
         dup_handler.validate_and_handle_duplicates(files_to_upload)
 
-        # Delete entries marked for replacement
-        if not dup_handler.delete_marked_entries():
-            ctx.exit(1)
-
         # Build skip set and rename map for sync engine
         # The DuplicateHandler uses paths like "sync/test_folder/file.txt"
         # (with folder name prefix from scan_directory using base_path=parent)
@@ -549,9 +545,6 @@ def _upload_single_file(
             client, out, workspace, on_duplicate, current_folder_id
         )
         dup_handler.validate_and_handle_duplicates(files_to_upload)
-
-        if not dup_handler.delete_marked_entries():
-            ctx.exit(1)
 
         file_path, rel_path = files_to_upload[0]
 
