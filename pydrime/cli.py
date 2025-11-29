@@ -220,7 +220,7 @@ def init(ctx: Any, api_key: str) -> None:
 @click.option(
     "--start-delay",
     type=float,
-    default=3.0,
+    default=0.0,
     help="Delay in seconds between starting each parallel upload (default: 0.0)",
 )
 @click.pass_context
@@ -1590,7 +1590,7 @@ def _display_sync_summary(out: OutputFormatter, stats: dict, dry_run: bool) -> N
 @click.option(
     "--start-delay",
     type=float,
-    default=3.0,
+    default=0.0,
     help="Delay in seconds between starting each parallel operation (default: 0.0)",
 )
 @click.pass_context

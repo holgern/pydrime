@@ -209,6 +209,7 @@ class SyncEngine:
                 batch_size,
                 max_workers,
                 start_delay,
+                sync_progress_tracker,
             )
         else:
             # Use traditional mode (scan all files upfront)
@@ -220,6 +221,7 @@ class SyncEngine:
                 progress_callback,
                 max_workers,
                 start_delay,
+                sync_progress_tracker,
             )
 
     def _sync_pair_traditional(
@@ -231,6 +233,7 @@ class SyncEngine:
         progress_callback: Optional[Callable[[int, int], None]],
         max_workers: int,
         start_delay: float = 0.0,
+        sync_progress_tracker: Optional[SyncProgressTracker] = None,
     ) -> dict:
         """Traditional sync: scan all files upfront, then process.
 
@@ -242,6 +245,7 @@ class SyncEngine:
             progress_callback: Optional callback for progress updates
             max_workers: Number of parallel workers
             start_delay: Delay in seconds between starting each parallel operation
+            sync_progress_tracker: Optional progress tracker (disables spinners)
 
         Returns:
             Dictionary with sync statistics
@@ -264,34 +268,53 @@ class SyncEngine:
                 )
 
         # Step 1: Scan files
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            transient=True,
-        ) as progress:
-            # Scan local files
+        # Skip internal Progress spinner if external tracker is managing display
+        if sync_progress_tracker:
+            # Scan without Rich progress (external display is active)
+            local_files = []
+            remote_files = []
+
             if pair.sync_mode.requires_local_scan:
-                task = progress.add_task("Scanning local directory...", total=None)
                 scanner = DirectoryScanner(
                     ignore_patterns=pair.ignore,
                     exclude_dot_files=pair.exclude_dot_files,
                 )
                 local_files = scanner.scan_local(pair.local)
-                progress.update(
-                    task, description=f"Found {len(local_files)} local file(s)"
-                )
-            else:
-                local_files = []
+                logger.debug(f"Found {len(local_files)} local file(s)")
 
-            # Scan remote files
             if pair.sync_mode.requires_remote_scan:
-                task = progress.add_task("Scanning remote directory...", total=None)
                 remote_files = self._scan_remote(pair)
-                progress.update(
-                    task, description=f"Found {len(remote_files)} remote file(s)"
-                )
-            else:
-                remote_files = []
+                logger.debug(f"Found {len(remote_files)} remote file(s)")
+        else:
+            # Use Rich progress spinner for scanning
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            ) as progress:
+                # Scan local files
+                if pair.sync_mode.requires_local_scan:
+                    task = progress.add_task("Scanning local directory...", total=None)
+                    scanner = DirectoryScanner(
+                        ignore_patterns=pair.ignore,
+                        exclude_dot_files=pair.exclude_dot_files,
+                    )
+                    local_files = scanner.scan_local(pair.local)
+                    progress.update(
+                        task, description=f"Found {len(local_files)} local file(s)"
+                    )
+                else:
+                    local_files = []
+
+                # Scan remote files
+                if pair.sync_mode.requires_remote_scan:
+                    task = progress.add_task("Scanning remote directory...", total=None)
+                    remote_files = self._scan_remote(pair)
+                    progress.update(
+                        task, description=f"Found {len(remote_files)} remote file(s)"
+                    )
+                else:
+                    remote_files = []
 
         # Build dictionaries for comparison
         local_file_map = {f.relative_path: f for f in local_files}
@@ -386,6 +409,7 @@ class SyncEngine:
         batch_size: int,
         max_workers: int,
         start_delay: float = 0.0,
+        sync_progress_tracker: Optional[SyncProgressTracker] = None,
     ) -> dict:
         """Streaming sync: process files in batches as they're discovered.
 
@@ -401,6 +425,7 @@ class SyncEngine:
             batch_size: Number of files per batch
             max_workers: Number of parallel workers
             start_delay: Delay in seconds between starting each parallel operation
+            sync_progress_tracker: Optional progress tracker (disables spinners)
 
         Returns:
             Dictionary with sync statistics
@@ -424,7 +449,9 @@ class SyncEngine:
                 )
 
         # Step 1: Scan local files if needed
-        local_files = self._scan_local_files_streaming(pair)
+        local_files = self._scan_local_files_streaming(
+            pair, use_progress=sync_progress_tracker is None
+        )
 
         # Build dictionary for comparison
         local_file_map = {f.relative_path: f for f in local_files}
@@ -564,7 +591,12 @@ class SyncEngine:
 
         # Setup remote folder and get existing files
         remote_folder_id = self._setup_incremental_remote(pair, manager, dry_run)
-        remote_file_set = self._get_remote_file_set(pair, manager, remote_folder_id)
+        remote_file_set, remote_file_ids, remote_file_sizes = self._get_remote_file_set(
+            pair, manager, remote_folder_id
+        )
+
+        # Track all local files seen (for deletion detection)
+        local_file_set: set[str] = set()
 
         # Process directories using BFS
         dirs_to_process = [pair.local]
@@ -585,6 +617,7 @@ class SyncEngine:
                 pair=pair,
                 scanner=scanner,
                 remote_file_set=remote_file_set,
+                remote_file_sizes=remote_file_sizes,
                 stats=stats,
                 dry_run=dry_run,
                 chunk_size=chunk_size,
@@ -594,6 +627,9 @@ class SyncEngine:
                 start_delay=start_delay,
                 sync_progress_tracker=sync_progress_tracker,
             )
+
+            # Track local files seen
+            local_file_set.update(dir_result.get("local_files", []))
 
             # Add subdirectories to queue
             dirs_to_process.extend(dir_result["subdirs"])
@@ -606,6 +642,18 @@ class SyncEngine:
                     f"Progress: {total_dirs_processed} dirs, "
                     f"{total_files_processed} files, "
                     f"{stats['uploads']} uploads in {elapsed:.1f}s"
+                )
+
+        # Handle remote deletions for LOCAL_TO_CLOUD mode
+        # (files that exist remotely but not locally should be deleted)
+        if pair.sync_mode == SyncMode.LOCAL_TO_CLOUD:
+            files_to_delete = remote_file_set - local_file_set
+            if files_to_delete:
+                self._delete_remote_files_incremental(
+                    files_to_delete=files_to_delete,
+                    remote_file_ids=remote_file_ids,
+                    stats=stats,
+                    dry_run=dry_run,
                 )
 
         # Display summary
@@ -658,8 +706,11 @@ class SyncEngine:
         pair: SyncPair,
         manager: FileEntriesManager,
         remote_folder_id: Optional[int],
-    ) -> set[str]:
-        """Get set of existing remote file paths for LOCAL_BACKUP mode.
+    ) -> tuple[set[str], dict[str, int], dict[str, int]]:
+        """Get set of existing remote file paths for idempotency checking.
+
+        This is used by LOCAL_BACKUP and LOCAL_TO_CLOUD modes to skip files
+        that already exist remotely (basic idempotency).
 
         Args:
             pair: Sync pair configuration
@@ -667,11 +718,22 @@ class SyncEngine:
             remote_folder_id: Remote folder ID
 
         Returns:
-            Set of remote file paths
+            Tuple of (set of remote file paths, dict mapping paths to entry IDs,
+            dict mapping paths to file sizes)
         """
         remote_file_set: set[str] = set()
+        remote_file_ids: dict[str, int] = {}
+        remote_file_sizes: dict[str, int] = {}
 
-        if pair.sync_mode == SyncMode.LOCAL_BACKUP:
+        # Skip if remote folder doesn't exist yet (nothing to compare against)
+        # This also prevents scanning the entire workspace root when folder_id is None
+        if remote_folder_id is None:
+            logger.debug("Remote folder not found, skipping remote file scan")
+            return remote_file_set, remote_file_ids, remote_file_sizes
+
+        # Both LOCAL_BACKUP and LOCAL_TO_CLOUD need to check remote files
+        # for idempotency (to avoid re-uploading existing files)
+        if pair.sync_mode in (SyncMode.LOCAL_BACKUP, SyncMode.LOCAL_TO_CLOUD):
             try:
                 entries_with_paths = manager.get_all_recursive(
                     folder_id=remote_folder_id,
@@ -680,11 +742,16 @@ class SyncEngine:
                 for entry, rel_path in entries_with_paths:
                     if entry.type != "folder":
                         remote_file_set.add(rel_path)
+                        # Store entry ID for potential deletion
+                        remote_file_ids[rel_path] = entry.id
+                        # Store file size for change detection
+                        if entry.file_size is not None:
+                            remote_file_sizes[rel_path] = entry.file_size
                 logger.debug(f"Found {len(remote_file_set)} existing remote files")
             except Exception as e:
                 logger.debug(f"Could not get remote files: {e}")
 
-        return remote_file_set
+        return remote_file_set, remote_file_ids, remote_file_sizes
 
     def _process_incremental_directory(
         self,
@@ -692,6 +759,7 @@ class SyncEngine:
         pair: SyncPair,
         scanner: DirectoryScanner,
         remote_file_set: set[str],
+        remote_file_sizes: dict[str, int],
         stats: dict,
         dry_run: bool,
         chunk_size: int,
@@ -708,6 +776,7 @@ class SyncEngine:
             pair: Sync pair configuration
             scanner: Directory scanner
             remote_file_set: Set of existing remote files
+            remote_file_sizes: Dict mapping remote paths to file sizes
             stats: Statistics dictionary (modified in place)
             dry_run: If True, only count files
             chunk_size: Chunk size for uploads
@@ -718,9 +787,10 @@ class SyncEngine:
             sync_progress_tracker: Optional progress tracker
 
         Returns:
-            Dictionary with 'subdirs' (list of Path) and 'files_count' (int)
+            Dictionary with 'subdirs' (list of Path), 'files_count' (int),
+            and 'local_files' (list of relative paths)
         """
-        result = {"subdirs": [], "files_count": 0}
+        result: dict = {"subdirs": [], "files_count": 0, "local_files": []}
 
         # Calculate relative directory path
         rel_dir = (
@@ -764,9 +834,12 @@ class SyncEngine:
 
         result["files_count"] = len(files)
 
+        # Track all local files for deletion detection
+        result["local_files"] = [f.relative_path for f in files]
+
         # Filter and process files
         upload_files, skipped_count = self._filter_files_for_upload(
-            files, remote_file_set, stats
+            files, remote_file_set, remote_file_sizes, stats
         )
 
         # Notify tracker about skipped files
@@ -798,13 +871,18 @@ class SyncEngine:
         return result
 
     def _filter_files_for_upload(
-        self, files: list[LocalFile], remote_file_set: set[str], stats: dict
+        self,
+        files: list[LocalFile],
+        remote_file_set: set[str],
+        remote_file_sizes: dict[str, int],
+        stats: dict,
     ) -> tuple[list[LocalFile], int]:
         """Filter files that need to be uploaded.
 
         Args:
             files: List of local files
             remote_file_set: Set of existing remote files
+            remote_file_sizes: Dict mapping remote paths to file sizes
             stats: Statistics dictionary (modified in place)
 
         Returns:
@@ -815,9 +893,17 @@ class SyncEngine:
 
         for local_file in files:
             if local_file.relative_path in remote_file_set:
-                stats["skips"] += 1
-                skipped_count += 1
+                # File exists remotely - check if size changed
+                remote_size = remote_file_sizes.get(local_file.relative_path)
+                if remote_size is not None and local_file.size != remote_size:
+                    # Size differs - file was modified, needs re-upload
+                    upload_files.append(local_file)
+                else:
+                    # Same size - skip
+                    stats["skips"] += 1
+                    skipped_count += 1
             else:
+                # New file - needs upload
                 upload_files.append(local_file)
 
         return upload_files, skipped_count
@@ -900,6 +986,54 @@ class SyncEngine:
         # Notify tracker about batch complete
         if sync_progress_tracker:
             sync_progress_tracker.on_upload_batch_complete(rel_dir, uploaded_count)
+
+    def _delete_remote_files_incremental(
+        self,
+        files_to_delete: set[str],
+        remote_file_ids: dict[str, int],
+        stats: dict,
+        dry_run: bool,
+    ) -> None:
+        """Delete remote files that no longer exist locally.
+
+        Args:
+            files_to_delete: Set of remote file paths to delete
+            remote_file_ids: Dict mapping paths to entry IDs
+            stats: Statistics dictionary (modified in place)
+            dry_run: If True, only count deletions
+        """
+        if not files_to_delete:
+            return
+
+        if not self.output.quiet:
+            action = "would delete" if dry_run else "deleting"
+            self.output.info(
+                f"\n{action.capitalize()} {len(files_to_delete)} "
+                "remote file(s) not in local..."
+            )
+
+        if dry_run:
+            stats["deletes_remote"] += len(files_to_delete)
+            return
+
+        # Delete each file
+        deleted_count = 0
+        for rel_path in files_to_delete:
+            entry_id = remote_file_ids.get(rel_path)
+            if entry_id:
+                try:
+                    self.client.delete_file_entries([entry_id])
+                    deleted_count += 1
+                    logger.debug(f"Deleted remote file: {rel_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete {rel_path}: {e}")
+            else:
+                logger.warning(f"No entry ID found for {rel_path}, cannot delete")
+
+        stats["deletes_remote"] = deleted_count
+
+        if not self.output.quiet and deleted_count > 0:
+            self.output.info(f"  Deleted {deleted_count} remote file(s)")
 
     def _execute_batch_decisions_incremental(
         self,
@@ -1151,27 +1285,35 @@ class SyncEngine:
 
         return stats
 
-    def _scan_local_files_streaming(self, pair: SyncPair) -> list:
+    def _scan_local_files_streaming(
+        self, pair: SyncPair, use_progress: bool = True
+    ) -> list:
         """Scan local files for streaming sync mode.
 
         Args:
             pair: Sync pair configuration
+            use_progress: If True, show Rich progress spinner (default: True)
 
         Returns:
             List of local files
         """
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            transient=True,
-        ) as progress:
-            if pair.sync_mode.requires_local_scan:
+        if not pair.sync_mode.requires_local_scan:
+            return []
+
+        scanner = DirectoryScanner(
+            ignore_patterns=pair.ignore,
+            exclude_dot_files=pair.exclude_dot_files,
+        )
+
+        if use_progress:
+            # Use Rich progress spinner
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            ) as progress:
                 scan_start = time.time()
                 task = progress.add_task("Scanning local directory...", total=None)
-                scanner = DirectoryScanner(
-                    ignore_patterns=pair.ignore,
-                    exclude_dot_files=pair.exclude_dot_files,
-                )
                 local_files = scanner.scan_local(pair.local)
                 scan_elapsed = time.time() - scan_start
                 progress.update(
@@ -1181,7 +1323,15 @@ class SyncEngine:
                     f"Local scan took {scan_elapsed:.2f}s for {len(local_files)} files"
                 )
                 return local_files
-            return []
+        else:
+            # Scan without Rich progress (external display is active)
+            scan_start = time.time()
+            local_files = scanner.scan_local(pair.local)
+            scan_elapsed = time.time() - scan_start
+            logger.debug(
+                f"Local scan took {scan_elapsed:.2f}s for {len(local_files)} files"
+            )
+            return local_files
 
     def _create_empty_stats(self) -> dict:
         """Create an empty statistics dictionary.
