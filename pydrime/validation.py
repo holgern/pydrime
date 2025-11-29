@@ -251,7 +251,12 @@ def _build_remote_file_map(
 
 def _categorize_validation_results(
     results: list[dict[str, Any]],
-) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
     """Categorize validation results by status.
 
     Args:
@@ -260,10 +265,10 @@ def _categorize_validation_results(
     Returns:
         Tuple of (valid_files, missing_files, size_mismatch_files, incomplete_files)
     """
-    valid_files: list[dict] = []
-    missing_files: list[dict] = []
-    size_mismatch_files: list[dict] = []
-    incomplete_files: list[dict] = []
+    valid_files: list[dict[str, Any]] = []
+    missing_files: list[dict[str, Any]] = []
+    size_mismatch_files: list[dict[str, Any]] = []
+    incomplete_files: list[dict[str, Any]] = []
 
     for result in results:
         status = result.get("status")
