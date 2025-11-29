@@ -4880,11 +4880,6 @@ def validate(
     help="Scan recursively into subfolders",
 )
 @click.option(
-    "--dry-run",
-    is_flag=True,
-    help="Show duplicates without deleting (default)",
-)
-@click.option(
     "--delete",
     is_flag=True,
     help="Actually delete duplicate files (moves to trash)",
@@ -4900,18 +4895,18 @@ def find_duplicates(
     workspace: Optional[int],
     folder: Optional[str],
     recursive: bool,
-    dry_run: bool,
     delete: bool,
     keep_newest: bool,
 ) -> None:
     """Find and optionally delete duplicate files.
 
-    Duplicates are identified by having identical filename, size, and parent folder.
+    Duplicates are files with the same name but different IDs within the same folder.
+    This detects files that were uploaded multiple times with the same name.
     By default, the oldest file (lowest ID) is kept and newer duplicates are deleted.
 
     Examples:
 
-        # Dry run (show duplicates without deleting)
+        # Show duplicates in current folder
         pydrime find-duplicates
 
         # Find duplicates in a specific folder by ID
@@ -4985,7 +4980,7 @@ def find_duplicates(
                 out.info("Folder: Root")
 
             out.info(f"Recursive: {'Yes' if recursive else 'No'}")
-            out.info(f"Mode: {'DELETE' if delete else 'DRY RUN'}")
+            out.info(f"Mode: {'DELETE' if delete else 'SHOW ONLY'}")
             out.info(f"Keep: {'Newest' if keep_newest else 'Oldest'}")
             out.info("=" * 60)
             out.info("")
@@ -5014,7 +5009,7 @@ def find_duplicates(
         out.info(f"Total duplicate files to delete: {len(entries_to_delete)}")
         out.info("=" * 60)
 
-        # Delete or dry run
+        # Delete or show only
         if delete:
             # Confirm deletion
             if not out.quiet:
@@ -5044,9 +5039,8 @@ def find_duplicates(
             )
             out.info("Files have been moved to trash and can be restored if needed.")
         else:
-            # Dry run
-            out.info("\nDRY RUN MODE - No files were deleted.")
-            out.info("To actually delete duplicates, use: --delete")
+            # Show only mode
+            out.info("\nTo delete duplicates, use: pydrime find-duplicates --delete")
 
     except DrimeAPIError as e:
         out.error(f"API error: {e}")
