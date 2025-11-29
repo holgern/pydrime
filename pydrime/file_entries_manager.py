@@ -51,8 +51,17 @@ class FileEntriesManager:
 
         try:
             while True:
-                # Note: parent_ids should be None to list root directory
-                parent_ids_param = [folder_id] if folder_id is not None else None
+                # To list root directory entries, we need parent_ids=[0]
+                # parent_ids=None returns all entries (no parent filter)
+                if folder_id is not None:
+                    parent_ids_param = [folder_id]
+                else:
+                    # Root folder: use parent_id=0 to get only root-level entries
+                    parent_ids_param = [0]
+                logger.debug(
+                    f"get_all_in_folder: workspace_id={self.workspace_id}, "
+                    f"parent_ids={parent_ids_param}, page={current_page}"
+                )
                 result = self.client.get_file_entries(
                     parent_ids=parent_ids_param,
                     workspace_id=self.workspace_id,
@@ -60,6 +69,11 @@ class FileEntriesManager:
                     page=current_page,
                 )
                 entries = FileEntriesResult.from_api_response(result)
+                logger.debug(
+                    "get_all_in_folder: got %d entries on page %d",
+                    len(entries.entries),
+                    current_page,
+                )
                 all_entries.extend(entries.entries)
 
                 # Check if there are more pages

@@ -56,39 +56,39 @@ Example output:
 PYDRIME SYNC MODE BENCHMARKS
 ================================================================================
 
-📁 Test folder: benchmark_abc12345-6789-...
+[FOLDER] Test folder: benchmark_abc12345-6789-...
    This folder will be created in the cloud workspace root
 
 ================================================================================
 TEST 1: CLOUD UPLOAD (localToCloud) MODE
 ================================================================================
 
-📝 Creating 10 test files (1KB each) in benchmark_temp/upload_test
-  ✓ Created: test_file_000.txt
+[CREATE] Creating 10 test files (1KB each) in benchmark_temp/upload_test
+  + Created: test_file_000.txt
   ...
 
-🔄 First sync (should upload 10 files)...
-📊 First sync stats: {'uploaded': 10, 'downloaded': 0, ...}
-✅ First sync uploaded 10 files as expected
+[SYNC] First sync (should upload 10 files)...
+[STATS] First sync stats: {'uploaded': 10, 'downloaded': 0, ...}
+[PASS] First sync uploaded 10 files as expected
 
-🔄 Second sync (should upload 0 files - idempotency test)...
-📊 Second sync stats: {'uploaded': 0, 'downloaded': 0, ...}
-✅ Second sync uploaded 0 files - idempotency confirmed
+[SYNC] Second sync (should upload 0 files - idempotency test)...
+[STATS] Second sync stats: {'uploaded': 0, 'downloaded': 0, ...}
+[PASS] Second sync uploaded 0 files - idempotency confirmed
 
 ================================================================================
 TEST 2: CLOUD DOWNLOAD (cloudToLocal) MODE
 ================================================================================
 
-🔄 First download sync (should download 10 files)...
-📊 First download sync stats: {'uploaded': 0, 'downloaded': 10, ...}
-✅ First download sync downloaded 10 files as expected
+[SYNC] First download sync (should download 10 files)...
+[STATS] First download sync stats: {'uploaded': 0, 'downloaded': 10, ...}
+[PASS] First download sync downloaded 10 files as expected
 
-🔄 Second download sync (should download 0 files - idempotency test)...
-📊 Second download sync stats: {'uploaded': 0, 'downloaded': 0, ...}
-✅ Second download sync downloaded 0 files - idempotency confirmed
+[SYNC] Second download sync (should download 0 files - idempotency test)...
+[STATS] Second download sync stats: {'uploaded': 0, 'downloaded': 0, ...}
+[PASS] Second download sync downloaded 0 files - idempotency confirmed
 
 ================================================================================
-✅ ALL TESTS PASSED
+[PASS] ALL TESTS PASSED
 ================================================================================
 ```
 
