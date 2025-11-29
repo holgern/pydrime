@@ -20,11 +20,34 @@ from rich.progress import (
 from .sync.progress import SyncProgressEvent, SyncProgressInfo, SyncProgressTracker
 
 
+def _format_size(size_bytes: int) -> str:
+    """Format bytes to human-readable size.
+
+    Args:
+        size_bytes: Size in bytes
+
+    Returns:
+        Human-readable size string (e.g., "1.5 MB")
+    """
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    else:
+        return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
+
+
 class SyncProgressDisplay:
     """Rich-based progress display for sync operations.
 
     This class creates a Rich Progress instance and handles
     SyncProgressInfo events to update the display.
+
+    The progress display shows folder-level statistics:
+    - Files: uploaded files / total files in current folder
+    - Size: uploaded size / total size in current folder
     """
 
     def __init__(self) -> None:
@@ -42,6 +65,21 @@ class SyncProgressDisplay:
         """
         return SyncProgressTracker(callback=self._handle_event)
 
+    def _format_folder_progress(self, info: SyncProgressInfo) -> str:
+        """Format folder progress information.
+
+        Args:
+            info: Progress information
+
+        Returns:
+            Formatted string like "2/5 files, 1.5/10.0 MB"
+        """
+        files_str = f"{info.folder_files_uploaded}/{info.folder_files_total} files"
+        size_uploaded = _format_size(info.folder_bytes_uploaded)
+        size_total = _format_size(info.folder_bytes_total)
+        size_str = f"{size_uploaded}/{size_total}"
+        return f"{files_str}, {size_str}"
+
     def _handle_event(self, info: SyncProgressInfo) -> None:
         """Handle a progress event from the tracker.
 
@@ -53,30 +91,34 @@ class SyncProgressDisplay:
 
         if info.event == SyncProgressEvent.UPLOAD_BATCH_START:
             self._current_dir = info.directory
-            # Update task description and total
+            # Update task description and total for folder
             if self._upload_task is not None:
+                folder_name = info.directory if info.directory else "root"
                 self._progress.update(
                     self._upload_task,
-                    description=f"Uploading from {info.directory}",
-                    total=info.bytes_total,
+                    description=f"Uploading: {folder_name}",
+                    total=info.folder_bytes_total,
+                    completed=0,
+                    folder_info=self._format_folder_progress(info),
                 )
 
         elif info.event == SyncProgressEvent.UPLOAD_FILE_PROGRESS:
-            # Update bytes progress
+            # Update bytes progress for current folder
             if self._upload_task is not None:
                 self._progress.update(
                     self._upload_task,
-                    completed=info.bytes_uploaded,
-                    files_info=f"{info.files_uploaded} files",
+                    completed=info.folder_bytes_uploaded,
+                    folder_info=self._format_folder_progress(info),
                 )
 
         elif info.event == SyncProgressEvent.UPLOAD_FILE_COMPLETE:
-            # Update file count
+            # Update file count for folder
             self._total_files = info.files_uploaded
             if self._upload_task is not None:
                 self._progress.update(
                     self._upload_task,
-                    files_info=f"{info.files_uploaded} files",
+                    completed=info.folder_bytes_uploaded,
+                    folder_info=self._format_folder_progress(info),
                 )
 
         elif info.event == SyncProgressEvent.UPLOAD_BATCH_COMPLETE:
@@ -84,7 +126,8 @@ class SyncProgressDisplay:
             if self._upload_task is not None:
                 self._progress.update(
                     self._upload_task,
-                    files_info=f"{info.files_uploaded} files",
+                    completed=info.folder_bytes_uploaded,
+                    folder_info=self._format_folder_progress(info),
                 )
 
     def __enter__(self) -> "SyncProgressDisplay":
@@ -94,7 +137,7 @@ class SyncProgressDisplay:
             TextColumn("[bold blue]{task.description}"),
             BarColumn(),
             TaskProgressColumn(),
-            TextColumn("[cyan]{task.fields[files_info]}"),
+            TextColumn("[cyan]{task.fields[folder_info]}"),
             TransferSpeedColumn(),
             TimeElapsedColumn(),
             refresh_per_second=4,
@@ -105,7 +148,7 @@ class SyncProgressDisplay:
         self._upload_task = self._progress.add_task(
             "Preparing upload...",
             total=None,
-            files_info="0 files",
+            folder_info="0/0 files, 0 B/0 B",
         )
 
         return self

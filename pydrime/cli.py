@@ -195,7 +195,7 @@ def init(ctx: Any, api_key: str) -> None:
     "--workers",
     "-j",
     type=int,
-    default=1,
+    default=4,
     help="Number of parallel workers (default: 1, use 4-8 for parallel uploads)",
 )
 @click.option(
@@ -220,7 +220,7 @@ def init(ctx: Any, api_key: str) -> None:
 @click.option(
     "--start-delay",
     type=float,
-    default=0.0,
+    default=3.0,
     help="Delay in seconds between starting each parallel upload (default: 0.0)",
 )
 @click.pass_context
@@ -1228,7 +1228,7 @@ def status(ctx: Any) -> None:
     "--workers",
     "-j",
     type=int,
-    default=1,
+    default=4,
     help="Number of parallel workers (default: 1, use 4-8 for parallel downloads)",
 )
 @click.option(
@@ -1538,13 +1538,13 @@ def download(
 @click.option(
     "--workers",
     type=int,
-    default=1,
+    default=4,
     help="Number of parallel workers for uploads/downloads (default: 1)",
 )
 @click.option(
     "--start-delay",
     type=float,
-    default=0.0,
+    default=3.0,
     help="Delay in seconds between starting each parallel operation (default: 0.0)",
 )
 @click.pass_context
