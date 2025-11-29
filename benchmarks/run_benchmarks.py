@@ -211,7 +211,7 @@ def generate_markdown_report(summary: BenchmarkSummary) -> str:
     lines.append("## Summary")
     lines.append("")
     status = "PASSED" if summary.all_passed else "FAILED"
-    status_emoji = "✅" if summary.all_passed else "❌"
+    status_emoji = "[PASS]" if summary.all_passed else "[FAIL]"
     lines.append(f"**Overall Status:** {status_emoji} {status}")
     lines.append("")
     lines.append("| Metric | Value |")
@@ -229,7 +229,7 @@ def generate_markdown_report(summary: BenchmarkSummary) -> str:
     lines.append("|-----------|--------|----------|-------|")
 
     for result in summary.results:
-        status = "✅ Pass" if result.success else "❌ Fail"
+        status = "[PASS]" if result.success else "[FAIL]"
         tests = (
             f"{result.tests_passed}/{result.tests_total}" if result.tests_total else "-"
         )
@@ -242,7 +242,7 @@ def generate_markdown_report(summary: BenchmarkSummary) -> str:
     lines.append("")
 
     for result in summary.results:
-        status = "✅ PASSED" if result.success else "❌ FAILED"
+        status = "[PASS]" if result.success else "[FAIL]"
         lines.append(f"### {result.name} {status}")
         lines.append("")
         lines.append(f"- **Duration:** {result.duration:.2f}s")
@@ -319,9 +319,9 @@ def print_summary(summary: BenchmarkSummary) -> None:
     print("=" * 80)
 
     if summary.all_passed:
-        print("\n✅ ALL BENCHMARKS PASSED")
+        print("\n[PASS] ALL BENCHMARKS PASSED")
     else:
-        print("\n❌ SOME BENCHMARKS FAILED")
+        print("\n[FAIL] SOME BENCHMARKS FAILED")
         for result in summary.results:
             if not result.success:
                 print(f"   - {result.name}")
