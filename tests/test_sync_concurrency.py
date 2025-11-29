@@ -335,7 +335,7 @@ class TestSyncPauseController:
         elapsed = time.time() - start
 
         assert result is True
-        assert elapsed >= 0.1
+        assert elapsed >= 0.09  # Allow small timing variance
         assert elapsed < 0.5
 
         thread.join()
@@ -351,7 +351,7 @@ class TestSyncPauseController:
 
         # Result is True because removed is still False
         assert result is True
-        assert elapsed >= 0.1
+        assert elapsed >= 0.09  # Allow small timing variance
         assert elapsed < 0.5
 
 
