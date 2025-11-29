@@ -1511,8 +1511,9 @@ def _display_sync_summary(out: OutputFormatter, stats: dict, dry_run: bool) -> N
         + stats.get("renames_local", 0)
         + stats.get("renames_remote", 0)
     )
+    errors = stats.get("errors", 0)
 
-    if total_actions > 0:
+    if total_actions > 0 or errors > 0:
         out.info(f"Total actions: {total_actions}")
         if stats.get("uploads", 0) > 0:
             out.info(f"  Uploaded: {stats['uploads']}")
@@ -1526,6 +1527,10 @@ def _display_sync_summary(out: OutputFormatter, stats: dict, dry_run: bool) -> N
             out.info(f"  Deleted locally: {stats['deletes_local']}")
         if stats.get("deletes_remote", 0) > 0:
             out.info(f"  Deleted remotely: {stats['deletes_remote']}")
+        if stats.get("skips", 0) > 0:
+            out.info(f"  Already synced: {stats['skips']}")
+        if errors > 0:
+            out.error(f"  Failed: {errors}")
     else:
         out.info("No changes needed - everything is in sync!")
 
@@ -1782,7 +1787,9 @@ def sync(
                 out.info(f"Workspace: {workspace_display}")
                 out.info(f"Sync mode: {pair.sync_mode.value}")
                 out.info(f"Local path: {pair.local}")
-                out.info(f"Remote path: {pair.remote}")
+                # Display "/" for root when remote is empty (normalized from "/")
+                remote_display = pair.remote if pair.remote else "/ (root)"
+                out.info(f"Remote path: {remote_display}")
                 if pair.ignore:
                     out.info(f"Ignore patterns: {pair.ignore}")
                 if pair.exclude_dot_files:
@@ -1815,6 +1822,7 @@ def sync(
                         use_streaming=not no_streaming,
                         max_workers=workers,
                         start_delay=start_delay,
+                        out=out,  # Pass CLI output for pre-sync status
                     )
                 else:
                     stats = engine.sync_pair(
@@ -1964,7 +1972,9 @@ def sync(
         out.info(f"Workspace: {workspace_display}")
         out.info(f"Sync mode: {pair.sync_mode.value}")
         out.info(f"Local path: {pair.local}")
-        out.info(f"Remote path: {pair.remote}")
+        # Display "/" for root when remote is empty (normalized from "/")
+        remote_display = pair.remote if pair.remote else "/ (root)"
+        out.info(f"Remote path: {remote_display}")
         out.info("")  # Empty line for readability
 
     try:
@@ -1992,6 +2002,7 @@ def sync(
                 use_streaming=not no_streaming,
                 max_workers=workers,
                 start_delay=start_delay,
+                out=out,  # Pass CLI output for pre-sync status
             )
         else:
             stats = engine.sync_pair(

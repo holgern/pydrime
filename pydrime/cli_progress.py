@@ -17,6 +17,8 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 
+from .file_entries_manager import FileEntriesManager
+from .sync.modes import SyncMode
 from .sync.progress import SyncProgressEvent, SyncProgressInfo, SyncProgressTracker
 
 
@@ -177,6 +179,7 @@ def run_sync_with_progress(
     use_streaming: bool,
     max_workers: int,
     start_delay: float,
+    out=None,
 ) -> dict:
     """Run sync with a Rich progress display.
 
@@ -193,6 +196,7 @@ def run_sync_with_progress(
         use_streaming: If True, use streaming mode
         max_workers: Number of parallel workers
         start_delay: Delay between parallel operations
+        out: Optional OutputFormatter for status messages (uses engine.output if None)
 
     Returns:
         Dictionary with sync statistics
@@ -210,6 +214,11 @@ def run_sync_with_progress(
             start_delay=start_delay,
         )
 
+    # Show remote folder status before starting progress bar
+    # This is important context that shouldn't be hidden by the progress display
+    if pair.sync_mode in (SyncMode.LOCAL_TO_CLOUD, SyncMode.LOCAL_BACKUP):
+        _show_remote_status_before_sync(engine, pair, out=out)
+
     # For actual sync, use progress display
     with SyncProgressDisplay() as display:
         tracker = display.create_tracker()
@@ -225,3 +234,90 @@ def run_sync_with_progress(
             start_delay=start_delay,
             sync_progress_tracker=tracker,
         )
+
+
+def _show_remote_status_before_sync(engine, pair, out=None) -> None:
+    """Show remote folder status before starting the sync progress bar.
+
+    This displays important context about what exists on the remote
+    before the progress bar takes over the display.
+
+    Args:
+        engine: SyncEngine instance
+        pair: SyncPair being synced
+        out: Optional OutputFormatter to use (defaults to engine.output)
+    """
+    # Use provided output formatter or fall back to engine's
+    if out is None:
+        out = engine.output
+
+    if out.quiet:
+        return
+
+    # Determine if syncing to root
+    syncing_to_root = not pair.remote or pair.remote == "/"
+
+    # Try to find remote folder and count files
+    try:
+        manager = FileEntriesManager(engine.client, pair.workspace_id)
+
+        # Find the remote folder (or use root)
+        if syncing_to_root:
+            # Syncing directly to root - use folder_id=0
+            remote_folder_id = 0
+            out.success("Syncing directly to cloud root")
+        else:
+            remote_folder_id = None
+            effective_remote_name = pair.remote
+            if "/" in effective_remote_name:
+                # Nested path
+                try:
+                    remote_folder_id = engine.client.resolve_path_to_id(
+                        effective_remote_name, workspace_id=pair.workspace_id
+                    )
+                except Exception:
+                    pass
+            else:
+                # Simple folder name
+                folder_entry = manager.find_folder_by_name(
+                    effective_remote_name, parent_id=0
+                )
+                if folder_entry:
+                    remote_folder_id = folder_entry.id
+
+            if remote_folder_id is not None:
+                out.success(
+                    f"Remote folder '{effective_remote_name}' exists "
+                    f"(id: {remote_folder_id})"
+                )
+            else:
+                out.info(f"Remote folder '{effective_remote_name}' will be created")
+                out.print("")  # Empty line before progress bar
+                return
+
+        # Count existing files
+        entries_with_paths = manager.get_all_recursive(
+            folder_id=remote_folder_id,
+            path_prefix="",
+        )
+        file_count = 0
+        total_size = 0
+        for entry, _ in entries_with_paths:
+            if entry.type != "folder":
+                file_count += 1
+                if entry.file_size:
+                    total_size += entry.file_size
+
+        if file_count > 0:
+            out.info(
+                f"Found {file_count} file(s) already on remote "
+                f"({_format_size(total_size)})"
+            )
+        else:
+            out.info("No files found on remote yet")
+
+        out.print("")  # Empty line before progress bar
+
+    except Exception as e:
+        # Don't fail the sync if we can't show status
+        out.warning(f"Could not check remote status: {e}")

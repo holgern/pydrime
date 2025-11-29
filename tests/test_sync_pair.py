@@ -293,3 +293,161 @@ class TestSyncPairLiteralParsing:
         assert str(pair.local) == "local"
         assert pair.remote == "remote"
         assert pair.sync_mode == SyncMode.CLOUD_BACKUP
+
+
+class TestSyncPairRootRemote:
+    """Tests for syncing to cloud root with remote='/'.
+
+    When remote is set to '/' (root), files should sync directly to the cloud root
+    without creating a wrapper folder. For example:
+    - local/subdir/file.txt -> /subdir/file.txt (NOT /local/subdir/file.txt)
+
+    This is important for cross-platform compatibility, especially on Windows
+    where path handling differs.
+    """
+
+    def test_remote_slash_normalized_to_empty_string(self):
+        """Test that remote='/' is normalized to empty string."""
+        pair = SyncPair(
+            local=Path("/home/user/my_folder"),
+            remote="/",
+            sync_mode=SyncMode.LOCAL_TO_CLOUD,
+        )
+
+        # "/" should be normalized to "" (empty string means root)
+        assert pair.remote == ""
+
+    def test_remote_slash_from_dict(self):
+        """Test that remote='/' from dict config is normalized correctly."""
+        data = {
+            "local": "/home/user/my_folder",
+            "remote": "/",
+            "syncMode": "localToCloud",
+        }
+
+        pair = SyncPair.from_dict(data)
+
+        assert pair.remote == ""
+
+    def test_remote_empty_string_stays_empty(self):
+        """Test that remote='' stays as empty string."""
+        pair = SyncPair(
+            local=Path("/home/user/my_folder"),
+            remote="",
+            sync_mode=SyncMode.LOCAL_TO_CLOUD,
+        )
+
+        assert pair.remote == ""
+
+    def test_remote_slash_with_windows_style_local_path(self):
+        """Test remote='/' with Windows-style local path (forward slashes).
+
+        On Windows, paths like C:/Users/test/sync should work correctly
+        with remote='/'.
+        """
+        # Using forward slashes which work on all platforms
+        pair = SyncPair(
+            local=Path("C:/Users/test/sync"),
+            remote="/",
+            sync_mode=SyncMode.LOCAL_TO_CLOUD,
+        )
+
+        assert pair.remote == ""
+        # local.name should give the folder name
+        assert pair.local.name == "sync"
+
+    def test_remote_slash_to_dict_preserves_empty(self):
+        """Test that to_dict preserves empty remote (root)."""
+        pair = SyncPair(
+            local=Path("/home/user/my_folder"),
+            remote="/",
+            sync_mode=SyncMode.LOCAL_TO_CLOUD,
+        )
+
+        data = pair.to_dict()
+
+        # Empty string in dict represents root
+        assert data["remote"] == ""
+
+    def test_remote_slash_parse_literal(self):
+        """Test parsing literal with remote='/'."""
+        pair = SyncPair.parse_literal("/home/user/docs:/")
+
+        assert pair.local == Path("/home/user/docs")
+        assert pair.remote == ""  # Normalized to empty
+        assert pair.sync_mode == SyncMode.TWO_WAY
+
+    def test_remote_slash_parse_literal_with_mode(self):
+        """Test parsing literal with mode and remote='/'."""
+        pair = SyncPair.parse_literal("/home/user/docs:ltc:/")
+
+        assert pair.local == Path("/home/user/docs")
+        assert pair.remote == ""  # Normalized to empty
+        assert pair.sync_mode == SyncMode.LOCAL_TO_CLOUD
+
+    def test_syncing_to_root_detection(self):
+        """Test that syncing_to_root can be detected from empty remote."""
+        pair = SyncPair(
+            local=Path("/home/user/my_folder"),
+            remote="/",
+            sync_mode=SyncMode.LOCAL_TO_CLOUD,
+        )
+
+        # This is how the engine detects root syncing
+        syncing_to_root = not pair.remote or pair.remote == "/"
+        assert syncing_to_root is True
+
+    def test_non_root_remote_not_detected_as_root(self):
+        """Test that non-root remote paths are not detected as root."""
+        pair = SyncPair(
+            local=Path("/home/user/my_folder"),
+            remote="/some/folder",
+            sync_mode=SyncMode.LOCAL_TO_CLOUD,
+        )
+
+        # After normalization, remote should be "some/folder"
+        assert pair.remote == "some/folder"
+
+        # This should NOT be detected as root
+        syncing_to_root = not pair.remote or pair.remote == "/"
+        assert syncing_to_root is False
+
+    def test_remote_path_construction_for_root(self):
+        """Test that file paths are constructed correctly when syncing to root.
+
+        When remote is '/' (empty after normalization), the full remote path
+        should be just the relative path without any prefix.
+        """
+        pair = SyncPair(
+            local=Path("/home/user/my_folder"),
+            remote="/",
+            sync_mode=SyncMode.LOCAL_TO_CLOUD,
+        )
+
+        # Simulate how engine constructs paths
+        relative_path = "subdir/file.txt"
+        if pair.remote:
+            full_remote_path = f"{pair.remote}/{relative_path}"
+        else:
+            full_remote_path = relative_path
+
+        # Should be just the relative path, NOT "my_folder/subdir/file.txt"
+        assert full_remote_path == "subdir/file.txt"
+
+    def test_remote_path_construction_for_named_folder(self):
+        """Test that file paths are constructed correctly for named remote folder."""
+        pair = SyncPair(
+            local=Path("/home/user/my_folder"),
+            remote="/backup",
+            sync_mode=SyncMode.LOCAL_TO_CLOUD,
+        )
+
+        # Simulate how engine constructs paths
+        relative_path = "subdir/file.txt"
+        if pair.remote:
+            full_remote_path = f"{pair.remote}/{relative_path}"
+        else:
+            full_remote_path = relative_path
+
+        # Should include the remote folder prefix
+        assert full_remote_path == "backup/subdir/file.txt"

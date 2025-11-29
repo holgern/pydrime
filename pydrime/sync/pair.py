@@ -64,7 +64,13 @@ class SyncPair:
             self.sync_mode = SyncMode.from_string(self.sync_mode)
 
         # Normalize remote path (remove leading/trailing slashes for consistency)
-        self.remote = self.remote.strip("/")
+        # When remote is "/" or empty, files sync directly to cloud root.
+        # E.g., local/subdir/file.txt -> /subdir/file.txt (not /local/subdir/file.txt)
+        if self.remote == "/":
+            # Root directory - normalize to empty string (meaning cloud root)
+            self.remote = ""
+        else:
+            self.remote = self.remote.strip("/")
 
     @classmethod
     def from_dict(cls, data: dict) -> "SyncPair":
