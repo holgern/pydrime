@@ -1743,12 +1743,14 @@ class DrimeClient:
         self,
         per_page: int = 10,
         page: int = 1,
+        workspace_id: int = 0,
     ) -> Any:
         """Get user notifications.
 
         Args:
             per_page: Number of notifications per page (default: 10)
             page: Page number to retrieve (default: 1)
+            workspace_id: Workspace ID (default: 0 for personal)
 
         Returns:
             Response with 'pagination' key containing:
@@ -1764,8 +1766,10 @@ class DrimeClient:
 
             Each notification contains:
             - id: Notification UUID
-            - type: Notification type
-            - data: Notification content with lines and actions
+            - type: Notification type (e.g., "App\\Notifications\\FileEntrySharedNotif")
+            - notifiable_type: Type of notifiable entity
+            - notifiable_id: ID of the notifiable entity
+            - data: Notification content with mainAction and lines
             - read_at: Read timestamp or null
             - created_at: Creation timestamp
             - updated_at: Update timestamp
@@ -1775,7 +1779,9 @@ class DrimeClient:
 
         Example:
             >>> client = DrimeClient(api_key="your_key")
-            >>> result = client.get_notifications(per_page=10, page=1)
+            >>> result = client.get_notifications(
+            ...     per_page=10, page=1, workspace_id=1593
+            ... )
             >>> notifications = result["pagination"]["data"]
             >>> for notif in notifications:
             ...     print(notif["data"]["lines"][0]["content"])
@@ -1784,6 +1790,7 @@ class DrimeClient:
         params: dict[str, Any] = {
             "perPage": per_page,
             "page": page,
+            "workspaceId": workspace_id,
         }
         return self._request("GET", endpoint, params=params)
 
@@ -2552,6 +2559,148 @@ class DrimeClient:
             }
 
         raise DrimeNotFoundError(f"Folder with ID {folder_id} not found")
+
+    # =========================
+    # Notes Operations
+    # =========================
+
+    def get_notes(self) -> list[dict[str, Any]]:
+        """Get all notes for the current user.
+
+        Returns:
+            List of note objects, each containing:
+            - id: Note ID
+            - title: Note title (may be "Note without title" if empty)
+            - body: Note content (HTML formatted)
+            - created_at: Creation date (format: YYYY-MM-DD)
+            - updated_at: Last update timestamp (format: YYYY-MM-DD HH:MM:SS)
+            - user_id: Owner's user ID
+            - starred: Whether the note is starred (0 or 1)
+
+        Raises:
+            DrimeAPIError: If the request fails
+
+        Example:
+            >>> client = DrimeClient(api_key="your_key")
+            >>> notes = client.get_notes()
+            >>> for note in notes:
+            ...     print(f"{note['title']}: {note['body']}")
+        """
+        endpoint = "/notes"
+        result: list[dict[str, Any]] = self._request("GET", endpoint)
+        return result
+
+    def get_note(
+        self,
+        note_id: int,
+        workspace_id: int = 0,
+    ) -> dict[str, Any]:
+        """Get a single note by ID.
+
+        Args:
+            note_id: ID of the note to retrieve
+            workspace_id: Workspace ID (default: 0 for personal)
+
+        Returns:
+            Response containing:
+            - data: Note object with id, title, body, created_at, updated_at,
+              user_id, starred
+            - shared: Whether the note is shared
+            - links: Share links (empty string if none)
+            - collaborate: Whether collaboration is enabled
+            - linkc: Collaboration link (empty string if none)
+            - error: Error flag (False if successful)
+
+        Raises:
+            DrimeAPIError: If the request fails
+            DrimeNotFoundError: If note not found
+
+        Example:
+            >>> client = DrimeClient(api_key="your_key")
+            >>> result = client.get_note(1958, workspace_id=1593)
+            >>> note = result["data"]
+            >>> print(f"{note['title']}: {note['body']}")
+        """
+        endpoint = f"/getNote/{note_id}"
+        params: dict[str, Any] = {"workspaceId": workspace_id}
+        result: dict[str, Any] = self._request("GET", endpoint, params=params)
+        return result
+
+    def update_note(
+        self,
+        note_id: int,
+        title: str,
+        body: str,
+    ) -> dict[str, Any]:
+        """Update an existing note.
+
+        Args:
+            note_id: ID of the note to update
+            title: New title for the note
+            body: New body content (HTML formatted)
+
+        Returns:
+            Response containing:
+            - success: True if update was successful
+
+        Raises:
+            DrimeAPIError: If the request fails
+
+        Example:
+            >>> client = DrimeClient(api_key="your_key")
+            >>> result = client.update_note(
+            ...     note_id=1958,
+            ...     title="My Note",
+            ...     body="<p>Updated content</p>",
+            ... )
+            >>> print(result["success"])  # True
+        """
+        endpoint = "/notes/update"
+        data: dict[str, Any] = {
+            "id": note_id,
+            "title": title,
+            "body": body,
+        }
+        result: dict[str, Any] = self._request("POST", endpoint, json=data)
+        return result
+
+    def update_note_title(
+        self,
+        note_id: int,
+        title: str,
+        token: str,
+    ) -> dict[str, Any]:
+        """Update only the title of an existing note.
+
+        Args:
+            note_id: ID of the note to update
+            title: New title for the note
+            token: Authentication token for the update
+
+        Returns:
+            Response containing:
+            - success: True if update was successful
+
+        Raises:
+            DrimeAPIError: If the request fails
+
+        Example:
+            >>> client = DrimeClient(api_key="your_key")
+            >>> result = client.update_note_title(
+            ...     note_id=1958,
+            ...     title="New Title",
+            ...     token="your_token",
+            ... )
+            >>> print(result["success"])  # True
+        """
+        endpoint = "/notes/updateTitle"
+        data: dict[str, Any] = {
+            "id": note_id,
+            "title": title,
+            "token": token,
+        }
+        result: dict[str, Any] = self._request("POST", endpoint, json=data)
+        return result
 
     def resolve_entries_by_pattern(
         self,
