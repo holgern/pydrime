@@ -655,69 +655,40 @@ class DrimeClient:
         entry_response = self._request("POST", "/s3/entries", json=entry_payload)
         return entry_response
 
-    def _verify_upload(
+    def _verify_upload_response(
         self,
-        entry_id: int,
+        response: dict[str, Any],
         expected_size: int,
-        workspace_id: int = 0,
-        max_retries: int = 3,
-        retry_delay: float = 1.0,
     ) -> tuple[bool, str]:
-        """Verify that an uploaded file has valid size and users fields.
+        """Verify upload was successful by checking the response data.
 
         Args:
-            entry_id: ID of the uploaded file entry
+            response: Upload response containing fileEntry data
             expected_size: Expected file size in bytes
-            workspace_id: Workspace ID
-            max_retries: Maximum number of retries to fetch the entry
-            retry_delay: Delay between retries in seconds
 
         Returns:
             Tuple of (is_valid, error_message)
         """
-        import time
+        # Extract file entry data (may be nested under 'fileEntry' key)
+        file_entry = response.get("fileEntry", response)
 
-        for attempt in range(max_retries):
-            try:
-                entry = self.get_file_entry(entry_id, workspace_id=workspace_id)
+        if not file_entry:
+            return False, "Upload response missing file entry data"
 
-                # Check if we got a valid response
-                if not entry:
-                    if attempt < max_retries - 1:
-                        time.sleep(retry_delay)
-                        continue
-                    return False, "Failed to retrieve file entry after upload"
+        # Check file_size
+        file_size = file_entry.get("file_size", 0)
+        if file_size != expected_size:
+            return (
+                False,
+                f"File size mismatch: expected {expected_size}, got {file_size}",
+            )
 
-                # Extract file entry data (may be nested under 'fileEntry' key)
-                entry_data = entry.get("fileEntry", entry)
+        # Check users field - it should be a non-empty list
+        users = file_entry.get("users", [])
+        if not users:
+            return False, "Users field is empty (incomplete upload)"
 
-                # Check file_size
-                file_size = entry_data.get("file_size", 0)
-                if file_size != expected_size:
-                    return (
-                        False,
-                        f"File size mismatch: expected {expected_size}, "
-                        f"got {file_size}",
-                    )
-
-                # Check users field - it should be a non-empty list
-                users = entry_data.get("users", [])
-                if not users:
-                    if attempt < max_retries - 1:
-                        # Users field may be populated asynchronously, retry
-                        time.sleep(retry_delay)
-                        continue
-                    return False, "Users field is empty (incomplete upload)"
-
-                return True, ""
-
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-                return False, f"Error verifying upload: {e}"
-
-        return False, "Verification failed after maximum retries"
+        return True, ""
 
     def upload_file(
         self,
@@ -796,30 +767,18 @@ class DrimeClient:
         for attempt in range(max_upload_retries):
             result = _do_upload()
 
-            # Extract entry ID from result
-            file_entry = result.get("fileEntry", {})
-            entry_id = file_entry.get("id")
-
-            if not entry_id:
-                last_error = "Upload response missing file entry ID"
-                if message_callback:
-                    message_callback(
-                        f"Upload attempt {attempt + 1}/{max_upload_retries} failed: "
-                        f"{last_error}"
-                    )
-                continue
-
-            # Verify the upload
-            is_valid, error_msg = self._verify_upload(
-                entry_id=entry_id,
+            # Verify directly from the upload response
+            is_valid, error_msg = self._verify_upload_response(
+                response=result,
                 expected_size=file_size,
-                workspace_id=workspace_id,
             )
 
             if is_valid:
                 return result
 
             last_error = error_msg
+            file_entry = result.get("fileEntry", {})
+            entry_id = file_entry.get("id")
 
             # Delete the incomplete entry before retrying
             if attempt < max_upload_retries - 1:
@@ -828,15 +787,16 @@ class DrimeClient:
                         f"Upload verification failed for '{file_path.name}': "
                         f"{error_msg}. Retrying ({attempt + 2}/{max_upload_retries})..."
                     )
-                try:
-                    self.delete_file_entries(
-                        entry_ids=[entry_id],
-                        delete_forever=True,
-                        workspace_id=workspace_id,
-                    )
-                except Exception:
-                    # Ignore deletion errors, just proceed with retry
-                    pass
+                if entry_id:
+                    try:
+                        self.delete_file_entries(
+                            entry_ids=[entry_id],
+                            delete_forever=True,
+                            workspace_id=workspace_id,
+                        )
+                    except Exception:
+                        # Ignore deletion errors, just proceed with retry
+                        pass
 
         # All retries exhausted
         raise DrimeUploadError(

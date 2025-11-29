@@ -28,7 +28,7 @@ from pydrime.utils import verify_remote_files_have_users
 
 
 def run_sync_command(
-    sync_pair: str, workers: int = 4, batch_size: int = 10, start_delay: float = 3.0
+    sync_pair: str, workers: int = 4, batch_size: int = 10, start_delay: float = 0.0
 ) -> tuple[int, str]:
     """Run a pydrime sync command with streaming output.
 
