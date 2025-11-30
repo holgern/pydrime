@@ -526,7 +526,8 @@ def test_upload_replace(
                 return TestResult(
                     name=test_name,
                     success=False,
-                    error=f"Replace failed: size should be {size_v2}, got {actual_size}",
+                    error=f"Replace failed: size should be {size_v2}, "
+                    f"got {actual_size}",
                     details={"file_id_v1": file_id_v1, "file_id_v2": file_id_v2},
                 )
 
@@ -641,7 +642,7 @@ def test_full_cycle(
 
         if actual_size != size_v1:
             print(f"FAILED (size: {actual_size} != {size_v1})")
-            details["steps"].append(("validate_v1", False, f"Size mismatch"))
+            details["steps"].append(("validate_v1", False, "Size mismatch"))
         elif not has_users:
             print("FAILED (no users)")
             details["steps"].append(("validate_v1", False, "No users"))
@@ -690,7 +691,7 @@ def test_full_cycle(
 
         if actual_size != size_v2:
             print(f"FAILED (size: {actual_size} != {size_v2})")
-            details["steps"].append(("validate_v2", False, f"Size mismatch"))
+            details["steps"].append(("validate_v2", False, "Size mismatch"))
         elif not has_users:
             print("FAILED (no users)")
             details["steps"].append(("validate_v2", False, "No users"))
