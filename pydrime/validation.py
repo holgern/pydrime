@@ -4,8 +4,10 @@ This module provides functions to validate that files uploaded to Drime Cloud
 are complete and match the local files in terms of size and metadata.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 from .api import DrimeClient
 from .file_entries_manager import FileEntriesManager
@@ -48,7 +50,7 @@ def _find_remote_folder_id(
     remote_path: str,
     local_path: Path,
     out: OutputFormatter,
-) -> Optional[int]:
+) -> int | None:
     """Find the remote folder ID for a given path.
 
     Args:
@@ -230,7 +232,7 @@ def _get_empty_validation_result() -> dict[str, Any]:
 
 def _build_remote_file_map(
     file_manager: FileEntriesManager,
-    remote_folder_id: Optional[int],
+    remote_folder_id: int | None,
 ) -> dict[str, FileEntry]:
     """Build a map of remote files from the file manager.
 
