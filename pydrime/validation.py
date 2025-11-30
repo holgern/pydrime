@@ -85,7 +85,7 @@ def _find_remote_folder_id(
 def _validate_file_entry(
     rel_path: str,
     local_size: int,
-    remote_file_map: dict[str, "FileEntry"],
+    remote_file_map: dict[str, FileEntry],
 ) -> dict[str, Any]:
     """Validate a single file entry against the remote file map.
 
