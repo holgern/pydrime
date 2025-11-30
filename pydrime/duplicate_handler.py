@@ -843,38 +843,6 @@ class DuplicateHandler:
             else:
                 self.out.info(f"Will replace existing '{duplicate_name}'")
 
-    def _search_and_mark_for_deletion(self, duplicate_name: str) -> None:
-        """Search for duplicate and mark for deletion.
-
-        Args:
-            duplicate_name: Name of duplicate file
-        """
-        try:
-            matching_entries = self.entries_manager.search_by_name(
-                duplicate_name, exact_match=True
-            )
-
-            if matching_entries:
-                for entry in matching_entries:
-                    self.entries_to_delete.append(entry.id)
-                    if not self.out.quiet:
-                        self.out.info(
-                            f"Will delete existing '{duplicate_name}' "
-                            f"(ID: {entry.id}) before upload"
-                        )
-            else:
-                if not self.out.quiet:
-                    self.out.warning(
-                        f"Could not find exact match for '{duplicate_name}' "
-                        "to delete - will attempt upload anyway"
-                    )
-        except DrimeAPIError as e:
-            if not self.out.quiet:
-                self.out.warning(
-                    f"Could not search for existing '{duplicate_name}': {e}"
-                )
-                self.out.warning("Will attempt upload anyway")
-
     def delete_marked_entries(self) -> bool:
         """Delete entries marked for replacement.
 

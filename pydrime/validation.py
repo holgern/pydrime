@@ -5,7 +5,7 @@ are complete and match the local files in terms of size and metadata.
 """
 
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Optional, cast
 
 from .api import DrimeClient
 from .file_entries_manager import FileEntriesManager
@@ -48,7 +48,7 @@ def _find_remote_folder_id(
     remote_path: str,
     local_path: Path,
     out: OutputFormatter,
-) -> int | None:
+) -> Optional[int]:
     """Find the remote folder ID for a given path.
 
     Args:
@@ -230,7 +230,7 @@ def _get_empty_validation_result() -> dict[str, Any]:
 
 def _build_remote_file_map(
     file_manager: FileEntriesManager,
-    remote_folder_id: int | None,
+    remote_folder_id: Optional[int],
 ) -> dict[str, FileEntry]:
     """Build a map of remote files from the file manager.
 
