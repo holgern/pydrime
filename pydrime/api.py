@@ -634,8 +634,16 @@ class DrimeClient:
         mime_type = self._detect_mime_type(file_path)
 
         # Build the relative path including filename
+        # relative_path can be:
+        # - None: upload to root with original filename
+        # - "folder/path": upload to folder/path/filename
+        # - "folder/path/filename.ext": use as-is (already includes filename)
         if relative_path:
-            full_relative_path = f"{relative_path}/{file_name}"
+            # Check if relative_path already ends with the filename
+            if relative_path.endswith(f"/{file_name}") or relative_path == file_name:
+                full_relative_path = relative_path
+            else:
+                full_relative_path = f"{relative_path}/{file_name}"
         else:
             full_relative_path = file_name
 
