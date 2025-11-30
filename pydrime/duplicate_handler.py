@@ -821,23 +821,27 @@ class DuplicateHandler:
         duplicate_name: str,
         duplicate_info: dict[str, list[tuple[int, Optional[str]]]],
     ) -> None:
-        """Mark existing entries for deletion.
+        """Handle replace action for duplicates.
+
+        The API handles replacement automatically when uploading with the same
+        name, so we don't need to delete anything first. We just proceed with
+        the upload and the server will replace the existing file.
 
         Args:
             duplicate_name: Name of duplicate file
-            duplicate_info: Dict of duplicate IDs
+            duplicate_info: Dict of duplicate IDs (for logging only)
         """
-        if duplicate_name in duplicate_info and duplicate_info[duplicate_name]:
-            for entry_id, _ in duplicate_info[duplicate_name]:
-                self.entries_to_delete.append(entry_id)
-                if not self.out.quiet:
-                    self.out.info(
-                        f"Will delete existing '{duplicate_name}' "
-                        f"(ID: {entry_id}) before upload"
-                    )
-        else:
-            # Fall back to searching if we don't have the info
-            self._search_and_mark_for_deletion(duplicate_name)
+        # The API handles replacement automatically - no deletion needed
+        if not self.out.quiet:
+            if duplicate_name in duplicate_info and duplicate_info[duplicate_name]:
+                ids_str = ", ".join(
+                    str(entry_id) for entry_id, _ in duplicate_info[duplicate_name]
+                )
+                self.out.info(
+                    f"Will replace existing '{duplicate_name}' (ID: {ids_str})"
+                )
+            else:
+                self.out.info(f"Will replace existing '{duplicate_name}'")
 
     def _search_and_mark_for_deletion(self, duplicate_name: str) -> None:
         """Search for duplicate and mark for deletion.

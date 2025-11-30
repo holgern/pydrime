@@ -187,8 +187,12 @@ class TestHandleRename:
 class TestHandleReplace:
     """Tests for replace action."""
 
-    def test_replace_marks_entries_for_deletion(self, tmp_path):
-        """Test replace action marks entries for deletion."""
+    def test_replace_does_not_mark_entries_for_deletion(self, tmp_path):
+        """Test replace action does NOT mark entries for deletion.
+
+        The API handles replacement automatically when uploading a file
+        with the same name - no need to delete first.
+        """
         mock_client = MagicMock()
         mock_client.validate_uploads.return_value = {"duplicates": ["test.txt"]}
         mock_client.get_file_entries.return_value = {
@@ -216,7 +220,11 @@ class TestHandleReplace:
 
         handler.validate_and_handle_duplicates(files_to_upload)
 
-        assert 123 in handler.entries_to_delete
+        # entries_to_delete should be empty - API handles replacement
+        assert 123 not in handler.entries_to_delete
+        assert len(handler.entries_to_delete) == 0
+        # File should NOT be skipped - it will be uploaded and API handles replacement
+        assert "test.txt" not in handler.files_to_skip
 
 
 class TestDeleteMarkedEntries:

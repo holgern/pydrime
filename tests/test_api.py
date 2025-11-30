@@ -1711,11 +1711,10 @@ class TestMimeTypeDetection:
         finally:
             test_file.unlink()
 
-    @patch("pydrime.api.httpx.request")
     @patch("pydrime.api.DrimeClient._detect_mime_type")
-    @patch("pydrime.api.DrimeClient._request")
+    @patch("pydrime.api.DrimeClient._get_client")
     def test_upload_file_uses_mime_detection_small_file(
-        self, mock_request, mock_detect_mime, mock_httpx_request
+        self, mock_get_client, mock_detect_mime
     ):
         """Test that upload_file uses MIME detection for small files."""
         import tempfile
@@ -1723,15 +1722,18 @@ class TestMimeTypeDetection:
         from unittest.mock import MagicMock
 
         mock_detect_mime.return_value = "text/plain"
-        # Mock responses for presign and entry creation
-        mock_request.side_effect = [
-            {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
-            {"status": "success", "fileEntry": {"id": 123}},
-        ]
-        # Mock S3 response (now using httpx.request instead of httpx.put)
-        mock_s3_response = MagicMock()
-        mock_s3_response.raise_for_status = MagicMock()
-        mock_httpx_request.return_value = mock_s3_response
+
+        # Mock the HTTP client response (upload_file_simple uses client.post)
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "status": "success",
+            "fileEntry": {"id": 123},
+        }
+
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_get_client.return_value = mock_client
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("small file")
@@ -1813,11 +1815,10 @@ class TestMimeTypeDetection:
 class TestUploadVerification:
     """Tests for upload verification and retry logic."""
 
-    @patch("pydrime.api.httpx.request")
     @patch("pydrime.api.DrimeClient._detect_mime_type")
-    @patch("pydrime.api.DrimeClient._request")
+    @patch("pydrime.api.DrimeClient._get_client")
     def test_upload_file_with_verification_success(
-        self, mock_request, mock_detect_mime, mock_httpx_request
+        self, mock_get_client, mock_detect_mime
     ):
         """Test upload with successful verification."""
         import tempfile
@@ -1832,23 +1833,21 @@ class TestUploadVerification:
 
         file_size = test_file.stat().st_size
 
-        # Mock responses: presign, entry creation (with verification data)
-        # Verification is now done from the entry creation response directly
-        mock_request.side_effect = [
-            {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
-            {
-                "status": "success",
-                "fileEntry": {
-                    "id": 123,
-                    "file_size": file_size,
-                    "users": [{"id": 1, "email": "test@example.com"}],
-                },
+        # Mock the HTTP client response (upload_file_simple uses client.post)
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "status": "success",
+            "fileEntry": {
+                "id": 123,
+                "file_size": file_size,
+                "users": [{"id": 1, "email": "test@example.com"}],
             },
-        ]
+        }
 
-        mock_s3_response = MagicMock()
-        mock_s3_response.raise_for_status = MagicMock()
-        mock_httpx_request.return_value = mock_s3_response
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_get_client.return_value = mock_client
 
         try:
             client = DrimeClient(api_key="test_key")
@@ -1863,11 +1862,11 @@ class TestUploadVerification:
         finally:
             test_file.unlink()
 
-    @patch("pydrime.api.httpx.request")
     @patch("pydrime.api.DrimeClient._detect_mime_type")
+    @patch("pydrime.api.DrimeClient._get_client")
     @patch("pydrime.api.DrimeClient._request")
     def test_upload_file_retry_on_missing_users(
-        self, mock_request, mock_detect_mime, mock_httpx_request
+        self, mock_request, mock_get_client, mock_detect_mime
     ):
         """Test upload retries when users field is missing in response."""
         import tempfile
@@ -1883,30 +1882,33 @@ class TestUploadVerification:
         file_size = test_file.stat().st_size
         messages = []
 
-        # Mock responses:
-        # Verification is done from entry creation response directly
-        # First attempt: presign, entry creation (no users) -> delete
-        # Second attempt: presign, entry creation (with users) -> success
-        mock_request.side_effect = [
-            # First attempt - missing users in response
-            {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
-            {"status": "success", "fileEntry": {"id": 123, "file_size": file_size}},
-            {"status": "success"},  # delete entry
-            # Second attempt - users present
-            {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
-            {
-                "status": "success",
-                "fileEntry": {
-                    "id": 456,
-                    "file_size": file_size,
-                    "users": [{"id": 1, "email": "test@example.com"}],
-                },
-            },
-        ]
+        # Mock HTTP client responses for simple upload
+        # First response: missing users -> triggers retry
+        # Second response: with users -> success
+        mock_response1 = MagicMock()
+        mock_response1.status_code = 200
+        mock_response1.json.return_value = {
+            "status": "success",
+            "fileEntry": {"id": 123, "file_size": file_size},
+        }
 
-        mock_s3_response = MagicMock()
-        mock_s3_response.raise_for_status = MagicMock()
-        mock_httpx_request.return_value = mock_s3_response
+        mock_response2 = MagicMock()
+        mock_response2.status_code = 200
+        mock_response2.json.return_value = {
+            "status": "success",
+            "fileEntry": {
+                "id": 456,
+                "file_size": file_size,
+                "users": [{"id": 1, "email": "test@example.com"}],
+            },
+        }
+
+        mock_client = MagicMock()
+        mock_client.post.side_effect = [mock_response1, mock_response2]
+        mock_get_client.return_value = mock_client
+
+        # Mock delete call (for cleaning up failed entry)
+        mock_request.return_value = {"status": "success"}
 
         try:
             client = DrimeClient(api_key="test_key")
@@ -1925,11 +1927,11 @@ class TestUploadVerification:
         finally:
             test_file.unlink()
 
-    @patch("pydrime.api.httpx.request")
     @patch("pydrime.api.DrimeClient._detect_mime_type")
+    @patch("pydrime.api.DrimeClient._get_client")
     @patch("pydrime.api.DrimeClient._request")
     def test_upload_file_fails_after_max_retries(
-        self, mock_request, mock_detect_mime, mock_httpx_request
+        self, mock_request, mock_get_client, mock_detect_mime
     ):
         """Test upload fails after maximum retries."""
         import tempfile
@@ -1948,25 +1950,26 @@ class TestUploadVerification:
 
         file_size = test_file.stat().st_size
 
-        # All attempts fail with missing users in response
-        # Each attempt: presign, entry creation (no users), delete (except last)
-        mock_request.side_effect = [
-            # Attempt 1
-            {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
-            {"status": "success", "fileEntry": {"id": 123, "file_size": file_size}},
-            {"status": "success"},  # delete
-            # Attempt 2
-            {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
-            {"status": "success", "fileEntry": {"id": 456, "file_size": file_size}},
-            {"status": "success"},  # delete
-            # Attempt 3 (last - no delete after this)
-            {"url": "https://s3.example.com/presigned", "key": "test/file.txt"},
-            {"status": "success", "fileEntry": {"id": 789, "file_size": file_size}},
-        ]
+        # All attempts return missing users -> all fail verification
+        def create_response():
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "status": "success",
+                "fileEntry": {"id": 123, "file_size": file_size},
+            }
+            return mock_response
 
-        mock_s3_response = MagicMock()
-        mock_s3_response.raise_for_status = MagicMock()
-        mock_httpx_request.return_value = mock_s3_response
+        mock_client = MagicMock()
+        mock_client.post.side_effect = [
+            create_response(),
+            create_response(),
+            create_response(),
+        ]
+        mock_get_client.return_value = mock_client
+
+        # Mock delete calls (for cleaning up failed entries)
+        mock_request.return_value = {"status": "success"}
 
         try:
             client = DrimeClient(api_key="test_key")
