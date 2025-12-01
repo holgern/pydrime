@@ -1207,6 +1207,33 @@ class DrimeClient:
         params: dict[str, Any] = {"workspaceId": workspace_id}
         return self._request("GET", endpoint, params=params)
 
+    def rename_file_entry(
+        self,
+        entry_id: int,
+        new_name: str,
+        initial_name: str | None = None,
+        workspace_id: int = 0,
+    ) -> Any:
+        """Rename a file or folder entry.
+
+        Args:
+            entry_id: ID of the entry to rename
+            new_name: New name for the entry
+            initial_name: Original name of the entry (optional, for validation)
+            workspace_id: Workspace ID (default: 0 for personal)
+
+        Returns:
+            Response with 'status' and 'fileEntry' keys
+        """
+        endpoint = f"/file-entries/{entry_id}"
+        params = {"workspaceId": workspace_id, "_method": "PUT"}
+        data: dict[str, Any] = {"name": new_name}
+
+        if initial_name:
+            data["initialName"] = initial_name
+
+        return self._request("POST", endpoint, params=params, json=data)
+
     def update_file_entry(
         self,
         entry_id: int,
@@ -1260,18 +1287,20 @@ class DrimeClient:
         self,
         entry_ids: list[int],
         destination_id: int | None = None,
+        workspace_id: int = 0,
     ) -> Any:
         """Move specified entries to a different folder.
 
         Args:
             entry_ids: List of entry IDs to move
             destination_id: ID of destination folder (None for root)
+            workspace_id: Workspace ID (default: 0 for personal)
 
         Returns:
             Response with 'status' and 'entries' keys
         """
-        endpoint = "/file-entries/move"
-        data: dict[str, Any] = {"entryIds": entry_ids}
+        endpoint = f"/file-entries/move?workspaceId={workspace_id}"
+        data: dict[str, Any] = {"entryIds": entry_ids, "workspaceId": workspace_id}
 
         if destination_id is not None:
             data["destinationId"] = destination_id
@@ -1282,17 +1311,19 @@ class DrimeClient:
         self,
         entry_ids: list[int],
         destination_id: int | None = None,
+        workspace_id: int = 0,
     ) -> Any:
         """Duplicate specified entries.
 
         Args:
             entry_ids: List of entry IDs to duplicate
             destination_id: ID of destination folder (None for root)
+            workspace_id: Workspace ID (default: 0 for personal)
 
         Returns:
             Response with 'status' and 'entries' keys
         """
-        endpoint = "/file-entries/duplicate"
+        endpoint = f"/file-entries/duplicate?workspaceId={workspace_id}"
         data: dict[str, Any] = {"entryIds": entry_ids}
 
         if destination_id is not None:
@@ -1414,18 +1445,23 @@ class DrimeClient:
         self,
         name: str,
         parent_id: int | None = None,
+        workspace_id: int = 0,
     ) -> Any:
         """Create a new folder.
 
         Args:
             name: Name of the new folder
             parent_id: ID of parent folder (None for root)
+            workspace_id: ID of the workspace (default: 0 for personal)
 
         Returns:
             Response with 'status' and 'folder' keys
         """
         endpoint = "/folders"
-        data: dict[str, Any] = {"name": name}
+        data: dict[str, Any] = {
+            "name": name,
+            "workspaceId": workspace_id,
+        }
 
         if parent_id is not None:
             data["parentId"] = parent_id
@@ -2275,17 +2311,22 @@ class DrimeClient:
         parent_ids = [parent_id] if parent_id is not None else None
         return self.get_file_entries(parent_ids=parent_ids, query=query)
 
-    def create_directory(self, name: str, parent_id: int | None = None) -> Any:
+    def create_directory(
+        self, name: str, parent_id: int | None = None, workspace_id: int = 0
+    ) -> Any:
         """Create a directory (alias for create_folder).
 
         Args:
             name: Directory name
             parent_id: Parent folder ID (None for root)
+            workspace_id: ID of the workspace (default: 0 for personal)
 
         Returns:
             Response with 'status' and 'folder' keys
         """
-        return self.create_folder(name=name, parent_id=parent_id)
+        return self.create_folder(
+            name=name, parent_id=parent_id, workspace_id=workspace_id
+        )
 
     def get_folder_by_name(
         self,
