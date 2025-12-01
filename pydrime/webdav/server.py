@@ -10,6 +10,44 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+class ContentTypeFixMiddleware:
+    """Middleware to fix WsgiDAV bug with Content-Type header in LOCK responses.
+
+    WsgiDAV 4.3.3 has a bug where LOCK responses have Content-Type: "application"
+    instead of "application/xml". This causes litmus and other WebDAV clients
+    to fail parsing the response.
+
+    See: https://github.com/mar10/wsgidav/issues/XXX (to be reported)
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    def __call__(self, environ: dict, start_response: Any) -> Any:
+        request_method = environ.get("REQUEST_METHOD", "")
+
+        def fixed_start_response(status: str, headers: list, exc_info: Any = None):
+            # Fix Content-Type for LOCK responses
+            if request_method == "LOCK":
+                fixed_headers = []
+                for name, value in headers:
+                    if (
+                        name.lower() == "content-type"
+                        and value == "application; charset=utf-8"
+                    ):
+                        # Fix the broken Content-Type
+                        fixed_headers.append(
+                            ("Content-Type", "application/xml; charset=utf-8")
+                        )
+                    else:
+                        fixed_headers.append((name, value))
+                return start_response(status, fixed_headers, exc_info)
+            return start_response(status, headers, exc_info)
+
+        return self.app(environ, fixed_start_response)
+
+
 # Default configuration values
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
@@ -116,7 +154,10 @@ def create_webdav_app(
             }
         }
 
-    return WsgiDAVApp(config)
+    app = WsgiDAVApp(config)
+
+    # Wrap with middleware to fix WsgiDAV Content-Type bug in LOCK responses
+    return ContentTypeFixMiddleware(app)
 
 
 def run_webdav_server(

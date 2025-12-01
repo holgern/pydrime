@@ -56,6 +56,14 @@ class DrimeResource(DAVNonCollection):
             provider: Reference to the DAV provider for cache management
         """
         super().__init__(path, environ)
+        # Debug: check if lock_manager is set
+        env_provider = environ.get("wsgidav.provider")
+        logger.debug(
+            f"DrimeResource.__init__: path={path}, "
+            f"environ provider id={id(env_provider) if env_provider else 'None'}, "
+            f"self.provider id={id(self.provider)}, "
+            f"lock_manager={getattr(self.provider, 'lock_manager', 'NOT_SET')}"
+        )
         self.file_entry = file_entry
         self.client = client
         self.workspace_id = workspace_id
@@ -115,6 +123,29 @@ class DrimeResource(DAVNonCollection):
     def support_ranges(self) -> bool:  # type: ignore[override]
         """Return True if range requests are supported."""
         return False  # Drime API doesn't support range requests easily
+
+    def get_property_value(self, name: str) -> Any:
+        """Return the value of a property with debug logging for locks."""
+        if name == "{DAV:}lockdiscovery":
+            lm = self.provider.lock_manager
+            ref_url = self.get_ref_url()
+            logger.debug(
+                f"DrimeResource.get_property_value: name={name}, "
+                f"ref_url={ref_url!r}, provider id={id(self.provider)}, "
+                f"lock_manager={lm}"
+            )
+            if lm:
+                lock_list = lm.get_url_lock_list(ref_url)
+                logger.debug(
+                    f"DrimeResource.get_property_value: found {len(lock_list)} locks"
+                )
+                for i, lock in enumerate(lock_list):
+                    logger.debug(f"  Lock {i}: {lock}")
+            else:
+                logger.warning(
+                    "DrimeResource.get_property_value: lock_manager is None!"
+                )
+        return super().get_property_value(name)
 
     def get_content(self) -> BytesIO:
         """Return the file content as a file-like object."""
@@ -805,6 +836,12 @@ class DrimeCollection(DAVCollection):
             provider: Reference to the DAV provider for cache management
         """
         super().__init__(path, environ)
+        # Debug: check if lock_manager is set
+        logger.debug(
+            f"DrimeCollection.__init__: path={path}, "
+            f"provider id={id(self.provider)}, "
+            f"lock_manager={getattr(self.provider, 'lock_manager', 'NOT_SET')}"
+        )
         self.folder_entry = folder_entry
         self.client = client
         self.workspace_id = workspace_id
@@ -1633,6 +1670,29 @@ class DrimeCollection(DAVCollection):
     def support_etag(self) -> bool:  # type: ignore[override]
         """Return True if ETags are supported."""
         return True
+
+    def get_property_value(self, name: str) -> Any:
+        """Return the value of a property with debug logging for locks."""
+        if name == "{DAV:}lockdiscovery":
+            lm = self.provider.lock_manager
+            ref_url = self.get_ref_url()
+            logger.debug(
+                f"DrimeCollection.get_property_value: name={name}, "
+                f"ref_url={ref_url!r}, provider id={id(self.provider)}, "
+                f"lock_manager={lm}"
+            )
+            if lm:
+                lock_list = lm.get_url_lock_list(ref_url)
+                logger.debug(
+                    f"DrimeCollection.get_property_value: found {len(lock_list)} locks"
+                )
+                for i, lock in enumerate(lock_list):
+                    logger.debug(f"  Lock {i}: {lock}")
+            else:
+                logger.warning(
+                    "DrimeCollection.get_property_value: lock_manager is None!"
+                )
+        return super().get_property_value(name)
 
 
 class DrimeDAVProvider(DAVProvider):
