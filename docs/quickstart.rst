@@ -346,6 +346,28 @@ Check your storage usage:
 
    pydrime usage
 
+WebDAV Server
+~~~~~~~~~~~~~
+
+Start a WebDAV server to mount your Drime Cloud storage:
+
+.. code-block:: bash
+
+   # Start server with default settings
+   pydrime webdav
+
+   # Start with authentication
+   pydrime webdav --username admin --password secret
+
+   # Start in read-only mode
+   pydrime webdav --readonly
+
+Then connect using your file manager:
+
+* **macOS Finder:** Cmd+K → ``http://127.0.0.1:8080/``
+* **Windows Explorer:** Map network drive → ``http://127.0.0.1:8080/``
+* **Linux (Nautilus):** Ctrl+L → ``dav://127.0.0.1:8080/``
+
 Python API Usage
 ----------------
 

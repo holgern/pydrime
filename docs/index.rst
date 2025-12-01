@@ -35,6 +35,7 @@ Features
 * JSON output for programmatic processing
 * Context-aware file operations (current directory support)
 * **Sync** - Bidirectional and one-way sync between local and cloud
+* **WebDAV Server** - Mount Drime Cloud as a network drive
 * **Encrypted Vault** - Client-side encryption for sensitive files
 * **Duplicate Finder** - Find and remove duplicate files
 * **Storage Usage** - Monitor your cloud storage usage
