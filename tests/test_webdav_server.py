@@ -6,8 +6,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 class TestContentTypeFixMiddleware:
     """Tests for the ContentTypeFixMiddleware class."""
@@ -92,7 +90,7 @@ class TestCreateWebdavApp:
 
     def test_create_app_basic(self):
         """Test creating a basic WebDAV app."""
-        from pydrime.webdav.server import create_webdav_app, ContentTypeFixMiddleware
+        from pydrime.webdav.server import ContentTypeFixMiddleware, create_webdav_app
 
         mock_client = MagicMock()
         app = create_webdav_app(client=mock_client)

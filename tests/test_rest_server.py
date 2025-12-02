@@ -9,8 +9,6 @@ import json
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 class TestResticRESTApp:
     """Tests for the ResticRESTApp class."""
@@ -98,7 +96,7 @@ class TestAPIVersionDetection(TestResticRESTApp):
 
     def test_api_v2_exact_match(self):
         """Test that API v2 is used only for exact match."""
-        from pydrime.rest.server import ResticRESTApp, API_V2_MEDIA_TYPE
+        from pydrime.rest.server import API_V2_MEDIA_TYPE, ResticRESTApp
 
         app = ResticRESTApp(client=self.mock_client)
         environ = {"HTTP_ACCEPT": API_V2_MEDIA_TYPE}
@@ -106,7 +104,7 @@ class TestAPIVersionDetection(TestResticRESTApp):
 
     def test_api_v1_with_v2_substring(self):
         """Test that API v1 is used when v2 is a substring (not exact match)."""
-        from pydrime.rest.server import ResticRESTApp, API_V2_MEDIA_TYPE
+        from pydrime.rest.server import API_V2_MEDIA_TYPE, ResticRESTApp
 
         app = ResticRESTApp(client=self.mock_client)
         # This would match with substring check but should NOT match with exact
@@ -291,7 +289,7 @@ class TestResponseHelpers(TestResticRESTApp):
             headers.extend(h)
 
         existing_headers = [("Content-Length", "10")]
-        result = app._send_response(
+        app._send_response(
             start_response, "200 OK", headers=existing_headers, body=b"Hello"
         )
         # Should only have one Content-Length
@@ -667,7 +665,7 @@ class TestFactoryFunctions:
 
     def test_create_rest_app(self):
         """Test create_rest_app factory function."""
-        from pydrime.rest.server import create_rest_app, ResticRESTApp
+        from pydrime.rest.server import ResticRESTApp, create_rest_app
 
         mock_client = MagicMock()
         app = create_rest_app(
