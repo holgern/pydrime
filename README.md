@@ -57,12 +57,25 @@ pip install -e .
 
 # Or install with dev dependencies
 pip install -e ".[dev]"
+
+# Or install with webdav / Rest dependencies
+pip install -e ".[webdav]"
+
 ```
 
 ### Termux specific install instruction
 
 ```bash
 pkg install -y rust binutils
+```
+
+### From pypi
+
+```bash
+pip install pydrime
+
+# Or install with webdav/REST dependencies
+pip install pydrime[webdav]
 ```
 
 ## Configuration
