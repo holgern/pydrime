@@ -1626,3 +1626,251 @@ By default, files are moved to trash. Use ``--no-trash`` to delete permanently.
 
    # Skip confirmation
    pydrime vault rm MyFolder -y
+
+WebDAV Server
+-------------
+
+PyDrime includes a built-in WebDAV server that allows you to mount your Drime Cloud
+storage as a network drive or access it through any WebDAV-compatible client.
+
+webdav
+~~~~~~
+
+Start a WebDAV server for Drime Cloud.
+
+.. code-block:: bash
+
+   pydrime webdav [OPTIONS]
+
+**Options:**
+
+* ``-H, --host TEXT`` - Host address to bind to (default: 127.0.0.1)
+* ``-p, --port INTEGER`` - Port number to listen on (default: 8080)
+* ``-w, --workspace INTEGER`` - Workspace ID to serve (default: uses current workspace)
+* ``-r, --readonly`` - Start server in read-only mode
+* ``--cache-ttl FLOAT`` - Cache time-to-live in seconds (default: 30.0)
+* ``--max-file-size INTEGER`` - Maximum file size for uploads/downloads in MB (default: 500)
+* ``-u, --username TEXT`` - WebDAV username for authentication
+* ``-P, --password TEXT`` - WebDAV password for authentication
+* ``--ssl-cert PATH`` - Path to SSL certificate file (for HTTPS)
+* ``--ssl-key PATH`` - Path to SSL private key file (for HTTPS)
+* ``-v, --verbose INTEGER`` - Verbosity level 0-5 (default: 1)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Starts a WebDAV server that exposes your Drime Cloud storage. The server supports
+standard WebDAV operations including file listing, upload, download, copy, move,
+delete, and locking.
+
+The server uses the WsgiDAV library and supports:
+
+* **DAV Class 1 and 2** compliance
+* **File locking** for collaborative editing
+* **Property management** for file metadata
+* **Directory browsing** via web browser
+* **SSL/TLS encryption** for secure connections
+* **Basic and Digest authentication**
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Start server with default settings
+   pydrime webdav
+
+   # Start on custom host and port
+   pydrime webdav --host 0.0.0.0 --port 8443
+
+   # Start in read-only mode
+   pydrime webdav --readonly
+
+   # Start with authentication
+   pydrime webdav --username admin --password secret
+
+   # Start with SSL
+   pydrime webdav --ssl-cert /path/to/cert.pem --ssl-key /path/to/key.pem
+
+   # Start with verbose logging for debugging
+   pydrime webdav -v 5
+
+   # Start for specific workspace
+   pydrime webdav --workspace 5
+
+**Connecting to the WebDAV Server:**
+
+Once the server is running, you can connect to it using various methods:
+
+**macOS Finder:**
+
+1. Press ``Cmd+K`` or select Go → Connect to Server
+2. Enter ``http://127.0.0.1:8080/`` (or your custom address)
+3. Click Connect
+
+**Windows Explorer:**
+
+1. Right-click "This PC" and select "Map network drive"
+2. Enter ``\\127.0.0.1@8080\DavWWWRoot`` or use "Add a network location"
+3. Enter ``http://127.0.0.1:8080/``
+
+**Linux (GNOME Files/Nautilus):**
+
+1. Press ``Ctrl+L`` to show the location bar
+2. Enter ``dav://127.0.0.1:8080/``
+
+**Linux (KDE Dolphin):**
+
+1. Enter ``webdav://127.0.0.1:8080/`` in the location bar
+
+**Command Line (cadaver):**
+
+.. code-block:: bash
+
+   cadaver http://127.0.0.1:8080/
+
+**rclone:**
+
+.. code-block:: bash
+
+   rclone config
+   # Choose "webdav" and enter http://127.0.0.1:8080/
+
+**Cyberduck/Mountain Duck:**
+
+1. Create new bookmark
+2. Select "WebDAV (HTTP)" or "WebDAV (HTTPS)"
+3. Enter server address and port
+
+**Performance Tuning:**
+
+* ``--cache-ttl`` - Increase for better performance with infrequent changes, decrease
+  for more real-time updates
+* ``--max-file-size`` - Limit file sizes to prevent memory issues with very large files
+
+**Security Considerations:**
+
+* By default, the server binds to ``127.0.0.1`` (localhost only)
+* Use ``--host 0.0.0.0`` to allow external connections (use with authentication!)
+* Always use ``--username`` and ``--password`` when exposing to a network
+* Use ``--ssl-cert`` and ``--ssl-key`` for encrypted connections
+* Consider using a reverse proxy (nginx, Apache) for production deployments
+
+REST Server (Restic Backend)
+----------------------------
+
+PyDrime includes a built-in REST server compatible with restic's REST backend protocol.
+This allows you to use Drime Cloud as a backup destination for `restic <https://restic.net/>`_.
+
+rest
+~~~~
+
+Start a REST server for restic backups.
+
+.. code-block:: bash
+
+   pydrime rest [OPTIONS]
+
+**Options:**
+
+* ``-H, --host TEXT`` - Host address to bind to (default: 127.0.0.1)
+* ``-p, --port INTEGER`` - Port number to listen on (default: 8000)
+* ``-w, --workspace INTEGER`` - Workspace ID to serve (default: uses current workspace)
+* ``-r, --readonly`` - Start server in read-only mode
+* ``-u, --username TEXT`` - Username for basic authentication
+* ``-P, --password TEXT`` - Password for basic authentication
+* ``--ssl-cert PATH`` - Path to SSL certificate file (for HTTPS)
+* ``--ssl-key PATH`` - Path to SSL private key file (for HTTPS)
+* ``-k, --api-key TEXT`` - Drime Cloud API key
+
+**Description:**
+
+Starts a REST server that implements the restic REST backend protocol. This allows
+restic to store backup repositories directly in your Drime Cloud storage.
+
+The server supports:
+
+* **REST Backend API v1** - Compatible with all restic versions
+* **Repository operations** - Create, delete, list repositories
+* **Blob operations** - Store and retrieve data, keys, locks, snapshots, and index files
+* **Basic authentication** - Optional username/password protection
+* **SSL/TLS encryption** - For secure connections
+
+**Examples:**
+
+.. code-block:: bash
+
+   # Start server with default settings
+   pydrime rest
+
+   # Start on custom host and port
+   pydrime rest --host 0.0.0.0 --port 8000
+
+   # Start in read-only mode (for restore operations only)
+   pydrime rest --readonly
+
+   # Start with authentication
+   pydrime rest --username admin --password secret
+
+   # Start with SSL
+   pydrime rest --ssl-cert /path/to/cert.pem --ssl-key /path/to/key.pem
+
+   # Start for specific workspace
+   pydrime rest --workspace 5
+
+**Using with restic:**
+
+Once the server is running, you can use it as a restic repository:
+
+.. code-block:: bash
+
+   # Initialize a new repository
+   restic -r rest:http://127.0.0.1:8000/myrepo init
+
+   # Create a backup
+   restic -r rest:http://127.0.0.1:8000/myrepo backup /path/to/data
+
+   # List snapshots
+   restic -r rest:http://127.0.0.1:8000/myrepo snapshots
+
+   # Restore from backup
+   restic -r rest:http://127.0.0.1:8000/myrepo restore latest --target /restore/path
+
+   # Check repository integrity
+   restic -r rest:http://127.0.0.1:8000/myrepo check
+
+**With authentication:**
+
+.. code-block:: bash
+
+   # Start server with credentials
+   pydrime rest --username myuser --password mypass
+
+   # Use restic with authentication (credentials in URL)
+   restic -r rest:http://myuser:mypass@127.0.0.1:8000/myrepo backup /data
+
+   # Or use environment variables
+   export RESTIC_REST_USERNAME=myuser
+   export RESTIC_REST_PASSWORD=mypass
+   restic -r rest:http://127.0.0.1:8000/myrepo backup /data
+
+**Multiple Repositories:**
+
+You can create multiple repositories on the same server by using different paths:
+
+.. code-block:: bash
+
+   # Different repositories for different purposes
+   restic -r rest:http://127.0.0.1:8000/documents init
+   restic -r rest:http://127.0.0.1:8000/photos init
+   restic -r rest:http://127.0.0.1:8000/projects init
+
+   # Each repository is stored in a separate folder in Drime Cloud
+
+**Security Considerations:**
+
+* By default, the server binds to ``127.0.0.1`` (localhost only)
+* Use ``--host 0.0.0.0`` to allow external connections (use with authentication!)
+* Always use ``--username`` and ``--password`` when exposing to a network
+* Use ``--ssl-cert`` and ``--ssl-key`` for encrypted connections over HTTPS
+* Consider using a reverse proxy (nginx, Apache) for production deployments
+* The restic repository password (set during ``init``) encrypts all backup data

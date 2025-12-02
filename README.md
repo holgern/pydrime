@@ -31,6 +31,8 @@ important data.
 - Upload individual files or entire directories
 - Download files and folders by name, ID, or hash
 - **Sync** local directories with Drime Cloud (bidirectional and one-way modes)
+- **WebDAV Server** to mount Drime Cloud as a network drive
+- **REST Server** for restic backup integration
 - **Encrypted Vault** for secure file storage with client-side encryption
 - Recursive directory scanning
 - Progress tracking with visual feedback
@@ -55,6 +57,12 @@ pip install -e .
 
 # Or install with dev dependencies
 pip install -e ".[dev]"
+```
+
+### Termux specific install instruction
+
+```bash
+pkg install -y rust binutils
 ```
 
 ## Configuration
@@ -397,6 +405,85 @@ pydrime vault rm secret.txt
 
 # Lock vault (clear password from session)
 eval $(pydrime vault lock)
+```
+
+### WebDAV Server
+
+Start a WebDAV server to mount your Drime Cloud storage as a network drive:
+
+```bash
+# Start server with default settings (localhost:8080)
+pydrime webdav
+
+# Start on custom host and port
+pydrime webdav --host 0.0.0.0 --port 8443
+
+# Start with authentication
+pydrime webdav --username admin --password secret
+
+# Start in read-only mode
+pydrime webdav --readonly
+
+# Start with SSL encryption
+pydrime webdav --ssl-cert cert.pem --ssl-key key.pem
+```
+
+**Connecting to the WebDAV Server:**
+
+- **macOS Finder:** Press `Cmd+K`, enter `http://127.0.0.1:8080/`
+- **Windows Explorer:** Map network drive → `http://127.0.0.1:8080/`
+- **Linux (Nautilus):** Press `Ctrl+L`, enter `dav://127.0.0.1:8080/`
+- **Linux (Dolphin):** Enter `webdav://127.0.0.1:8080/` in location bar
+
+### REST Server (Restic Backend)
+
+Start a REST server compatible with restic's REST backend protocol. This allows you to
+use Drime Cloud as a backup destination for [restic](https://restic.net/):
+
+```bash
+# Start server with default settings (localhost:8000)
+pydrime rest
+
+# Start on custom host and port
+pydrime rest --host 0.0.0.0 --port 8000
+
+# Start with authentication
+pydrime rest --username admin --password secret
+
+# Start in read-only mode (for restore operations only)
+pydrime rest --readonly
+
+# Start with SSL encryption
+pydrime rest --ssl-cert cert.pem --ssl-key key.pem
+
+# Start for a specific workspace
+pydrime rest --workspace 5
+```
+
+**Using with restic:**
+
+```bash
+# Initialize a new repository
+restic -r rest:http://127.0.0.1:8000/myrepo init
+
+# Create a backup
+restic -r rest:http://127.0.0.1:8000/myrepo backup /path/to/data
+
+# List snapshots
+restic -r rest:http://127.0.0.1:8000/myrepo snapshots
+
+# Restore from backup
+restic -r rest:http://127.0.0.1:8000/myrepo restore latest --target /restore/path
+```
+
+**With authentication:**
+
+```bash
+# Start server with credentials
+pydrime rest --username myuser --password mypass
+
+# Use restic with authentication
+restic -r rest:http://myuser:mypass@127.0.0.1:8000/myrepo backup /data
 ```
 
 ## Command Reference
