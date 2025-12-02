@@ -5531,6 +5531,200 @@ def find_duplicates(
     "--port",
     "-p",
     type=int,
+    default=8000,
+    help="Port number to listen on (default: 8000)",
+)
+@click.option(
+    "--workspace",
+    "-w",
+    type=int,
+    default=None,
+    help="Workspace ID to serve (uses default workspace if not specified)",
+)
+@click.option(
+    "--username",
+    "-u",
+    type=str,
+    default=None,
+    help="REST API username for authentication (anonymous if not set)",
+)
+@click.option(
+    "--password",
+    "-P",
+    type=str,
+    default=None,
+    help="REST API password (will prompt if username is set but password is not)",
+)
+@click.option(
+    "--readonly",
+    is_flag=True,
+    help="Enable read-only mode (no uploads/deletes)",
+)
+@click.option(
+    "--ssl-cert",
+    type=click.Path(exists=True),
+    default=None,
+    help="SSL certificate file path (for HTTPS)",
+)
+@click.option(
+    "--ssl-key",
+    type=click.Path(exists=True),
+    default=None,
+    help="SSL private key file path (for HTTPS)",
+)
+@click.pass_context
+def rest(
+    ctx: Any,
+    host: str,
+    port: int,
+    workspace: Optional[int],
+    username: Optional[str],
+    password: Optional[str],
+    readonly: bool,
+    ssl_cert: Optional[str],
+    ssl_key: Optional[str],
+) -> None:
+    """Start a REST API server for restic backup.
+
+    Provides a REST backend compatible with restic's REST backend v2 API,
+    allowing you to use Drime Cloud as a backup storage for restic.
+
+    Authentication:
+      By default, anonymous access is allowed. Use --username and --password
+      to require authentication.
+
+    Examples:
+        # Start server with defaults (localhost:8000, anonymous)
+        pydrime rest
+
+        # Bind to all interfaces on port 9000
+        pydrime rest --host 0.0.0.0 --port 9000
+
+        # Require authentication
+        pydrime rest --username myuser --password mypass
+
+        # Read-only mode
+        pydrime rest --readonly
+
+        # Serve specific workspace
+        pydrime rest --workspace 5
+
+        # Enable HTTPS
+        pydrime rest --ssl-cert /path/to/cert.pem --ssl-key /path/to/key.pem
+
+    Restic usage:
+        # Initialize a new repository
+        restic -r rest:http://localhost:8000/myrepo init
+
+        # With authentication
+        restic -r rest:http://user:pass@localhost:8000/myrepo init
+
+        # Backup data
+        restic -r rest:http://localhost:8000/myrepo backup /path/to/data
+
+        # List snapshots
+        restic -r rest:http://localhost:8000/myrepo snapshots
+
+        # Restore data
+        restic -r rest:http://localhost:8000/myrepo restore latest --target /restore
+    """
+    out: OutputFormatter = ctx.obj["out"]
+
+    # Check API key
+    api_key = require_api_key(ctx, out)
+
+    # Validate SSL options (both must be provided, or neither)
+    if bool(ssl_cert) != bool(ssl_key):
+        out.error("Both --ssl-cert and --ssl-key must be provided for HTTPS")
+        ctx.exit(1)
+
+    # Prompt for password if username is set but password is not
+    if username and not password:
+        password = click.prompt("REST API password", hide_input=True)
+
+    # Use default workspace if none specified
+    if workspace is None:
+        workspace = config.get_default_workspace() or 0
+
+    try:
+        # Check if cheroot is installed
+        try:
+            from .rest import run_rest_server
+        except ImportError as e:
+            out.error(
+                "REST server dependencies not installed. "
+                "Install with: uv pip install cheroot"
+            )
+            out.error(f"Import error: {e}")
+            ctx.exit(1)
+            return
+
+        # Initialize client
+        client = DrimeClient(api_key=api_key)
+
+        # Show server info
+        protocol = "https" if ssl_cert else "http"
+        auth_mode = f"user '{username}'" if username else "anonymous"
+
+        if not out.quiet:
+            out.info("=" * 60)
+            out.info("Drime Cloud REST Server (restic backend)")
+            out.info("=" * 60)
+
+            # Show workspace info
+            workspace_display, _ = format_workspace_display(client, workspace)
+            out.info(f"Workspace: {workspace_display}")
+
+            out.info(f"Server URL: {protocol}://{host}:{port}/")
+            out.info(f"Authentication: {auth_mode}")
+            out.info(f"Mode: {'Read-only' if readonly else 'Read-write'}")
+            out.info("")
+            out.info("Restic usage:")
+            out.info(f"  restic -r rest:{protocol}://{host}:{port}/myrepo init")
+            out.info(f"  restic -r rest:{protocol}://{host}:{port}/myrepo backup /data")
+            out.info("")
+            out.info("Press Ctrl+C to stop the server")
+            out.info("=" * 60)
+
+        # Run the server (this blocks until Ctrl+C)
+        run_rest_server(
+            client=client,
+            host=host,
+            port=port,
+            workspace_id=workspace,
+            readonly=readonly,
+            username=username,
+            password=password,
+            ssl_cert=ssl_cert,
+            ssl_key=ssl_key,
+        )
+
+        if not out.quiet:
+            out.info("REST server stopped.")
+
+    except KeyboardInterrupt:
+        if not out.quiet:
+            out.info("\nServer stopped by user.")
+    except DrimeAPIError as e:
+        out.error(f"API error: {e}")
+        ctx.exit(1)
+    except Exception as e:
+        out.error(f"Server error: {e}")
+        ctx.exit(1)
+
+
+@main.command()
+@click.option(
+    "--host",
+    "-H",
+    type=str,
+    default="127.0.0.1",
+    help="Host address to bind to (default: 127.0.0.1)",
+)
+@click.option(
+    "--port",
+    "-p",
+    type=int,
     default=8080,
     help="Port number to listen on (default: 8080)",
 )
