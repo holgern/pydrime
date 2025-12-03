@@ -1027,3 +1027,281 @@ class TestGetAllInFolderApiError:
 
         # Should return empty list on API error
         assert entries == []
+
+
+class TestEnsureFolderPath:
+    """Tests for ensure_folder_path method and folder path caching."""
+
+    def test_ensure_folder_path_empty_path(self):
+        """Test that empty path returns base_parent_id."""
+        mock_client = Mock()
+        manager = FileEntriesManager(mock_client, workspace_id=0)
+
+        result = manager.ensure_folder_path("", base_parent_id=None)
+        assert result is None
+
+        result = manager.ensure_folder_path(".", base_parent_id=123)
+        assert result == 123
+
+        result = manager.ensure_folder_path("/", base_parent_id=456)
+        assert result == 456
+
+    def test_ensure_folder_path_single_existing_folder(self):
+        """Test finding an existing single folder."""
+        mock_client = Mock()
+
+        # Mock search_by_name to return existing folder
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 100,
+                    "name": "folder1",
+                    "type": "folder",
+                    "hash": "hash1",
+                    "mime": None,
+                    "file_size": 0,
+                    "parent_id": 0,
+                    "created_at": "2023-01-01",
+                    "updated_at": "2023-01-01",
+                    "owner": {"email": "test@example.com"},
+                }
+            ],
+            "current_page": 1,
+            "last_page": 1,
+            "per_page": 100,
+            "total": 1,
+        }
+
+        manager = FileEntriesManager(mock_client, workspace_id=0)
+        result = manager.ensure_folder_path("folder1")
+
+        assert result == 100
+
+    def test_ensure_folder_path_creates_missing_folder(self):
+        """Test creating a folder that doesn't exist."""
+        mock_client = Mock()
+
+        # Mock search returns empty (folder not found)
+        mock_client.get_file_entries.return_value = {
+            "data": [],
+            "current_page": 1,
+            "last_page": 1,
+            "per_page": 100,
+            "total": 0,
+        }
+
+        # Mock create_folder
+        mock_client.create_folder.return_value = {
+            "status": "success",
+            "folder": {"id": 200, "name": "newfolder"},
+        }
+
+        manager = FileEntriesManager(mock_client, workspace_id=0)
+        result = manager.ensure_folder_path("newfolder")
+
+        assert result == 200
+        mock_client.create_folder.assert_called_once_with(
+            name="newfolder", parent_id=None, workspace_id=0
+        )
+
+    def test_ensure_folder_path_nested_with_caching(self):
+        """Test nested folder creation with caching."""
+        mock_client = Mock()
+
+        # All folders need to be created
+        mock_client.get_file_entries.return_value = {
+            "data": [],
+            "current_page": 1,
+            "last_page": 1,
+            "per_page": 100,
+            "total": 0,
+        }
+
+        # Mock create_folder to return incrementing IDs
+        folder_id_counter = [100]
+
+        def mock_create_folder(name, parent_id, workspace_id):
+            folder_id = folder_id_counter[0]
+            folder_id_counter[0] += 1
+            return {"status": "success", "folder": {"id": folder_id, "name": name}}
+
+        mock_client.create_folder.side_effect = mock_create_folder
+
+        manager = FileEntriesManager(mock_client, workspace_id=0)
+
+        # First call creates all folders
+        result = manager.ensure_folder_path("folder1/folder2/folder3")
+        assert result == 102  # Third folder created
+
+        # Verify cache was populated
+        assert manager.get_cached_folder_id("folder1") == 100
+        assert manager.get_cached_folder_id("folder1/folder2") == 101
+        assert manager.get_cached_folder_id("folder1/folder2/folder3") == 102
+
+        # Second call should use cache - no new API calls
+        create_call_count = mock_client.create_folder.call_count
+        result2 = manager.ensure_folder_path("folder1/folder2/folder3")
+        assert result2 == 102
+        assert mock_client.create_folder.call_count == create_call_count
+
+    def test_ensure_folder_path_partial_cache(self):
+        """Test that partial paths use cache."""
+        mock_client = Mock()
+        manager = FileEntriesManager(mock_client, workspace_id=0)
+
+        # Pre-populate cache
+        manager.cache_folder_path("folder1", 100)
+        manager.cache_folder_path("folder1/folder2", 200)
+
+        # Mock for the new folder3 only
+        mock_client.get_file_entries.return_value = {
+            "data": [],
+            "current_page": 1,
+            "last_page": 1,
+            "per_page": 100,
+            "total": 0,
+        }
+        mock_client.create_folder.return_value = {
+            "status": "success",
+            "folder": {"id": 300, "name": "folder3"},
+        }
+
+        result = manager.ensure_folder_path("folder1/folder2/folder3")
+        assert result == 300
+
+        # Only folder3 should be created
+        mock_client.create_folder.assert_called_once_with(
+            name="folder3", parent_id=200, workspace_id=0
+        )
+
+    def test_ensure_folder_path_create_if_missing_false(self):
+        """Test that create_if_missing=False returns None for missing folders."""
+        mock_client = Mock()
+        mock_client.get_file_entries.return_value = {
+            "data": [],
+            "current_page": 1,
+            "last_page": 1,
+            "per_page": 100,
+            "total": 0,
+        }
+
+        manager = FileEntriesManager(mock_client, workspace_id=0)
+        result = manager.ensure_folder_path("nonexistent", create_if_missing=False)
+
+        assert result is None
+        mock_client.create_folder.assert_not_called()
+
+    def test_ensure_folder_path_with_base_parent_id(self):
+        """Test folder creation relative to a base parent."""
+        mock_client = Mock()
+        mock_client.get_file_entries.return_value = {
+            "data": [],
+            "current_page": 1,
+            "last_page": 1,
+            "per_page": 100,
+            "total": 0,
+        }
+        mock_client.create_folder.return_value = {
+            "status": "success",
+            "folder": {"id": 500, "name": "subfolder"},
+        }
+
+        manager = FileEntriesManager(mock_client, workspace_id=0)
+        result = manager.ensure_folder_path("subfolder", base_parent_id=999)
+
+        assert result == 500
+        mock_client.create_folder.assert_called_once_with(
+            name="subfolder", parent_id=999, workspace_id=0
+        )
+
+
+class TestFolderPathCacheInvalidation:
+    """Tests for folder path cache invalidation."""
+
+    def test_invalidate_folder_by_id(self):
+        """Test invalidating cache entries by folder ID."""
+        mock_client = Mock()
+        manager = FileEntriesManager(mock_client, workspace_id=0)
+
+        # Populate cache
+        manager.cache_folder_path("folder1", 100)
+        manager.cache_folder_path("folder1/folder2", 200)
+        manager.cache_folder_path("other", 300)
+
+        # Invalidate folder1 (ID 100)
+        manager.invalidate_folder_by_id(100)
+
+        # folder1 should be removed
+        assert manager.get_cached_folder_id("folder1") is None
+        # folder2 and other should still exist
+        assert manager.get_cached_folder_id("folder1/folder2") == 200
+        assert manager.get_cached_folder_id("other") == 300
+
+    def test_invalidate_folder_path(self):
+        """Test invalidating cache entries by path."""
+        mock_client = Mock()
+        manager = FileEntriesManager(mock_client, workspace_id=0)
+
+        # Populate cache
+        manager.cache_folder_path("folder1", 100)
+        manager.cache_folder_path("folder1/folder2", 200)
+        manager.cache_folder_path("folder1/folder2/folder3", 300)
+        manager.cache_folder_path("other", 400)
+
+        # Invalidate folder1 - should remove folder1 and all children
+        manager.invalidate_folder_path("folder1")
+
+        # All folder1 paths should be removed
+        assert manager.get_cached_folder_id("folder1") is None
+        assert manager.get_cached_folder_id("folder1/folder2") is None
+        assert manager.get_cached_folder_id("folder1/folder2/folder3") is None
+        # Other should remain
+        assert manager.get_cached_folder_id("other") == 400
+
+    def test_clear_cache_clears_folder_path_cache(self):
+        """Test that clear_cache also clears folder path cache."""
+        mock_client = Mock()
+        manager = FileEntriesManager(mock_client, workspace_id=0)
+
+        # Populate folder path cache
+        manager.cache_folder_path("folder1", 100)
+        manager.cache_folder_path("folder2", 200)
+
+        assert len(manager._folder_path_cache) == 2
+
+        manager.clear_cache()
+
+        assert len(manager._folder_path_cache) == 0
+        assert len(manager._folder_id_to_paths) == 0
+
+
+class TestFolderPathCacheWithDifferentBaseParents:
+    """Tests for folder path cache with different base parent IDs."""
+
+    def test_same_path_different_base_parents(self):
+        """Test that same path with different base parents are cached separately."""
+        mock_client = Mock()
+        manager = FileEntriesManager(mock_client, workspace_id=0)
+
+        # Cache same path "subfolder" with different base parents
+        manager.cache_folder_path("subfolder", 100, base_parent_id=None)
+        manager.cache_folder_path("subfolder", 200, base_parent_id=10)
+        manager.cache_folder_path("subfolder", 300, base_parent_id=20)
+
+        assert manager.get_cached_folder_id("subfolder", base_parent_id=None) == 100
+        assert manager.get_cached_folder_id("subfolder", base_parent_id=10) == 200
+        assert manager.get_cached_folder_id("subfolder", base_parent_id=20) == 300
+
+    def test_invalidate_only_affects_matching_base_parent(self):
+        """Test that invalidation by path respects base_parent_id."""
+        mock_client = Mock()
+        manager = FileEntriesManager(mock_client, workspace_id=0)
+
+        manager.cache_folder_path("subfolder", 100, base_parent_id=None)
+        manager.cache_folder_path("subfolder", 200, base_parent_id=10)
+
+        # Invalidate only the one with base_parent_id=10
+        manager.invalidate_folder_path("subfolder", base_parent_id=10)
+
+        assert manager.get_cached_folder_id("subfolder", base_parent_id=None) == 100
+        assert manager.get_cached_folder_id("subfolder", base_parent_id=10) is None

@@ -19,6 +19,7 @@ exclude = ["setup/*", "notebooks/*"]
 "__init__.py" = ["F401", "I001"]  # ignore unused and unsorted imports in __init__.py
 "__manifest__.py" = ["B018"]  # useless expression
 "cli.py" = ["C901"]  # Allow higher complexity for CLI commands with recursive logic
+"test_webdav_provider.py" = ["I001"]  # wsgidav requires specific import order to avoid circular import
 
 [lint.isort]
 section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]

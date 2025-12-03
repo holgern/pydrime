@@ -26,6 +26,7 @@ from .exceptions import (
 )
 
 if TYPE_CHECKING:
+    from .file_entries_manager import FileEntriesManager
     from .models import FileEntry
 
 FileEntryType = Literal["folder", "image", "text", "audio", "video", "pdf"]
@@ -172,6 +173,10 @@ class DrimeClient:
             )
 
         self._client: httpx.Client | None = None
+        # Workspace-aware FileEntriesManager cache
+        # Each workspace has its own manager with its own folder path cache
+        # Switching workspaces doesn't clear other workspace caches
+        self._entries_managers: dict[int, FileEntriesManager] = {}
 
     def _get_client(self) -> httpx.Client:
         """Get or create the httpx client.
@@ -211,6 +216,63 @@ class DrimeClient:
         if self._client is not None and not self._client.is_closed:
             self._client.close()
             self._client = None
+
+    def get_entries_manager(self, workspace_id: int = 0) -> FileEntriesManager:
+        """Get or create a FileEntriesManager for a workspace.
+
+        Each workspace has its own manager with its own folder path cache.
+        Switching workspaces doesn't clear other workspace caches.
+        The manager is cached and reused for all operations in the same workspace.
+
+        Args:
+            workspace_id: Workspace ID (default: 0 for personal)
+
+        Returns:
+            FileEntriesManager instance for the workspace
+        """
+        if workspace_id not in self._entries_managers:
+            from .file_entries_manager import FileEntriesManager
+
+            self._entries_managers[workspace_id] = FileEntriesManager(
+                self, workspace_id
+            )
+        return self._entries_managers[workspace_id]
+
+    def clear_folder_cache(self, workspace_id: int | None = None) -> None:
+        """Clear folder path cache.
+
+        Call this after deleting or renaming folders to ensure the cache
+        is consistent with the server state.
+
+        Args:
+            workspace_id: If specified, only clear cache for that workspace.
+                          If None, clear all workspace caches.
+        """
+        if workspace_id is not None:
+            if workspace_id in self._entries_managers:
+                self._entries_managers[workspace_id].clear_cache()
+        else:
+            for manager in self._entries_managers.values():
+                manager.clear_cache()
+
+    def invalidate_folder_by_id(
+        self, folder_id: int, workspace_id: int | None = None
+    ) -> None:
+        """Invalidate cached paths that reference a specific folder ID.
+
+        Call this when a folder is deleted or renamed.
+
+        Args:
+            folder_id: The folder ID to invalidate
+            workspace_id: If specified, only invalidate in that workspace.
+                          If None, invalidate in all workspace caches.
+        """
+        if workspace_id is not None:
+            if workspace_id in self._entries_managers:
+                self._entries_managers[workspace_id].invalidate_folder_by_id(folder_id)
+        else:
+            for manager in self._entries_managers.values():
+                manager.invalidate_folder_by_id(folder_id)
 
     def _should_retry(self, exception: Exception, attempt: int) -> bool:
         """Determine if a request should be retried.
@@ -1021,13 +1083,26 @@ class DrimeClient:
         based on file size. After upload, verifies that the file size and users
         fields are correctly set.
 
+        When a relative_path with folder components is provided
+        (e.g., "folder1/folder2/file.txt"), this method will:
+        1. Extract the folder path ("folder1/folder2")
+        2. Ensure all folders exist (creating them if needed) using a cached lookup
+        3. Pass the resolved folder ID as parent_id to the upload
+
+        The folder path cache is workspace-aware and persists across multiple
+        uploads, making batch uploads of 1000+ files to the same folder
+        structure efficient.
+
         Args:
             file_path: Local path to the file
             parent_id: ID of folder where this file should be uploaded,
-                None will upload to root
-            relative_path: Folders in the path will be auto-created if they
-                don't exist. Should include original filename as well:
-                /some/folders/here/file-name.jpg
+                None will upload to root. If relative_path contains folder
+                components, they will be resolved relative to this parent_id.
+            relative_path: Path including filename. Folder components will be
+                auto-created if they don't exist. Examples:
+                - "file.txt" - upload to parent_id with this name
+                - "folder1/file.txt" - create folder1 under parent_id, upload there
+                - "folder1/folder2/file.txt" - create nested folders, upload there
             workspace_id: ID of the workspace (default: 0 for personal)
             use_multipart_threshold: File size threshold for using multipart
                 upload (default: 30MB)
@@ -1044,10 +1119,38 @@ class DrimeClient:
         Returns:
             Upload response data with 'status' and 'fileEntry' keys
         """
+        from posixpath import basename, dirname
+
         if not file_path.exists():
             raise DrimeFileNotFoundError(str(file_path))
 
         file_size = file_path.stat().st_size
+
+        # Resolve folder path to parent_id using cached manager
+        resolved_parent_id = parent_id
+        upload_filename = file_path.name
+
+        if relative_path:
+            # Normalize the path (handle both / and \)
+            normalized_path = relative_path.replace("\\", "/").strip("/")
+
+            # Extract folder path and filename
+            folder_path = dirname(normalized_path)
+            path_filename = basename(normalized_path)
+
+            # Use the filename from relative_path if it looks like a filename
+            # (has an extension or is different from the folder path)
+            if path_filename and path_filename != normalized_path:
+                upload_filename = path_filename
+
+            # If there's a folder path, resolve it to a folder ID
+            if folder_path and folder_path != ".":
+                manager = self.get_entries_manager(workspace_id)
+                resolved_parent_id = manager.ensure_folder_path(
+                    folder_path,
+                    base_parent_id=parent_id,
+                    create_if_missing=True,
+                )
 
         def _do_upload() -> Any:
             """Perform the actual upload."""
@@ -1055,9 +1158,9 @@ class DrimeClient:
             if file_size > use_multipart_threshold:
                 return self.upload_file_multipart(
                     file_path=file_path,
-                    relative_path=relative_path,
+                    relative_path=upload_filename,  # Just the filename now
                     workspace_id=workspace_id,
-                    parent_id=parent_id,
+                    parent_id=resolved_parent_id,
                     chunk_size=chunk_size,
                     progress_callback=progress_callback,
                 )
@@ -1065,9 +1168,9 @@ class DrimeClient:
             # Use simple form upload for smaller files (more reliable)
             return self.upload_file_simple(
                 file_path=file_path,
-                relative_path=relative_path,
+                relative_path=upload_filename,  # Just the filename now
                 workspace_id=workspace_id,
-                parent_id=parent_id,
+                parent_id=resolved_parent_id,
                 progress_callback=progress_callback,
             )
 
@@ -1216,6 +1319,9 @@ class DrimeClient:
     ) -> Any:
         """Rename a file or folder entry.
 
+        Automatically invalidates the folder path cache if the renamed entry
+        is a folder.
+
         Args:
             entry_id: ID of the entry to rename
             new_name: New name for the entry
@@ -1232,20 +1338,31 @@ class DrimeClient:
         if initial_name:
             data["initialName"] = initial_name
 
-        return self._request("POST", endpoint, params=params, json=data)
+        result = self._request("POST", endpoint, params=params, json=data)
+
+        # Invalidate folder path cache - the entry might be a folder
+        # and its path has changed
+        self.invalidate_folder_by_id(entry_id, workspace_id)
+
+        return result
 
     def update_file_entry(
         self,
         entry_id: int,
         name: str | None = None,
         description: str | None = None,
+        workspace_id: int = 0,
     ) -> Any:
         """Update an existing file entry.
+
+        Automatically invalidates the folder path cache if the entry name
+        is changed and the entry is a folder.
 
         Args:
             entry_id: ID of the entry to update
             name: New name for the entry
             description: New description for the entry
+            workspace_id: Workspace ID (default: 0 for personal)
 
         Returns:
             Response with 'status' and 'fileEntry' keys
@@ -1258,7 +1375,13 @@ class DrimeClient:
         if description:
             data["description"] = description
 
-        return self._request("PUT", endpoint, json=data)
+        result = self._request("PUT", endpoint, json=data)
+
+        # If name was changed, invalidate folder path cache
+        if name:
+            self.invalidate_folder_by_id(entry_id, workspace_id)
+
+        return result
 
     def delete_file_entries(
         self,
@@ -1267,6 +1390,8 @@ class DrimeClient:
         workspace_id: int = 0,
     ) -> Any:
         """Move entries to trash or delete permanently.
+
+        Automatically invalidates the folder path cache for any deleted folder IDs.
 
         Args:
             entry_ids: List of entry IDs to delete
@@ -1281,7 +1406,15 @@ class DrimeClient:
             "entryIds": entry_ids,
             "deleteForever": delete_forever,
         }
-        return self._request("POST", endpoint, json=data)
+        result = self._request("POST", endpoint, json=data)
+
+        # Invalidate folder path cache for any deleted entries
+        # We don't know which are folders, so invalidate all of them
+        # The invalidation is a no-op for non-folder entries
+        for entry_id in entry_ids:
+            self.invalidate_folder_by_id(entry_id, workspace_id)
+
+        return result
 
     def move_file_entries(
         self,
@@ -1290,6 +1423,9 @@ class DrimeClient:
         workspace_id: int = 0,
     ) -> Any:
         """Move specified entries to a different folder.
+
+        Automatically invalidates the folder path cache for any moved folders,
+        since their paths have changed.
 
         Args:
             entry_ids: List of entry IDs to move
@@ -1305,7 +1441,14 @@ class DrimeClient:
         if destination_id is not None:
             data["destinationId"] = destination_id
 
-        return self._request("POST", endpoint, json=data)
+        result = self._request("POST", endpoint, json=data)
+
+        # Invalidate folder path cache for any moved entries
+        # Moving a folder changes its path, so all cached references are stale
+        for entry_id in entry_ids:
+            self.invalidate_folder_by_id(entry_id, workspace_id)
+
+        return result
 
     def duplicate_file_entries(
         self,

@@ -51,6 +51,10 @@ class DuplicateHandler:
         # Performance optimization: cache for folder ID lookups
         self._folder_id_cache: dict[str, Optional[int]] = {}
 
+        # Mapping of rel_path -> list of duplicate entry IDs on server
+        # Used to track which specific files have server duplicates
+        self._duplicate_rel_paths: dict[str, list[int]] = {}
+
         # File entries manager for pagination and search
         self.entries_manager = FileEntriesManager(client, workspace_id)
 
@@ -633,6 +637,85 @@ class DuplicateHandler:
         self._folder_id_cache[folder_path] = current_parent_id
         return current_parent_id
 
+    def _build_dup_to_paths_map(
+        self,
+        duplicates: list[str],
+        files_to_upload: list[tuple[Path, str]],
+    ) -> dict[str, list[str]]:
+        """Build a map of duplicate names to their target paths.
+
+        Args:
+            duplicates: List of duplicate names
+            files_to_upload: List of (file_path, relative_path) tuples
+
+        Returns:
+            Dict mapping duplicate name to list of relative paths
+        """
+        dup_to_paths: dict[str, list[str]] = {}
+        for _file_path, rel_path in files_to_upload:
+            name = PurePosixPath(rel_path).name
+            if name in duplicates:
+                if name not in dup_to_paths:
+                    dup_to_paths[name] = []
+                dup_to_paths[name].append(rel_path)
+        return dup_to_paths
+
+    def _group_by_parent_folder(
+        self,
+        dup_to_paths: dict[str, list[str]],
+    ) -> dict[tuple[Optional[int], str], list[str]]:
+        """Group duplicate files by their target parent folder.
+
+        Args:
+            dup_to_paths: Dict mapping duplicate name to list of relative paths
+
+        Returns:
+            Dict with (parent_id, dup_name) as key and list of rel_paths as value
+        """
+        by_parent: dict[tuple[Optional[int], str], list[str]] = {}
+
+        for dup_name, rel_paths in dup_to_paths.items():
+            for rel_path in rel_paths:
+                parent_path = PurePosixPath(rel_path).parent
+
+                # Resolve parent folder ID
+                target_parent_id = self.parent_id
+                if parent_path != PurePosixPath("."):
+                    target_parent_id = self._resolve_parent_folder_id(str(parent_path))
+
+                key = (target_parent_id, dup_name)
+                if key not in by_parent:
+                    by_parent[key] = []
+                by_parent[key].append(rel_path)
+
+        return by_parent
+
+    def _add_entry_to_duplicate_info(
+        self,
+        entry,
+        dup_name: str,
+        rel_paths: list[str],
+        duplicate_info: dict[str, list[tuple[int, Optional[str]]]],
+    ) -> None:
+        """Add an entry to duplicate_info and _duplicate_rel_paths.
+
+        Args:
+            entry: The file entry to add
+            dup_name: Name of the duplicate file
+            rel_paths: List of relative paths that match this duplicate
+            duplicate_info: Dict to update with (id, path) tuples
+        """
+        if dup_name not in duplicate_info:
+            duplicate_info[dup_name] = []
+        duplicate_info[dup_name].append(
+            (entry.id, entry.path if hasattr(entry, "path") else None)
+        )
+        # Associate entry with the rel_paths
+        for rp in rel_paths:
+            if rp not in self._duplicate_rel_paths:
+                self._duplicate_rel_paths[rp] = []
+            self._duplicate_rel_paths[rp].append(entry.id)
+
     def _lookup_duplicate_ids(
         self,
         duplicates: list[str],
@@ -645,88 +728,102 @@ class DuplicateHandler:
             files_to_upload: List of (file_path, relative_path) tuples
 
         Returns:
-            Dict mapping duplicate name to list of (id, path) tuples
+            Dict mapping duplicate name to list of (id, server_path) tuples
         """
-        # Pre-build a map of duplicate names to their target paths
-        # This avoids repeated searches through files_to_upload
-        dup_to_path: dict[str, str] = {}
-        for _file_path, rel_path in files_to_upload:
-            name = PurePosixPath(rel_path).name
-            if name in duplicates and name not in dup_to_path:
-                dup_to_path[name] = rel_path
+        # Build mapping of duplicate names to their target paths
+        dup_to_paths = self._build_dup_to_paths_map(duplicates, files_to_upload)
 
-        # Group duplicates by their target parent folder
-        # to batch API calls for files in the same folder
-        by_parent: dict[Optional[int], list[str]] = {}
-        dup_to_parent: dict[str, Optional[int]] = {}
+        # Group files by their target parent folder for batching API calls
+        by_parent = self._group_by_parent_folder(dup_to_paths)
 
-        for dup_name in duplicates:
-            if dup_name not in dup_to_path:
-                continue
+        # Initialize result structures
+        duplicate_info: dict[str, list[tuple[int, Optional[str]]]] = {}
+        self._duplicate_rel_paths = {}
 
-            target_rel_path = dup_to_path[dup_name]
-            parent_path = PurePosixPath(target_rel_path).parent
+        # Group keys by parent_id for batching
+        parent_to_keys: dict[Optional[int], list[tuple[Optional[int], str]]] = {}
+        for key in by_parent:
+            parent_id = key[0]
+            if parent_id not in parent_to_keys:
+                parent_to_keys[parent_id] = []
+            parent_to_keys[parent_id].append(key)
 
-            # Resolve parent folder ID
-            target_parent_id = self.parent_id
-            if parent_path != PurePosixPath("."):
-                target_parent_id = self._resolve_parent_folder_id(str(parent_path))
-
-            dup_to_parent[dup_name] = target_parent_id
-            if target_parent_id not in by_parent:
-                by_parent[target_parent_id] = []
-            by_parent[target_parent_id].append(dup_name)
-
-        # Now fetch entries grouped by parent folder
-        duplicate_info = {}
-
-        for parent_id, dup_names in by_parent.items():
+        # Process each parent folder
+        for parent_id, keys in parent_to_keys.items():
             try:
                 if parent_id is None:
-                    # Fallback to global search for each
-                    for dup_name in dup_names:
-                        try:
-                            matching_entries = self.entries_manager.search_by_name(
-                                dup_name, exact_match=True
-                            )
-                            if matching_entries:
-                                duplicate_info[dup_name] = [
-                                    (
-                                        e.id,
-                                        e.path if hasattr(e, "path") else None,
-                                    )
-                                    for e in matching_entries
-                                ]
-                        except DrimeAPIError:
-                            pass
+                    self._lookup_duplicates_global(keys, by_parent, duplicate_info)
                 else:
-                    # Batch: Get all entries in this parent folder at once
-                    file_entries_list = self.entries_manager.get_all_in_folder(
-                        parent_id
+                    self._lookup_duplicates_in_folder(
+                        parent_id, keys, by_parent, duplicate_info
                     )
-
-                    # Build a map for quick lookup
-                    entries_by_name: dict[str, list] = {}
-                    for entry in file_entries_list:
-                        if entry.name not in entries_by_name:
-                            entries_by_name[entry.name] = []
-                        entries_by_name[entry.name].append(entry)
-
-                    # Match duplicates with entries
-                    for dup_name in dup_names:
-                        if dup_name in entries_by_name:
-                            duplicate_info[dup_name] = [
-                                (
-                                    e.id,
-                                    e.path if hasattr(e, "path") else None,
-                                )
-                                for e in entries_by_name[dup_name]
-                            ]
             except DrimeAPIError:
                 # If batch fails, continue without these duplicates
                 pass
 
         return duplicate_info
+
+    def _lookup_duplicates_global(
+        self,
+        keys: list[tuple[Optional[int], str]],
+        by_parent: dict[tuple[Optional[int], str], list[str]],
+        duplicate_info: dict[str, list[tuple[int, Optional[str]]]],
+    ) -> None:
+        """Look up duplicates using global search (when parent folder is unknown).
+
+        Args:
+            keys: List of (parent_id, dup_name) keys to look up
+            by_parent: Mapping of keys to relative paths
+            duplicate_info: Dict to update with results
+        """
+        for key in keys:
+            dup_name = key[1]
+            rel_paths = by_parent[key]
+            try:
+                matching_entries = self.entries_manager.search_by_name(
+                    dup_name, exact_match=True
+                )
+                for entry in matching_entries:
+                    self._add_entry_to_duplicate_info(
+                        entry, dup_name, rel_paths, duplicate_info
+                    )
+            except DrimeAPIError:
+                pass
+
+    def _lookup_duplicates_in_folder(
+        self,
+        parent_id: int,
+        keys: list[tuple[Optional[int], str]],
+        by_parent: dict[tuple[Optional[int], str], list[str]],
+        duplicate_info: dict[str, list[tuple[int, Optional[str]]]],
+    ) -> None:
+        """Look up duplicates within a specific folder.
+
+        Args:
+            parent_id: Folder ID to search in
+            keys: List of (parent_id, dup_name) keys to look up
+            by_parent: Mapping of keys to relative paths
+            duplicate_info: Dict to update with results
+        """
+        # Batch: Get all entries in this parent folder at once
+        file_entries_list = self.entries_manager.get_all_in_folder(parent_id)
+
+        # Build a map for quick lookup
+        entries_by_name: dict[str, list] = {}
+        for entry in file_entries_list:
+            if entry.name not in entries_by_name:
+                entries_by_name[entry.name] = []
+            entries_by_name[entry.name].append(entry)
+
+        # Match duplicates with entries
+        for key in keys:
+            dup_name = key[1]
+            rel_paths = by_parent[key]
+            if dup_name in entries_by_name:
+                for entry in entries_by_name[dup_name]:
+                    self._add_entry_to_duplicate_info(
+                        entry, dup_name, rel_paths, duplicate_info
+                    )
 
     def _handle_single_duplicate(
         self,
@@ -741,6 +838,21 @@ class DuplicateHandler:
             duplicate_info: Dict of duplicate IDs
             files_to_upload: List of files being uploaded
         """
+        # Find which specific files have this duplicate name AND are actually duplicates
+        # Use _duplicate_rel_paths to get only files that matched server entries
+        matching_rel_paths = []
+        for _file_path, rel_path in files_to_upload:
+            path_obj = PurePosixPath(rel_path)
+            if path_obj.name == duplicate_name:
+                # Check if this specific path was identified as having a
+                # server duplicate
+                if hasattr(self, "_duplicate_rel_paths") and self._duplicate_rel_paths:
+                    if rel_path in self._duplicate_rel_paths:
+                        matching_rel_paths.append(rel_path)
+                else:
+                    # Fallback: if no path mapping, use the old behavior
+                    matching_rel_paths.append(rel_path)
+
         # Prompt user if needed
         if not self.apply_to_all:
             # Show ID in the prompt if available
@@ -751,6 +863,14 @@ class DuplicateHandler:
                 self.out.warning(f"Duplicate detected: '{duplicate_name}' ({ids_str})")
             else:
                 self.out.warning(f"Duplicate detected: '{duplicate_name}'")
+
+            # Show which paths are affected if multiple
+            if len(matching_rel_paths) > 1:
+                self.out.info(f"  Affects {len(matching_rel_paths)} files:")
+                for rp in matching_rel_paths[:5]:  # Show first 5
+                    self.out.info(f"    - {rp}")
+                if len(matching_rel_paths) > 5:
+                    self.out.info(f"    ... and {len(matching_rel_paths) - 5} more")
 
             self.chosen_action = click.prompt(
                 "Action",
@@ -764,30 +884,43 @@ class DuplicateHandler:
             )
             self.apply_to_all = apply_choice.lower() == "y"
 
-        # Execute the chosen action
+        # Execute the chosen action - only for files that are actual duplicates
         if self.chosen_action == "skip":
-            self._handle_skip(duplicate_name, files_to_upload)
+            # Skip only the files that are actual duplicates
+            for rel_path in matching_rel_paths:
+                self._handle_skip(duplicate_name, files_to_upload, rel_path)
         elif self.chosen_action == "rename":
             self._handle_rename(duplicate_name, files_to_upload)
         elif self.chosen_action == "replace":
             self._handle_replace(duplicate_name, duplicate_info)
 
     def _handle_skip(
-        self, duplicate_name: str, files_to_upload: list[tuple[Path, str]]
+        self,
+        duplicate_name: str,
+        files_to_upload: list[tuple[Path, str]],
+        specific_rel_path: str | None = None,
     ) -> None:
         """Mark files matching duplicate for skipping.
 
         Args:
             duplicate_name: Name of duplicate file
             files_to_upload: List of files being uploaded
+            specific_rel_path: If provided, only skip this specific path
+                              (used when duplicate_name matches multiple files)
         """
-        for _file_path, rel_path in files_to_upload:
-            path_obj = Path(rel_path)
-            # Check if filename or parent folder matches duplicate
-            if path_obj.name == duplicate_name or duplicate_name in path_obj.parts:
-                self.files_to_skip.add(rel_path)
-        if not self.out.quiet:
-            self.out.info(f"Will skip files matching: {duplicate_name}")
+        if specific_rel_path:
+            # Only skip the specific file, not all files with the same name
+            self.files_to_skip.add(specific_rel_path)
+            if not self.out.quiet:
+                self.out.info(f"Will skip: {specific_rel_path}")
+        else:
+            for _file_path, rel_path in files_to_upload:
+                path_obj = Path(rel_path)
+                # Check if filename or parent folder matches duplicate
+                if path_obj.name == duplicate_name or duplicate_name in path_obj.parts:
+                    self.files_to_skip.add(rel_path)
+            if not self.out.quiet:
+                self.out.info(f"Will skip files matching: {duplicate_name}")
 
     def _handle_rename(
         self, duplicate_name: str, files_to_upload: list[tuple[Path, str]]

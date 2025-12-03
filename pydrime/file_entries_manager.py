@@ -1,6 +1,7 @@
 """Manager for fetching and caching file entries with automatic pagination."""
 
 import logging
+import threading
 from collections.abc import Generator
 from typing import Optional
 
@@ -12,7 +13,12 @@ logger = logging.getLogger(__name__)
 
 
 class FileEntriesManager:
-    """Manages file entry fetching with automatic pagination and caching."""
+    """Manages file entry fetching with automatic pagination and caching.
+
+    This class provides efficient folder path resolution with caching to avoid
+    redundant API calls when uploading many files to the same folder structure.
+    The folder path cache maps (base_parent_id, folder_path) -> folder_id.
+    """
 
     def __init__(self, client: DrimeClient, workspace_id: int = 0):
         """Initialize the file entries manager.
@@ -24,6 +30,13 @@ class FileEntriesManager:
         self.client = client
         self.workspace_id = workspace_id
         self._cache: dict[str, list[FileEntry]] = {}
+        # Cache for resolved folder paths: (base_parent_id, path) -> folder_id
+        self._folder_path_cache: dict[tuple[int | None, str], int] = {}
+        # Reverse mapping: folder_id -> list of (base_parent_id, path) cache keys
+        # Used for efficient cache invalidation when folders are deleted/renamed
+        self._folder_id_to_paths: dict[int, list[tuple[int | None, str]]] = {}
+        # Lock for thread-safe folder path operations
+        self._folder_lock = threading.Lock()
 
     def get_all_in_folder(
         self,
@@ -407,6 +420,270 @@ class FileEntriesManager:
             logger.warning(f"API error while fetching user folders: {e}")
             return []
 
+    def ensure_folder_path(
+        self,
+        folder_path: str,
+        base_parent_id: int | None = None,
+        create_if_missing: bool = True,
+    ) -> int | None:
+        """Ensure all folders in the path exist, return the deepest folder's ID.
+
+        This method walks through each component of the folder path, finding or
+        creating folders as needed. Results are cached to avoid redundant API
+        calls when uploading many files to the same folder structure.
+
+        This method is thread-safe: concurrent calls for the same folder path
+        will serialize to prevent race conditions where multiple threads try
+        to create the same folder simultaneously.
+
+        Args:
+            folder_path: Path like "folder1/folder2/folder3"
+            base_parent_id: Starting parent folder ID (None for root)
+            create_if_missing: If True, create missing folders; if False,
+                return None when a folder doesn't exist
+
+        Returns:
+            The ID of the deepest folder, or None if path is empty/root
+            or if create_if_missing=False and a folder doesn't exist
+
+        Example:
+            >>> manager = FileEntriesManager(client, workspace_id=0)
+            >>> folder_id = manager.ensure_folder_path("photos/2024/vacation")
+            >>> # Creates photos, photos/2024, photos/2024/vacation if needed
+            >>> # Returns ID of "vacation" folder
+        """
+        if not folder_path or folder_path in (".", "/", ""):
+            return base_parent_id
+
+        # Normalize path
+        normalized = folder_path.strip("/")
+        if not normalized:
+            return base_parent_id
+
+        # Check cache first for the full path (without lock for fast path)
+        cache_key = (base_parent_id, normalized)
+        if cache_key in self._folder_path_cache:
+            logger.debug(
+                f"ensure_folder_path: cache hit for '{normalized}' "
+                f"(base_parent_id={base_parent_id})"
+            )
+            return self._folder_path_cache[cache_key]
+
+        # Acquire lock for thread-safe folder creation
+        # This prevents multiple threads from creating the same folder
+        with self._folder_lock:
+            # Double-check cache after acquiring lock
+            # (another thread may have populated it)
+            if cache_key in self._folder_path_cache:
+                logger.debug(
+                    f"ensure_folder_path: cache hit after lock for '{normalized}' "
+                    f"(base_parent_id={base_parent_id})"
+                )
+                return self._folder_path_cache[cache_key]
+
+            # Split into components
+            parts = [p for p in normalized.split("/") if p]
+            if not parts:
+                return base_parent_id
+
+            current_parent_id = base_parent_id
+            current_path_parts: list[str] = []
+
+            for folder_name in parts:
+                current_path_parts.append(folder_name)
+                partial_path = "/".join(current_path_parts)
+                partial_cache_key = (base_parent_id, partial_path)
+
+                # Check if this partial path is already cached
+                if partial_cache_key in self._folder_path_cache:
+                    current_parent_id = self._folder_path_cache[partial_cache_key]
+                    continue
+
+                # Try to find existing folder
+                # For root level (current_parent_id is None), use parent_id=0
+                search_parent_id = 0 if current_parent_id is None else current_parent_id
+                existing = self.find_folder_by_name(
+                    folder_name,
+                    parent_id=search_parent_id,
+                    search_in_root=(current_parent_id is None),
+                )
+
+                if existing:
+                    current_parent_id = existing.id
+                    logger.debug(
+                        f"ensure_folder_path: found existing folder '{folder_name}' "
+                        f"(id={current_parent_id})"
+                    )
+                elif create_if_missing:
+                    # Create the folder
+                    logger.debug(
+                        f"ensure_folder_path: creating folder '{folder_name}' "
+                        f"(parent_id={current_parent_id})"
+                    )
+                    result = self.client.create_folder(
+                        name=folder_name,
+                        parent_id=current_parent_id,
+                        workspace_id=self.workspace_id,
+                    )
+                    if result.get("status") == "success":
+                        folder_data = result.get("folder", {})
+                        current_parent_id = folder_data.get("id")
+                        if current_parent_id is None:
+                            raise DrimeAPIError(
+                                f"Failed to get folder ID after creating "
+                                f"'{folder_name}'"
+                            )
+                        logger.debug(
+                            f"ensure_folder_path: created folder '{folder_name}' "
+                            f"(id={current_parent_id})"
+                        )
+                    else:
+                        raise DrimeAPIError(
+                            f"Failed to create folder '{folder_name}': {result}"
+                        )
+                else:
+                    # Folder doesn't exist and we're not creating
+                    logger.debug(
+                        f"ensure_folder_path: folder '{folder_name}' not found "
+                        f"and create_if_missing=False"
+                    )
+                    return None
+
+                # Cache this partial path
+                self._cache_folder_path(partial_cache_key, current_parent_id)
+
+            return current_parent_id
+
+    def _cache_folder_path(
+        self,
+        cache_key: tuple[int | None, str],
+        folder_id: int,
+    ) -> None:
+        """Add a folder path to the cache with reverse mapping for invalidation.
+
+        Args:
+            cache_key: Tuple of (base_parent_id, path)
+            folder_id: The folder ID to cache
+        """
+        self._folder_path_cache[cache_key] = folder_id
+
+        # Add to reverse mapping for invalidation
+        if folder_id not in self._folder_id_to_paths:
+            self._folder_id_to_paths[folder_id] = []
+        if cache_key not in self._folder_id_to_paths[folder_id]:
+            self._folder_id_to_paths[folder_id].append(cache_key)
+
+    def get_cached_folder_id(
+        self,
+        folder_path: str,
+        base_parent_id: int | None = None,
+    ) -> int | None:
+        """Get folder ID from cache without making API calls.
+
+        Returns None if not in cache (does NOT look up or create).
+
+        Args:
+            folder_path: Path like "folder1/folder2"
+            base_parent_id: Starting parent folder ID
+
+        Returns:
+            Folder ID if cached, None otherwise
+        """
+        normalized = folder_path.strip("/")
+        cache_key = (base_parent_id, normalized)
+        return self._folder_path_cache.get(cache_key)
+
+    def cache_folder_path(
+        self,
+        folder_path: str,
+        folder_id: int,
+        base_parent_id: int | None = None,
+    ) -> None:
+        """Manually add a folder path to the cache.
+
+        Useful when folder IDs are known from other sources (e.g., API responses).
+        This method is thread-safe.
+
+        Args:
+            folder_path: Path like "folder1/folder2"
+            folder_id: The folder ID
+            base_parent_id: Starting parent folder ID
+        """
+        normalized = folder_path.strip("/")
+        cache_key = (base_parent_id, normalized)
+        with self._folder_lock:
+            self._cache_folder_path(cache_key, folder_id)
+
+    def invalidate_folder_by_id(self, folder_id: int) -> None:
+        """Invalidate all cached paths that reference a folder ID.
+
+        Call this when a folder is deleted or renamed.
+        This method is thread-safe.
+
+        Args:
+            folder_id: The folder ID to invalidate
+        """
+        with self._folder_lock:
+            if folder_id not in self._folder_id_to_paths:
+                return
+
+            # Get all cache keys that reference this folder
+            keys_to_remove = self._folder_id_to_paths.pop(folder_id, [])
+
+            for cache_key in keys_to_remove:
+                if cache_key in self._folder_path_cache:
+                    del self._folder_path_cache[cache_key]
+                    logger.debug(
+                        f"invalidate_folder_by_id: removed cache entry for "
+                        f"path='{cache_key[1]}' (folder_id={folder_id})"
+                    )
+
+    def invalidate_folder_path(
+        self,
+        folder_path: str,
+        base_parent_id: int | None = None,
+    ) -> None:
+        """Invalidate cache for a folder path and all its children.
+
+        Call this when a folder is deleted or renamed and you know the path.
+        This method is thread-safe.
+
+        Args:
+            folder_path: Path like "folder1/folder2"
+            base_parent_id: Starting parent folder ID
+        """
+        normalized = folder_path.strip("/")
+        if not normalized:
+            return
+
+        with self._folder_lock:
+            # Remove exact match and any paths that start with this path
+            keys_to_remove = []
+            for cache_key in self._folder_path_cache:
+                if cache_key[0] == base_parent_id and (
+                    cache_key[1] == normalized
+                    or cache_key[1].startswith(normalized + "/")
+                ):
+                    keys_to_remove.append(cache_key)
+
+            for cache_key in keys_to_remove:
+                folder_id = self._folder_path_cache.pop(cache_key, None)
+                if folder_id is not None and folder_id in self._folder_id_to_paths:
+                    # Remove this cache_key from reverse mapping
+                    try:
+                        self._folder_id_to_paths[folder_id].remove(cache_key)
+                        if not self._folder_id_to_paths[folder_id]:
+                            del self._folder_id_to_paths[folder_id]
+                    except ValueError:
+                        pass
+                logger.debug(
+                    f"invalidate_folder_path: removed cache entry for "
+                    f"path='{cache_key[1]}' (base_parent_id={base_parent_id})"
+                )
+
     def clear_cache(self) -> None:
-        """Clear the internal cache."""
-        self._cache.clear()
+        """Clear all internal caches. This method is thread-safe."""
+        with self._folder_lock:
+            self._cache.clear()
+            self._folder_path_cache.clear()
+            self._folder_id_to_paths.clear()

@@ -927,3 +927,250 @@ class TestBatchCheckFolders:
         # Should cache results
         assert handler._folder_id_cache["is_folder:folder1"] == 100
         assert handler._folder_id_cache["is_folder:file.txt"] is None
+
+
+class TestUnicodeFolderDuplicates:
+    """Tests for Unicode folder name handling in duplicate detection.
+
+    This tests the bug where files in folders with different Unicode names
+    (e.g., 'u' vs 'ü') are incorrectly treated as duplicates.
+    """
+
+    def test_different_unicode_folders_not_marked_as_duplicates(self, tmp_path):
+        """Test that files in 'u/' and 'ü/' are not both marked as duplicates.
+
+        When the server reports 'file.txt' as a duplicate (because it exists
+        in folder 'u'), the handler should NOT mark 'ü/file.txt' as a duplicate
+        since it's in a different folder.
+        """
+        mock_client = MagicMock()
+
+        # Server reports "file.txt" as duplicate (exists in 'u' folder)
+        mock_client.validate_uploads.return_value = {"duplicates": ["file.txt"]}
+
+        # Mock folder lookups - 'u' folder exists, 'ü' folder doesn't
+        def mock_get_entries(query=None, parent_ids=None, workspace_id=0, **kwargs):
+            if query == "u":
+                return {
+                    "data": [
+                        {
+                            "id": 100,
+                            "name": "u",
+                            "type": "folder",
+                            "hash": "hash1",
+                            "mime": None,
+                            "file_size": 0,
+                            "parent_id": 0,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                        }
+                    ]
+                }
+            elif query == "ü":
+                # ü folder doesn't exist yet
+                return {"data": []}
+            elif parent_ids == [100]:
+                # Return existing file in 'u' folder
+                return {
+                    "data": [
+                        {
+                            "id": 999,
+                            "name": "file.txt",
+                            "type": "text",
+                            "hash": "hash2",
+                            "mime": "text/plain",
+                            "file_size": 100,
+                            "parent_id": 100,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                            "path": "/u/file.txt",
+                        }
+                    ]
+                }
+            return {"data": []}
+
+        mock_client.get_file_entries.side_effect = mock_get_entries
+
+        out = OutputFormatter(json_output=False, quiet=True)
+        handler = DuplicateHandler(mock_client, out, 0, "skip", parent_id=None)
+
+        # Create test files for both folders
+        test_file1 = tmp_path / "file1.txt"
+        test_file1.write_text("content for u folder")
+        test_file2 = tmp_path / "file2.txt"
+        test_file2.write_text("content for ü folder")
+
+        files_to_upload = [
+            (test_file1, "u/file.txt"),
+            (test_file2, "ü/file.txt"),
+        ]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        # Only u/file.txt should be marked for skipping (it's the actual duplicate)
+        # ü/file.txt should NOT be skipped (different folder, even if same filename)
+        assert "u/file.txt" in handler.files_to_skip
+        assert "ü/file.txt" not in handler.files_to_skip
+
+    def test_same_name_files_in_different_folders_handled_correctly(self, tmp_path):
+        """Test files with same name in different folders are handled individually.
+
+        When uploading:
+        - folder1/data.txt (exists on server - duplicate)
+        - folder2/data.txt (doesn't exist - NOT a duplicate)
+
+        Only folder1/data.txt should be marked as duplicate.
+        """
+        mock_client = MagicMock()
+
+        # Server reports "data.txt" as duplicate
+        mock_client.validate_uploads.return_value = {"duplicates": ["data.txt"]}
+
+        # Mock entries manager behavior
+        folder1_entry = FileEntry(
+            id=100,
+            name="folder1",
+            file_name="folder1",
+            type="folder",
+            hash="hash1",
+            mime="",
+            file_size=0,
+            parent_id=0,
+            created_at="2023-01-01",
+            updated_at="2023-01-01",
+            extension=None,
+            url="",
+        )
+
+        existing_file = FileEntry(
+            id=999,
+            name="data.txt",
+            file_name="data.txt",
+            type="text",
+            hash="hash2",
+            mime="text/plain",
+            file_size=100,
+            parent_id=100,
+            created_at="2023-01-01",
+            updated_at="2023-01-01",
+            extension=None,
+            url="",
+            path="/folder1/data.txt",
+        )
+
+        out = OutputFormatter(json_output=False, quiet=True)
+        handler = DuplicateHandler(mock_client, out, 0, "skip", parent_id=None)
+
+        # Mock folder resolution
+        def mock_find_folder(folder_name, parent_id=None, search_in_root=True):
+            if folder_name == "folder1":
+                return folder1_entry
+            return None  # folder2 doesn't exist
+
+        handler.entries_manager.find_folder_by_name = mock_find_folder
+
+        # Mock getting entries in folder
+        def mock_get_all_in_folder(folder_id=None, use_cache=True, per_page=100):
+            if folder_id == 100:
+                return [existing_file]
+            return []
+
+        handler.entries_manager.get_all_in_folder = mock_get_all_in_folder
+
+        # Create test files
+        test_file1 = tmp_path / "file1.txt"
+        test_file1.write_text("content1")
+        test_file2 = tmp_path / "file2.txt"
+        test_file2.write_text("content2")
+
+        files_to_upload = [
+            (test_file1, "folder1/data.txt"),
+            (test_file2, "folder2/data.txt"),
+        ]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        # Only folder1/data.txt should be skipped
+        assert "folder1/data.txt" in handler.files_to_skip
+        assert "folder2/data.txt" not in handler.files_to_skip
+
+    def test_duplicate_rel_paths_mapping_populated_correctly(self, tmp_path):
+        """Test that _duplicate_rel_paths only contains actual duplicates."""
+        mock_client = MagicMock()
+
+        mock_client.validate_uploads.return_value = {"duplicates": ["report.txt"]}
+
+        folder_entry = FileEntry(
+            id=200,
+            name="existing",
+            file_name="existing",
+            type="folder",
+            hash="hash1",
+            mime="",
+            file_size=0,
+            parent_id=0,
+            created_at="2023-01-01",
+            updated_at="2023-01-01",
+            extension=None,
+            url="",
+        )
+
+        existing_file = FileEntry(
+            id=555,
+            name="report.txt",
+            file_name="report.txt",
+            type="text",
+            hash="hash2",
+            mime="text/plain",
+            file_size=100,
+            parent_id=200,
+            created_at="2023-01-01",
+            updated_at="2023-01-01",
+            extension=None,
+            url="",
+            path="/existing/report.txt",
+        )
+
+        out = OutputFormatter(json_output=False, quiet=True)
+        handler = DuplicateHandler(mock_client, out, 0, "skip", parent_id=None)
+
+        def mock_find_folder(folder_name, parent_id=None, search_in_root=True):
+            if folder_name == "existing":
+                return folder_entry
+            return None
+
+        handler.entries_manager.find_folder_by_name = mock_find_folder
+
+        def mock_get_all_in_folder(folder_id=None, use_cache=True, per_page=100):
+            if folder_id == 200:
+                return [existing_file]
+            return []
+
+        handler.entries_manager.get_all_in_folder = mock_get_all_in_folder
+
+        # Create test files
+        test_file1 = tmp_path / "report1.txt"
+        test_file1.write_text("duplicate")
+        test_file2 = tmp_path / "report2.txt"
+        test_file2.write_text("new file")
+        test_file3 = tmp_path / "other.txt"
+        test_file3.write_text("other file")
+
+        files_to_upload = [
+            (test_file1, "existing/report.txt"),  # Actual duplicate
+            (test_file2, "new_folder/report.txt"),  # Same name, different folder
+            (test_file3, "existing/other.txt"),  # Different name
+        ]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        # Only existing/report.txt should be in _duplicate_rel_paths
+        assert "existing/report.txt" in handler._duplicate_rel_paths
+        assert "new_folder/report.txt" not in handler._duplicate_rel_paths
+        assert "existing/other.txt" not in handler._duplicate_rel_paths
+
+        # Only existing/report.txt should be skipped
+        assert "existing/report.txt" in handler.files_to_skip
+        assert "new_folder/report.txt" not in handler.files_to_skip

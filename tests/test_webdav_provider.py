@@ -9,10 +9,11 @@ from io import BytesIO
 from unittest.mock import MagicMock
 
 import pytest
-from wsgidav.dav_error import HTTP_FORBIDDEN, HTTP_NOT_FOUND, DAVError  # noqa: F401
 
 # Import wsgidav in correct order to avoid circular import
+# WsgiDAVApp must be imported BEFORE dav_error
 from wsgidav.wsgidav_app import WsgiDAVApp  # noqa: F401
+from wsgidav.dav_error import HTTP_FORBIDDEN, HTTP_NOT_FOUND, DAVError  # noqa: F401
 
 
 class TestDrimeDAVProvider:
