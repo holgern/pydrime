@@ -13,8 +13,16 @@ from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from wsgidav.dav_error import HTTP_FORBIDDEN, HTTP_NOT_FOUND, DAVError
-from wsgidav.dav_provider import DAVCollection, DAVNonCollection, DAVProvider
+from wsgidav.dav_error import (  # type: ignore[import-untyped]
+    HTTP_FORBIDDEN,
+    HTTP_NOT_FOUND,
+    DAVError,
+)
+from wsgidav.dav_provider import (  # type: ignore[import-untyped]
+    DAVCollection,
+    DAVNonCollection,
+    DAVProvider,
+)
 
 if TYPE_CHECKING:
     from ..api import DrimeClient
@@ -93,7 +101,7 @@ class DrimeResource(DAVNonCollection):
                 pass
         return time.time()
 
-    def get_last_modified(self) -> float:  # type: ignore[override]
+    def get_last_modified(self) -> float:
         """Return the last modified date as timestamp."""
         if self.file_entry.updated_at:
             try:
@@ -106,7 +114,7 @@ class DrimeResource(DAVNonCollection):
                 pass
         return self.get_creation_date()
 
-    def get_etag(self) -> str:  # type: ignore[override]
+    def get_etag(self) -> str:
         """Return the ETag for this resource.
 
         Note: WsgiDAV adds quotes automatically, so we return unquoted value.
@@ -116,11 +124,11 @@ class DrimeResource(DAVNonCollection):
             return self.file_entry.hash.strip('"')
         return f"{self.file_entry.id}-{self.get_last_modified()}"
 
-    def support_etag(self) -> bool:  # type: ignore[override]
+    def support_etag(self) -> bool:
         """Return True if ETags are supported."""
         return True
 
-    def support_ranges(self) -> bool:  # type: ignore[override]
+    def support_ranges(self) -> bool:
         """Return True if range requests are supported."""
         return False  # Drime API doesn't support range requests easily
 
@@ -170,9 +178,7 @@ class DrimeResource(DAVNonCollection):
             logger.error(f"Error reading file content: {e}")
             raise DAVError(HTTP_NOT_FOUND, f"Error reading file: {e}") from None
 
-    def begin_write(  # type: ignore[override]
-        self, content_type: str | None = None
-    ) -> BytesIO:
+    def begin_write(self, content_type: str | None = None) -> BytesIO:
         """Return a file-like object for writing content.
 
         Args:
@@ -296,9 +302,7 @@ class DrimeResource(DAVNonCollection):
         )
         raise DAVError(HTTP_FORBIDDEN, "Resource not found")
 
-    def copy_move_single(  # type: ignore[override]
-        self, dest_path: str, is_move: bool
-    ) -> bool:
+    def copy_move_single(self, dest_path: str, is_move: bool) -> bool:
         """Copy or move this resource to a new location.
 
         Args:
@@ -512,7 +516,7 @@ class DrimeResource(DAVNonCollection):
         """
         return False
 
-    def handle_copy(  # type: ignore[override]
+    def handle_copy(
         self, dest_path: str, *, depth_infinity: bool
     ) -> bool | list[tuple[str, DAVError]]:
         """Handle COPY request natively for files.
@@ -595,9 +599,7 @@ class DrimeResource(DAVNonCollection):
             logger.error(f"DrimeResource.handle_copy: Exception: {e}")
             return [(self.path, DAVError(HTTP_FORBIDDEN, str(e)))]
 
-    def handle_move(  # type: ignore[override]
-        self, dest_path: str
-    ) -> bool | list[tuple[str, DAVError]]:
+    def handle_move(self, dest_path: str) -> bool | list[tuple[str, DAVError]]:
         """Handle MOVE request natively for files.
 
         This handles the special case where a file is moved to a collection
@@ -1034,9 +1036,7 @@ class DrimeCollection(DAVCollection):
 
         return resource
 
-    def create_collection(  # type: ignore[override]
-        self, name: str
-    ) -> DrimeCollection:
+    def create_collection(self, name: str) -> DrimeCollection:
         """Create a new subfolder.
 
         Args:
@@ -1117,7 +1117,7 @@ class DrimeCollection(DAVCollection):
             logger.error(f"Error creating folder: {e}")
             raise DAVError(HTTP_FORBIDDEN, f"Error creating folder: {e}") from None
 
-    def delete(self) -> None:  # type: ignore[override]
+    def delete(self) -> None:
         """Delete this collection and all its contents."""
         if self._readonly:
             raise DAVError(HTTP_FORBIDDEN, "Collection is read-only")
@@ -1171,9 +1171,7 @@ class DrimeCollection(DAVCollection):
             logger.error(f"Error deleting folder: {e}")
             raise DAVError(HTTP_FORBIDDEN, f"Error deleting folder: {e}") from None
 
-    def copy_move_single(  # type: ignore[override]
-        self, dest_path: str, is_move: bool
-    ) -> bool:
+    def copy_move_single(self, dest_path: str, is_move: bool) -> bool:
         """Copy or move this collection to a new location (non-recursive).
 
         For collections, this method:
@@ -1448,25 +1446,21 @@ class DrimeCollection(DAVCollection):
 
         return current_folder_id
 
-    def support_recursive_move(  # type: ignore[override]
-        self, dest_path: str
-    ) -> bool:
+    def support_recursive_move(self, dest_path: str) -> bool:
         """Return True if move_recursive() is available.
 
         We return True because our move API handles the entire folder recursively.
         """
         return True
 
-    def support_recursive_delete(self) -> bool:  # type: ignore[override]
+    def support_recursive_delete(self) -> bool:
         """Return True if delete() may be called on non-empty collections.
 
         We return True because our delete API handles the entire folder recursively.
         """
         return True
 
-    def move_recursive(  # type: ignore[override]
-        self, dest_path: str
-    ) -> list[tuple[str, DAVError]]:
+    def move_recursive(self, dest_path: str) -> list[tuple[str, DAVError]]:
         """Move this collection recursively to dest_path.
 
         This is called when support_recursive_move() returns True.
@@ -1492,7 +1486,7 @@ class DrimeCollection(DAVCollection):
         except Exception as e:
             return [(self.path, DAVError(HTTP_FORBIDDEN, str(e)))]
 
-    def handle_copy(  # type: ignore[override]
+    def handle_copy(
         self, dest_path: str, *, depth_infinity: bool
     ) -> bool | list[tuple[str, DAVError]]:
         """Handle COPY request natively for the entire collection.
@@ -1574,9 +1568,7 @@ class DrimeCollection(DAVCollection):
         except Exception as e:
             return [(self.path, DAVError(HTTP_FORBIDDEN, str(e)))]
 
-    def handle_move(  # type: ignore[override]
-        self, dest_path: str
-    ) -> bool | list[tuple[str, DAVError]]:
+    def handle_move(self, dest_path: str) -> bool | list[tuple[str, DAVError]]:
         """Handle MOVE request natively for the entire collection.
 
         Args:
@@ -1636,7 +1628,7 @@ class DrimeCollection(DAVCollection):
                 pass
         return time.time()
 
-    def get_last_modified(self) -> float:  # type: ignore[override]
+    def get_last_modified(self) -> float:
         """Return the last modified date as timestamp."""
         if self.folder_entry and self.folder_entry.updated_at:
             try:
@@ -1655,7 +1647,7 @@ class DrimeCollection(DAVCollection):
             return self.folder_entry.name
         return "/"
 
-    def get_etag(self) -> str | None:  # type: ignore[override]
+    def get_etag(self) -> str | None:
         """Return the ETag for this collection.
 
         Note: WsgiDAV adds quotes automatically, so we return unquoted value.
@@ -1667,7 +1659,7 @@ class DrimeCollection(DAVCollection):
             return f"{self.folder_entry.id}-{self.get_last_modified()}"
         return None  # Root folder has no ETag
 
-    def support_etag(self) -> bool:  # type: ignore[override]
+    def support_etag(self) -> bool:
         """Return True if ETags are supported."""
         return True
 
@@ -1957,6 +1949,6 @@ class DrimeDAVProvider(DAVProvider):
 
         return None
 
-    def is_readonly(self) -> bool:  # type: ignore[override]
+    def is_readonly(self) -> bool:
         """Return True if the provider is read-only."""
         return self._readonly

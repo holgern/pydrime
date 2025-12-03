@@ -1,7 +1,7 @@
 """Duplicate file detection and handling utilities."""
 
 from pathlib import Path, PurePosixPath
-from typing import Optional
+from typing import Any, Optional
 
 import click
 
@@ -692,7 +692,7 @@ class DuplicateHandler:
 
     def _add_entry_to_duplicate_info(
         self,
-        entry,
+        entry: Any,
         dup_name: str,
         rel_paths: list[str],
         duplicate_info: dict[str, list[tuple[int, Optional[str]]]],
@@ -898,7 +898,7 @@ class DuplicateHandler:
         self,
         duplicate_name: str,
         files_to_upload: list[tuple[Path, str]],
-        specific_rel_path: str | None = None,
+        specific_rel_path: Optional[str] = None,
     ) -> None:
         """Mark files matching duplicate for skipping.
 

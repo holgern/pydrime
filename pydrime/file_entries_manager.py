@@ -31,10 +31,10 @@ class FileEntriesManager:
         self.workspace_id = workspace_id
         self._cache: dict[str, list[FileEntry]] = {}
         # Cache for resolved folder paths: (base_parent_id, path) -> folder_id
-        self._folder_path_cache: dict[tuple[int | None, str], int] = {}
+        self._folder_path_cache: dict[tuple[Optional[int], str], int] = {}
         # Reverse mapping: folder_id -> list of (base_parent_id, path) cache keys
         # Used for efficient cache invalidation when folders are deleted/renamed
-        self._folder_id_to_paths: dict[int, list[tuple[int | None, str]]] = {}
+        self._folder_id_to_paths: dict[int, list[tuple[Optional[int], str]]] = {}
         # Lock for thread-safe folder path operations
         self._folder_lock = threading.Lock()
 
@@ -423,9 +423,9 @@ class FileEntriesManager:
     def ensure_folder_path(
         self,
         folder_path: str,
-        base_parent_id: int | None = None,
+        base_parent_id: Optional[int] = None,
         create_if_missing: bool = True,
-    ) -> int | None:
+    ) -> Optional[int]:
         """Ensure all folders in the path exist, return the deepest folder's ID.
 
         This method walks through each component of the folder path, finding or
@@ -556,7 +556,7 @@ class FileEntriesManager:
 
     def _cache_folder_path(
         self,
-        cache_key: tuple[int | None, str],
+        cache_key: tuple[Optional[int], str],
         folder_id: int,
     ) -> None:
         """Add a folder path to the cache with reverse mapping for invalidation.
@@ -576,8 +576,8 @@ class FileEntriesManager:
     def get_cached_folder_id(
         self,
         folder_path: str,
-        base_parent_id: int | None = None,
-    ) -> int | None:
+        base_parent_id: Optional[int] = None,
+    ) -> Optional[int]:
         """Get folder ID from cache without making API calls.
 
         Returns None if not in cache (does NOT look up or create).
@@ -597,7 +597,7 @@ class FileEntriesManager:
         self,
         folder_path: str,
         folder_id: int,
-        base_parent_id: int | None = None,
+        base_parent_id: Optional[int] = None,
     ) -> None:
         """Manually add a folder path to the cache.
 
@@ -641,7 +641,7 @@ class FileEntriesManager:
     def invalidate_folder_path(
         self,
         folder_path: str,
-        base_parent_id: int | None = None,
+        base_parent_id: Optional[int] = None,
     ) -> None:
         """Invalidate cache for a folder path and all its children.
 

@@ -9,7 +9,7 @@ import logging
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,12 @@ class Semaphore:
         self.acquire()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Any,
+    ) -> None:
         """Exit context manager."""
         self.release()
 
@@ -166,7 +171,12 @@ class AsyncSemaphore:
         await self.acquire()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Any,
+    ) -> None:
         """Exit async context manager."""
         self.release()
 
@@ -247,7 +257,7 @@ class SyncPauseController:
         >>> controller.resume()  # Resume sync
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize pause controller."""
         self._paused = False
         self._removed = False
@@ -337,7 +347,7 @@ class SyncPauseController:
 class AsyncSyncPauseController:
     """Async version of SyncPauseController for async sync operations."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize async pause controller."""
         self._paused = False
         self._removed = False

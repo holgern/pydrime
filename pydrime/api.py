@@ -322,7 +322,7 @@ class DrimeClient:
         base_delay = self.retry_delay * (2**attempt)
         # Add jitter: +/- 25% of base delay
         jitter = base_delay * 0.25 * (2 * random.random() - 1)
-        return base_delay + jitter
+        return float(base_delay + jitter)
 
     def _handle_http_error(
         self, e: httpx.HTTPStatusError, attempt: int
@@ -350,10 +350,12 @@ class DrimeClient:
         elif status_code == 404:
             raise DrimeNotFoundError("Resource not found") from e
         elif status_code == 429:
-            error = DrimeRateLimitError("Rate limit exceeded - please try again later")
+            rate_error = DrimeRateLimitError(
+                "Rate limit exceeded - please try again later"
+            )
             # Always retry rate limits if we haven't exhausted retries
             should_retry = attempt < self.max_retries
-            return (error, should_retry)
+            return (rate_error, should_retry)
         else:
             error_msg = f"API request failed with status {status_code}"
 
@@ -375,7 +377,7 @@ class DrimeClient:
                 # status-based message
                 pass
 
-            error = DrimeAPIError(error_msg)
+            error: Exception = DrimeAPIError(error_msg)
             # Retry on 5xx server errors
             should_retry = 500 <= status_code < 600 and attempt < self.max_retries
             return (error, should_retry)
@@ -563,7 +565,7 @@ class DrimeClient:
 
         # Try python-magic first for more accurate detection
         try:
-            import magic  # type: ignore
+            import magic
 
             try:
                 mime_type = magic.from_file(str(file_path), mime=True)
@@ -1532,7 +1534,7 @@ class DrimeClient:
         """
         endpoint = f"/folders/{folder_id}/count"
         result = self._request("GET", endpoint)
-        return result.get("count", 0)
+        return int(result.get("count", 0))
 
     def get_folder_path(
         self,

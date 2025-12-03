@@ -3,7 +3,7 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, Callable, Optional, cast
 
 import click
 from rich.progress import (
@@ -588,6 +588,7 @@ def _upload_single_file(
             progress_display = None
 
         try:
+            progress_callback_fn: Optional[Callable[[int, int], None]] = None
             if progress_display:
                 progress_display.start()
                 file_size = file_path.stat().st_size
@@ -596,13 +597,14 @@ def _upload_single_file(
                     total=file_size,
                 )
 
-                def progress_callback(bytes_uploaded: int, total_bytes: int) -> None:
+                def _progress_callback(bytes_uploaded: int, total_bytes: int) -> None:
                     progress_display.update(
                         task_id, completed=bytes_uploaded, total=total_bytes
                     )
+
+                progress_callback_fn = _progress_callback
             else:
                 task_id = None
-                progress_callback = None
                 file_size = file_path.stat().st_size
                 size_str = out.format_size(file_size)
                 out.progress_message(f"Uploading {upload_path} ({size_str})")
@@ -612,7 +614,7 @@ def _upload_single_file(
                 parent_id=current_folder_id,
                 relative_path=upload_dir,
                 workspace_id=workspace,
-                progress_callback=progress_callback,
+                progress_callback=progress_callback_fn,
                 chunk_size=chunk_size_bytes,
                 use_multipart_threshold=multipart_threshold_bytes,
             )
@@ -1861,8 +1863,8 @@ def download(
             # over-parallelization
             has_folders = False
             for identifier in expanded_identifiers:
-                entry = resolve_and_get_entry(identifier)
-                if entry and entry.is_folder:
+                folder_check_entry = resolve_and_get_entry(identifier)
+                if folder_check_entry and folder_check_entry.is_folder:
                     has_folders = True
                     break
 
@@ -2208,7 +2210,7 @@ def sync(
                 return  # For type checker
 
             # Create SyncPair from dict data
-            pair = SyncPair(
+            config_pair = SyncPair(
                 local=Path(pair_data["local"]),
                 remote=pair_data["remote"],
                 sync_mode=SyncMode.from_string(pair_data["syncMode"]),
@@ -2223,19 +2225,21 @@ def sync(
                 out.info(f"Sync Pair {i + 1}/{len(sync_pairs_data)}")
                 out.info("=" * 60)
                 workspace_display, _ = format_workspace_display(
-                    client, pair.workspace_id
+                    client, config_pair.workspace_id
                 )
                 out.info(f"Workspace: {workspace_display}")
-                out.info(f"Sync mode: {pair.sync_mode.value}")
-                out.info(f"Local path: {pair.local}")
+                out.info(f"Sync mode: {config_pair.sync_mode.value}")
+                out.info(f"Local path: {config_pair.local}")
                 # Display "/" for root when remote is empty (normalized from "/")
-                remote_display = pair.remote if pair.remote else "/ (root)"
+                remote_display = (
+                    config_pair.remote if config_pair.remote else "/ (root)"
+                )
                 out.info(f"Remote path: {remote_display}")
-                if pair.ignore:
-                    out.info(f"Ignore patterns: {pair.ignore}")
-                if pair.exclude_dot_files:
+                if config_pair.ignore:
+                    out.info(f"Ignore patterns: {config_pair.ignore}")
+                if config_pair.exclude_dot_files:
                     out.info("Excluding dot files")
-                if pair.disable_local_trash:
+                if config_pair.disable_local_trash:
                     out.info("Local trash disabled")
                 out.info("")
 
@@ -2255,7 +2259,7 @@ def sync(
                 if use_progress_display:
                     stats = run_sync_with_progress(
                         engine=engine,
-                        pair=pair,
+                        pair=config_pair,
                         dry_run=dry_run,
                         chunk_size=chunk_size_bytes,
                         multipart_threshold=multipart_threshold_bytes,
@@ -2267,7 +2271,7 @@ def sync(
                     )
                 else:
                     stats = engine.sync_pair(
-                        pair,
+                        config_pair,
                         dry_run=dry_run,
                         chunk_size=chunk_size_bytes,
                         multipart_threshold=multipart_threshold_bytes,
@@ -2284,8 +2288,8 @@ def sync(
 
                 # Add pair info to stats
                 stats["pair_index"] = i
-                stats["local"] = str(pair.local)
-                stats["remote"] = pair.remote
+                stats["local"] = str(config_pair.local)
+                stats["remote"] = config_pair.remote
                 all_stats.append(stats)
                 total_conflicts += stats.get("conflicts", 0)
 
@@ -2294,8 +2298,8 @@ def sync(
                     validation_result = validate_cloud_files(
                         client=client,
                         out=out,
-                        local_path=pair.local,
-                        remote_path=pair.remote,
+                        local_path=config_pair.local,
+                        remote_path=config_pair.remote,
                         workspace_id=resolved_workspace_id,
                     )
                     stats["validation"] = validation_result
@@ -2310,8 +2314,8 @@ def sync(
                 all_stats.append(
                     {
                         "pair_index": i,
-                        "local": str(pair.local),
-                        "remote": pair.remote,
+                        "local": str(config_pair.local),
+                        "remote": config_pair.remote,
                         "error": str(e),
                     }
                 )
@@ -2320,8 +2324,8 @@ def sync(
                 all_stats.append(
                     {
                         "pair_index": i,
-                        "local": str(pair.local),
-                        "remote": pair.remote,
+                        "local": str(config_pair.local),
+                        "remote": config_pair.remote,
                         "error": str(e),
                     }
                 )
@@ -3331,7 +3335,7 @@ def rm(
         current_folder = config.get_current_folder()
 
         # Resolve all identifiers to entry IDs
-        entry_ids = []
+        entry_ids: list[int] = []
         for identifier in entry_identifiers:
             try:
                 # Check if identifier is a glob pattern
@@ -4743,8 +4747,8 @@ def vault_upload(
                     parent_id=folder_parent_id,
                 )
                 folder_info = result.get("folder", {})
-                folder_id = folder_info.get("id")
-                if folder_id:
+                folder_id: Optional[int] = folder_info.get("id")
+                if folder_id is not None:
                     folder_id_cache[folder_path] = folder_id
                     return folder_id
             except Exception as e:

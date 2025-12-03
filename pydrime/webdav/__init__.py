@@ -9,12 +9,14 @@ Example usage:
     pydrime webdav --readonly
 """
 
+from typing import Any
+
 # Default values that don't require wsgidav
 DEFAULT_MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB
 DEFAULT_CACHE_TTL = 30.0  # 30 seconds
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     """Lazy import to avoid circular import issues with wsgidav."""
     if name in ("DrimeDAVProvider", "DrimeCollection", "DrimeResource"):
         from .provider import DrimeCollection, DrimeDAVProvider, DrimeResource

@@ -4,7 +4,7 @@ This module provides Rich-based progress displays that work with
 the SyncProgressTracker from the sync engine.
 """
 
-from typing import Optional
+from typing import Any, Optional
 
 from rich.progress import (
     BarColumn,
@@ -18,7 +18,10 @@ from rich.progress import (
 )
 
 from .file_entries_manager import FileEntriesManager
+from .output import OutputFormatter
+from .sync.engine import SyncEngine
 from .sync.modes import SyncMode
+from .sync.pair import SyncPair
 from .sync.progress import SyncProgressEvent, SyncProgressInfo, SyncProgressTracker
 
 
@@ -155,7 +158,12 @@ class SyncProgressDisplay:
 
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Any,
+    ) -> None:
         """Exit context manager - stop progress display."""
         if self._progress is not None:
             # Update final description
@@ -170,8 +178,8 @@ class SyncProgressDisplay:
 
 
 def run_sync_with_progress(
-    engine,
-    pair,
+    engine: SyncEngine,
+    pair: SyncPair,
     dry_run: bool,
     chunk_size: int,
     multipart_threshold: int,
@@ -179,8 +187,8 @@ def run_sync_with_progress(
     use_streaming: bool,
     max_workers: int,
     start_delay: float,
-    out=None,
-) -> dict:
+    out: Optional[OutputFormatter] = None,
+) -> dict[str, Any]:
     """Run sync with a Rich progress display.
 
     This function creates a progress display context and runs the sync
@@ -236,7 +244,11 @@ def run_sync_with_progress(
         )
 
 
-def _show_remote_status_before_sync(engine, pair, out=None) -> None:
+def _show_remote_status_before_sync(
+    engine: SyncEngine,
+    pair: SyncPair,
+    out: Optional[OutputFormatter] = None,
+) -> None:
     """Show remote folder status before starting the sync progress bar.
 
     This displays important context about what exists on the remote

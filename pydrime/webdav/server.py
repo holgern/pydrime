@@ -27,7 +27,9 @@ class ContentTypeFixMiddleware:
     def __call__(self, environ: dict, start_response: Any) -> Any:
         request_method = environ.get("REQUEST_METHOD", "")
 
-        def fixed_start_response(status: str, headers: list, exc_info: Any = None):
+        def fixed_start_response(
+            status: str, headers: list[tuple[str, str]], exc_info: Any = None
+        ) -> Any:
             # Fix Content-Type for LOCK responses
             if request_method == "LOCK":
                 fixed_headers = []
@@ -80,7 +82,7 @@ def create_webdav_app(
     Returns:
         WsgiDAVApp instance
     """
-    from wsgidav.wsgidav_app import WsgiDAVApp
+    from wsgidav.wsgidav_app import WsgiDAVApp  # type: ignore[import-untyped]
 
     from .provider import DrimeDAVProvider
 
