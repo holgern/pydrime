@@ -22,6 +22,7 @@ from .duplicate_finder import DuplicateFileFinder
 from .duplicate_handler import DuplicateHandler
 from .exceptions import DrimeAPIError, DrimeNotFoundError
 from .file_entries_manager import FileEntriesManager
+from .logging import setup_logging
 from .models import FileEntriesResult, FileEntry, SchemaValidationWarning, UserStatus
 from .output import OutputFormatter
 from .upload_preview import display_upload_preview
@@ -76,10 +77,16 @@ def scan_directory(
     help="Enable API schema validation warnings (for debugging)",
 )
 @click.option(
-    "--verbose",
-    "-v",
-    is_flag=True,
-    help="Enable verbose/debug logging output",
+    "--log-level",
+    type=click.Choice(["error", "warning", "info", "debug", "api"]),
+    envvar="PYDRIME_LOG_LEVEL",
+    help="Log level (enables logging to console, or file if --log-file is set)",
+)
+@click.option(
+    "--log-file",
+    type=click.Path(),
+    envvar="PYDRIME_LOG_FILE",
+    help="Log to file instead of console (default: ~/.config/pydrime/logs/pydrime.log)",
 )
 @click.version_option()
 @click.pass_context
@@ -89,7 +96,8 @@ def main(
     quiet: bool,
     json: bool,
     validate_schema: bool,
-    verbose: bool,
+    log_level: Optional[str],
+    log_file: Optional[str],
 ) -> None:
     """PyDrime - Upload & Download files and directories to Drime Cloud."""
     # Store settings in context for subcommands to access
@@ -97,20 +105,10 @@ def main(
     ctx.obj["api_key"] = api_key
     ctx.obj["out"] = OutputFormatter(json_output=json, quiet=quiet)
     ctx.obj["validate_schema"] = validate_schema
-    ctx.obj["verbose"] = verbose
+    ctx.obj["log_level"] = log_level
 
-    # Configure logging based on verbose flag
-    if verbose:
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            datefmt="%H:%M:%S",
-        )
-        # Enable debug logging for pydrime modules
-        logging.getLogger("pydrime").setLevel(logging.DEBUG)
-    else:
-        # Set default logging level to WARNING to suppress debug/info messages
-        logging.basicConfig(level=logging.WARNING)
+    # Configure logging based on log-level and log-file flags
+    setup_logging(log_level=log_level, log_file=log_file)
 
     # Enable schema validation if flag is set
     if validate_schema:
