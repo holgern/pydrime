@@ -37,15 +37,16 @@ logging.basicConfig(
 # Enable debug for all pydrime modules
 logging.getLogger("pydrime").setLevel(logging.DEBUG)
 
+from syncengine.comparator import FileComparator, SyncAction  # noqa: E402
+from syncengine.engine import SyncEngine  # noqa: E402
+from syncengine.modes import SyncMode  # noqa: E402
+from syncengine.pair import SyncPair  # noqa: E402
+from syncengine.scanner import DirectoryScanner  # noqa: E402
+
 from pydrime.api import DrimeClient  # noqa: E402
 from pydrime.file_entries_manager import FileEntriesManager  # noqa: E402
 from pydrime.models import FileEntriesResult  # noqa: E402
 from pydrime.output import OutputFormatter  # noqa: E402
-from pydrime.sync.comparator import FileComparator, SyncAction  # noqa: E402
-from pydrime.sync.engine import SyncEngine  # noqa: E402
-from pydrime.sync.modes import SyncMode  # noqa: E402
-from pydrime.sync.pair import SyncPair  # noqa: E402
-from pydrime.sync.scanner import DirectoryScanner  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -292,8 +293,8 @@ def debug_remote_scan(
         traceback.print_exc()
         return []
 
-    # Convert to RemoteFile objects
-    print_info("Converting to RemoteFile objects via scanner.scan_remote()")
+    # Convert to DestinationFile objects
+    print_info("Converting to DestinationFile objects via scanner.scan_remote()")
     try:
         remote_files = scanner.scan_remote(entries_with_paths)
         print_debug(
@@ -302,7 +303,7 @@ def debug_remote_scan(
 
         for rf in remote_files[:10]:
             print_debug(
-                f"RemoteFile: '{rf.relative_path}', size={rf.size}, "
+                f"DestinationFile: '{rf.relative_path}', size={rf.size}, "
                 f"hash={rf.hash[:20]}...",
                 2,
             )
@@ -342,7 +343,7 @@ def debug_local_scan(local_dir: Path) -> list:
 
         for lf in local_files[:10]:
             print_debug(
-                f"LocalFile: '{lf.relative_path}', size={lf.size}, mtime={lf.mtime}",
+                f"SourceFile: '{lf.relative_path}', size={lf.size}, mtime={lf.mtime}",
                 2,
             )
         if len(local_files) > 10:
@@ -436,9 +437,9 @@ def debug_comparison(
             stats["uploads"] += 1
         elif action == SyncAction.DOWNLOAD:
             stats["downloads"] += 1
-        elif action == SyncAction.DELETE_LOCAL:
+        elif action == SyncAction.DELETE_SOURCE:
             stats["deletes_local"] += 1
-        elif action == SyncAction.DELETE_REMOTE:
+        elif action == SyncAction.DELETE_DESTINATION:
             stats["deletes_remote"] += 1
         elif action == SyncAction.SKIP:
             stats["skips"] += 1
@@ -486,13 +487,13 @@ def run_sync_engine(
 
     # Create sync pair
     pair = SyncPair(
-        local=local_dir,
-        remote=f"/{remote_folder}",
+        source=local_dir,
+        destination=f"/{remote_folder}",
         sync_mode=sync_mode,
         workspace_id=workspace_id,
     )
 
-    print_debug(f"SyncPair created: local={pair.local}, remote={pair.remote}", 1)
+    print_debug(f"SyncPair created: source={pair.local}, destination={pair.remote}", 1)
     print_debug(f"requires_local_scan: {sync_mode.requires_local_scan}", 1)
     print_debug(f"requires_remote_scan: {sync_mode.requires_remote_scan}", 1)
     print_debug(f"allows_upload: {sync_mode.allows_upload}", 1)
@@ -595,7 +596,7 @@ def test_cloud_upload(
         client,
         local_dir,
         remote_folder,
-        SyncMode.LOCAL_TO_CLOUD,
+        SyncMode.SOURCE_TO_DESTINATION,
         workspace_id,
         batch_size=10,
         max_workers=1,
@@ -654,7 +655,7 @@ def test_cloud_upload(
         client,
         local_dir,
         remote_folder,
-        SyncMode.LOCAL_TO_CLOUD,
+        SyncMode.SOURCE_TO_DESTINATION,
         workspace_id,
         batch_size=10,
         max_workers=1,
@@ -707,7 +708,7 @@ def test_cloud_download(
         client,
         local_dir,
         remote_folder,
-        SyncMode.CLOUD_TO_LOCAL,
+        SyncMode.DESTINATION_TO_SOURCE,
         workspace_id,
         batch_size=10,
         max_workers=1,
@@ -744,7 +745,7 @@ def test_cloud_download(
         client,
         local_dir,
         remote_folder,
-        SyncMode.CLOUD_TO_LOCAL,
+        SyncMode.DESTINATION_TO_SOURCE,
         workspace_id,
         batch_size=10,
         max_workers=1,

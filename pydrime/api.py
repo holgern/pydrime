@@ -1153,6 +1153,10 @@ class DrimeClient:
             folder_path = dirname(normalized_path)
             path_filename = basename(normalized_path)
 
+            logger.debug(f"Upload file - normalized_path: {normalized_path}")
+            logger.debug(f"Upload file - folder_path: {folder_path}")
+            logger.debug(f"Upload file - path_filename: {path_filename}")
+
             # Use the filename from relative_path if it looks like a filename
             # (has an extension or is different from the folder path)
             if path_filename and path_filename != normalized_path:
@@ -1160,12 +1164,16 @@ class DrimeClient:
 
             # If there's a folder path, resolve it to a folder ID
             if folder_path and folder_path != ".":
+                logger.debug(
+                    f"Upload file - calling ensure_folder_path for: {folder_path}"
+                )
                 manager = self.get_entries_manager(workspace_id)
                 resolved_parent_id = manager.ensure_folder_path(
                     folder_path,
                     base_parent_id=parent_id,
                     create_if_missing=True,
                 )
+                logger.debug(f"Upload file - resolved_parent_id: {resolved_parent_id}")
 
         def _do_upload() -> Any:
             """Perform the actual upload."""

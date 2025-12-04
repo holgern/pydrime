@@ -78,26 +78,26 @@ def run_sync_command(
     return exit_code, captured_output
 
 
-def run_upload_command(local_path: Path, remote_path: str) -> tuple[int, str]:
+def run_upload_command(source_path: Path, destination_path: str) -> tuple[int, str]:
     """Run a pydrime upload command.
 
     Args:
-        local_path: Local file or directory path
-        remote_path: Remote destination path
+        source_path: Local file or directory path
+        destination_path: Remote destination path
 
     Returns:
         Tuple of (exit_code, captured_output)
     """
-    print(f"\n>>> Running: pydrime upload {local_path} -r {remote_path}")
+    print(f"\n>>> Running: pydrime upload {source_path} -r {destination_path}")
     print("-" * 80)
     sys.stdout.flush()
 
     cmd = [
         "pydrime",
         "upload",
-        str(local_path),
+        str(source_path),
         "-r",
-        remote_path,
+        destination_path,
         "--on-duplicate",
         "replace",
     ]
@@ -123,20 +123,20 @@ def run_upload_command(local_path: Path, remote_path: str) -> tuple[int, str]:
     return exit_code, captured_output
 
 
-def run_rm_command(remote_path: str) -> tuple[int, str]:
+def run_rm_command(destination_path: str) -> tuple[int, str]:
     """Run a pydrime rm command.
 
     Args:
-        remote_path: Remote path to delete
+        destination_path: Remote path to delete
 
     Returns:
         Tuple of (exit_code, captured_output)
     """
-    print(f"\n>>> Running: pydrime rm {remote_path} --no-trash --yes")
+    print(f"\n>>> Running: pydrime rm {destination_path} --no-trash --yes")
     print("-" * 80)
     sys.stdout.flush()
 
-    cmd = ["pydrime", "rm", remote_path, "--no-trash", "--yes"]
+    cmd = ["pydrime", "rm", destination_path, "--no-trash", "--yes"]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout)
@@ -236,8 +236,8 @@ def test_initial_state(local_dir: Path, staging_dir: Path, remote_folder: str) -
     # This avoids creating a "staging" subfolder in the remote
     # The remote path must include the filename for single file uploads
     for file_path in created_files:
-        remote_path = f"/{remote_folder}/{file_path.name}"
-        exit_code, _ = run_upload_command(file_path, remote_path)
+        destination_path = f"/{remote_folder}/{file_path.name}"
+        exit_code, _ = run_upload_command(file_path, destination_path)
         if exit_code != 0:
             print(
                 f"[FAIL] Upload failed for {file_path.name} with exit code {exit_code}"
@@ -310,8 +310,8 @@ def test_add_file(local_dir: Path, staging_dir: Path, remote_folder: str) -> boo
     print(f"\n[ADD] Created new file in staging: {new_file.name}")
 
     # Upload the new file to cloud (include filename in remote path)
-    remote_path = f"/{remote_folder}/{new_file.name}"
-    exit_code, _ = run_upload_command(new_file, remote_path)
+    destination_path = f"/{remote_folder}/{new_file.name}"
+    exit_code, _ = run_upload_command(new_file, destination_path)
     if exit_code != 0:
         print(f"[FAIL] Upload failed with exit code {exit_code}")
         return False
@@ -382,9 +382,9 @@ def test_delete_file(local_dir: Path, remote_folder: str) -> bool:
         return False
 
     # Verify file no longer exists locally
-    local_file = local_dir / "test_file_000.txt"
-    if local_file.exists():
-        print(f"[FAIL] File should be deleted locally: {local_file}")
+    source_file = local_dir / "test_file_000.txt"
+    if source_file.exists():
+        print(f"[FAIL] File should be deleted locally: {source_file}")
         return False
 
     print("[PASS] Delete file: local file deleted successfully")
@@ -421,8 +421,8 @@ def test_modify_file(local_dir: Path, staging_dir: Path, remote_folder: str) -> 
         return False
 
     # Upload the modified file to cloud (replace existing, include filename in path)
-    remote_path = f"/{remote_folder}/{file_to_modify.name}"
-    exit_code, _ = run_upload_command(file_to_modify, remote_path)
+    destination_path = f"/{remote_folder}/{file_to_modify.name}"
+    exit_code, _ = run_upload_command(file_to_modify, destination_path)
     if exit_code != 0:
         print(f"[FAIL] Upload failed with exit code {exit_code}")
         return False

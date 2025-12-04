@@ -105,12 +105,12 @@ def cleanup_remote_folder(remote_folder: str) -> None:
         print(f"  ! Error deleting remote folder: {e}")
 
 
-def get_state_file_path(local_dir: Path, remote_path: str) -> Path:
+def get_state_file_path(local_dir: Path, destination_path: str) -> Path:
     """Get the path to the sync state file for a sync pair."""
     import hashlib
 
     local_abs = str(local_dir.resolve())
-    combined = f"{local_abs}:{remote_path}"
+    combined = f"{local_abs}:{destination_path}"
     key = hashlib.sha256(combined.encode()).hexdigest()[:16]
 
     # State files are stored in v2 subdirectory
@@ -135,8 +135,8 @@ def test_initial_sync_creates_state(local_dir: Path, remote_folder: str) -> bool
 
     Verifies that after a TWO_WAY sync, the state file contains:
     - version: 2
-    - local_tree with tree and file_ids mappings
-    - remote_tree with tree and ids mappings
+    - source_tree with tree and file_ids mappings
+    - destination_tree with tree and ids mappings
     - synced_files set
     """
     print("\n" + "=" * 80)
@@ -178,36 +178,38 @@ def test_initial_sync_creates_state(local_dir: Path, remote_folder: str) -> bool
         return False
     print("[OK] State version is 2")
 
-    # Check local_tree
-    local_tree = state.get("local_tree", {})
-    tree_items = local_tree.get("tree", {})
-    file_ids = local_tree.get("file_ids", {})
+    # Check source_tree
+    source_tree = state.get("source_tree", {})
+    tree_items = source_tree.get("tree", {})
+    file_ids = source_tree.get("file_ids", {})
 
-    print(f"\n[CHECK] local_tree.tree has {len(tree_items)} items")
-    print(f"[CHECK] local_tree.file_ids has {len(file_ids)} items")
+    print(f"\n[CHECK] source_tree.tree has {len(tree_items)} items")
+    print(f"[CHECK] source_tree.file_ids has {len(file_ids)} items")
 
     if len(tree_items) != 5:
-        print(f"[FAIL] Expected 5 items in local_tree.tree, got {len(tree_items)}")
+        print(f"[FAIL] Expected 5 items in source_tree.tree, got {len(tree_items)}")
         return False
-    print("[OK] local_tree.tree has 5 items")
+    print("[OK] source_tree.tree has 5 items")
 
     if len(file_ids) != 5:
-        print(f"[FAIL] Expected 5 items in local_tree.file_ids, got {len(file_ids)}")
+        print(f"[FAIL] Expected 5 items in source_tree.file_ids, got {len(file_ids)}")
         return False
-    print("[OK] local_tree.file_ids has 5 items")
+    print("[OK] source_tree.file_ids has 5 items")
 
-    # Check remote_tree
-    # Note: In streaming mode, newly uploaded files don't appear in remote_tree
-    # because we don't re-scan remote after upload. remote_tree only contains
+    # Check destination_tree
+    # Note: In streaming mode, newly uploaded files don't appear in destination_tree
+    # because we don't re-scan remote after upload. destination_tree only contains
     # files that already existed on remote (downloads/skips).
-    # For initial sync where all files are uploaded, remote_tree will be empty.
-    remote_tree = state.get("remote_tree", {})
-    remote_tree_items = remote_tree.get("tree", {})
-    remote_ids = remote_tree.get("ids", {})
+    # For initial sync where all files are uploaded, destination_tree will be empty.
+    destination_tree = state.get("destination_tree", {})
+    remote_tree_items = destination_tree.get("tree", {})
+    remote_ids = destination_tree.get("ids", {})
 
-    print(f"\n[CHECK] remote_tree.tree has {len(remote_tree_items)} items")
-    print(f"[CHECK] remote_tree.ids has {len(remote_ids)} items")
-    print("[INFO] Note: remote_tree is empty because all files were newly uploaded")
+    print(f"\n[CHECK] destination_tree.tree has {len(remote_tree_items)} items")
+    print(f"[CHECK] destination_tree.ids has {len(remote_ids)} items")
+    print(
+        "[INFO] Note: destination_tree is empty because all files were newly uploaded"
+    )
     print("       (remote files only tracked when downloaded/skipped from existing)")
 
     # Check synced_files for backward compatibility
@@ -239,8 +241,8 @@ def test_state_item_structure(local_dir: Path, remote_folder: str) -> bool:
         return False
 
     # Check local item structure
-    local_tree = state.get("local_tree", {})
-    tree_items = local_tree.get("tree", {})
+    source_tree = state.get("source_tree", {})
+    tree_items = source_tree.get("tree", {})
 
     print("\n[CHECK] Verifying LocalItemState structure...")
     required_local_fields = ["path", "size", "mtime", "file_id", "item_type"]
@@ -261,13 +263,13 @@ def test_state_item_structure(local_dir: Path, remote_folder: str) -> bool:
     print("[OK] All local items have correct structure")
 
     # Check remote item structure
-    remote_tree = state.get("remote_tree", {})
-    remote_items = remote_tree.get("tree", {})
+    destination_tree = state.get("destination_tree", {})
+    remote_items = destination_tree.get("tree", {})
 
     print("\n[CHECK] Verifying RemoteItemState structure...")
 
     if not remote_items:
-        print("[INFO] remote_tree is empty (all files were newly uploaded)")
+        print("[INFO] destination_tree is empty (all files were newly uploaded)")
         print("[OK] Skipping remote item structure check")
     else:
         required_remote_fields = ["path", "size", "id", "item_type"]
@@ -288,7 +290,7 @@ def test_state_item_structure(local_dir: Path, remote_folder: str) -> bool:
         print("[OK] All remote items have correct structure")
 
     # Verify file_ids index matches tree
-    file_ids = local_tree.get("file_ids", {})
+    file_ids = source_tree.get("file_ids", {})
     print("\n[CHECK] Verifying file_ids index consistency...")
 
     for file_id_str, item in file_ids.items():
@@ -304,7 +306,7 @@ def test_state_item_structure(local_dir: Path, remote_folder: str) -> bool:
     print("[OK] file_ids index is consistent with tree")
 
     # Verify ids index matches tree
-    remote_ids = remote_tree.get("ids", {})
+    remote_ids = destination_tree.get("ids", {})
     print("\n[CHECK] Verifying remote ids index consistency...")
 
     if not remote_ids:
@@ -359,10 +361,10 @@ def test_state_updates_on_add(local_dir: Path, remote_folder: str) -> bool:
         print("[FAIL] State file not found after sync")
         return False
 
-    local_tree = state.get("local_tree", {})
-    tree_items = local_tree.get("tree", {})
+    source_tree = state.get("source_tree", {})
+    tree_items = source_tree.get("tree", {})
 
-    print(f"\n[CHECK] local_tree.tree now has {len(tree_items)} items")
+    print(f"\n[CHECK] source_tree.tree now has {len(tree_items)} items")
 
     # Should now have 6 files
     if len(tree_items) != 6:
@@ -372,13 +374,13 @@ def test_state_updates_on_add(local_dir: Path, remote_folder: str) -> bool:
     # Check new file is in tree
     new_file_path = "new_state_test_file.txt"
     if new_file_path not in tree_items:
-        print(f"[FAIL] New file '{new_file_path}' not found in local_tree")
+        print(f"[FAIL] New file '{new_file_path}' not found in source_tree")
         return False
 
-    print(f"[OK] New file '{new_file_path}' is in local_tree")
+    print(f"[OK] New file '{new_file_path}' is in source_tree")
 
     # Check file_ids was updated
-    file_ids = local_tree.get("file_ids", {})
+    file_ids = source_tree.get("file_ids", {})
     new_file_id = tree_items[new_file_path].get("file_id")
     if str(new_file_id) not in file_ids:
         print("[FAIL] New file's file_id not in file_ids index")
@@ -387,17 +389,17 @@ def test_state_updates_on_add(local_dir: Path, remote_folder: str) -> bool:
     print(f"[OK] New file's file_id ({new_file_id}) is in file_ids index")
 
     # Check remote tree - may be empty if all files were uploaded (not downloaded)
-    remote_tree = state.get("remote_tree", {})
-    remote_items = remote_tree.get("tree", {})
+    destination_tree = state.get("destination_tree", {})
+    remote_items = destination_tree.get("tree", {})
 
     if new_file_path in remote_items:
         print(
-            f"[OK] New file is in remote_tree with "
+            f"[OK] New file is in destination_tree with "
             f"id={remote_items[new_file_path]['id']}"
         )
     else:
         print(
-            "[INFO] New file not in remote_tree (expected - file was uploaded, "
+            "[INFO] New file not in destination_tree (expected - file was uploaded, "
             "not downloaded)"
         )
 
@@ -439,10 +441,10 @@ def test_state_updates_on_delete(local_dir: Path, remote_folder: str) -> bool:
         print("[FAIL] State file not found after sync")
         return False
 
-    local_tree = state.get("local_tree", {})
-    tree_items = local_tree.get("tree", {})
+    source_tree = state.get("source_tree", {})
+    tree_items = source_tree.get("tree", {})
 
-    print(f"\n[CHECK] local_tree.tree now has {len(tree_items)} items")
+    print(f"\n[CHECK] source_tree.tree now has {len(tree_items)} items")
 
     # Should now have 5 files (6 - 1 deleted)
     if len(tree_items) != 5:
@@ -452,20 +454,20 @@ def test_state_updates_on_delete(local_dir: Path, remote_folder: str) -> bool:
     # Check deleted file is not in tree
     deleted_path = "test_file_000.txt"
     if deleted_path in tree_items:
-        print(f"[FAIL] Deleted file '{deleted_path}' still in local_tree")
+        print(f"[FAIL] Deleted file '{deleted_path}' still in source_tree")
         return False
 
-    print(f"[OK] Deleted file '{deleted_path}' is not in local_tree")
+    print(f"[OK] Deleted file '{deleted_path}' is not in source_tree")
 
     # Check remote tree was also updated
-    remote_tree = state.get("remote_tree", {})
-    remote_items = remote_tree.get("tree", {})
+    destination_tree = state.get("destination_tree", {})
+    remote_items = destination_tree.get("tree", {})
 
     if deleted_path in remote_items:
-        print("[FAIL] Deleted file still in remote_tree")
+        print("[FAIL] Deleted file still in destination_tree")
         return False
 
-    print("[OK] Deleted file is not in remote_tree (was never there or removed)")
+    print("[OK] Deleted file is not in destination_tree (was never there or removed)")
 
     print("\n[PASS] State updates correctly when deleting a file")
     return True
@@ -488,8 +490,8 @@ def test_state_persistence(local_dir: Path, remote_folder: str) -> bool:
         print("[FAIL] State file not found before sync")
         return False
 
-    items_before = len(state_before.get("local_tree", {}).get("tree", {}))
-    print(f"\n[CHECK] State before sync: {items_before} items in local_tree")
+    items_before = len(state_before.get("source_tree", {}).get("tree", {}))
+    print(f"\n[CHECK] State before sync: {items_before} items in source_tree")
 
     # Run sync again (should be idempotent)
     sync_pair = f"{local_dir}:twoWay:/{remote_folder}"
@@ -506,8 +508,8 @@ def test_state_persistence(local_dir: Path, remote_folder: str) -> bool:
         print("[FAIL] State file not found after sync")
         return False
 
-    items_after = len(state_after.get("local_tree", {}).get("tree", {}))
-    print(f"[CHECK] State after sync: {items_after} items in local_tree")
+    items_after = len(state_after.get("source_tree", {}).get("tree", {}))
+    print(f"[CHECK] State after sync: {items_after} items in source_tree")
 
     if items_before != items_after:
         print(f"[FAIL] Item count changed: {items_before} -> {items_after}")

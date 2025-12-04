@@ -16,13 +16,13 @@ from rich.progress import (
     TimeElapsedColumn,
     TransferSpeedColumn,
 )
+from syncengine.engine import SyncEngine
+from syncengine.modes import SyncMode
+from syncengine.pair import SyncPair
+from syncengine.progress import SyncProgressEvent, SyncProgressInfo, SyncProgressTracker
 
 from .file_entries_manager import FileEntriesManager
 from .output import OutputFormatter
-from .sync.engine import SyncEngine
-from .sync.modes import SyncMode
-from .sync.pair import SyncPair
-from .sync.progress import SyncProgressEvent, SyncProgressInfo, SyncProgressTracker
 
 
 def _format_size(size_bytes: int) -> str:
@@ -224,7 +224,7 @@ def run_sync_with_progress(
 
     # Show remote folder status before starting progress bar
     # This is important context that shouldn't be hidden by the progress display
-    if pair.sync_mode in (SyncMode.LOCAL_TO_CLOUD, SyncMode.LOCAL_BACKUP):
+    if pair.sync_mode in (SyncMode.SOURCE_TO_DESTINATION, SyncMode.SOURCE_BACKUP):
         _show_remote_status_before_sync(engine, pair, out=out)
 
     # For actual sync, use progress display
@@ -267,11 +267,11 @@ def _show_remote_status_before_sync(
         return
 
     # Determine if syncing to root
-    syncing_to_root = not pair.remote or pair.remote == "/"
+    syncing_to_root = not pair.destination or pair.destination == "/"
 
     # Try to find remote folder and count files
     try:
-        manager = FileEntriesManager(engine.client, pair.workspace_id)
+        manager = FileEntriesManager(engine.client, pair.storage_id)
 
         # Find the remote folder (or use root)
         if syncing_to_root:
@@ -280,12 +280,12 @@ def _show_remote_status_before_sync(
             out.success("Syncing directly to cloud root")
         else:
             remote_folder_id = None
-            effective_remote_name = pair.remote
+            effective_remote_name = pair.destination
             if "/" in effective_remote_name:
                 # Nested path
                 try:
                     remote_folder_id = engine.client.resolve_path_to_id(
-                        effective_remote_name, workspace_id=pair.workspace_id
+                        effective_remote_name, workspace_id=pair.storage_id
                     )
                 except Exception:
                     pass

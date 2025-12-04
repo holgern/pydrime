@@ -37,6 +37,114 @@ from .workspace_utils import (
 logger = logging.getLogger(__name__)
 
 
+class _FileEntriesManagerAdapter:
+    """Adapter to make FileEntriesManager compatible with syncengine's 
+    FileEntriesManagerProtocol.
+
+    This adapter wraps pydrime's FileEntriesManager and adapts its method signatures
+    to match the protocol expected by syncengine.
+    """
+
+    def __init__(self, manager: FileEntriesManager):
+        self._manager = manager
+
+    def find_folder_by_name(self, name: str, parent_id: int = 0) -> Optional[FileEntry]:
+        """Find folder by name (adapted signature for syncengine protocol)."""
+        # Convert parent_id: 0 → None (syncengine uses 0 for root, pydrime uses None)
+        actual_parent_id = None if parent_id == 0 else parent_id
+        return self._manager.find_folder_by_name(name, parent_id=actual_parent_id)
+
+    def get_all_recursive(
+        self, folder_id: Optional[int], path_prefix: str
+    ) -> list[tuple[FileEntry, str]]:
+        """Get all entries recursively (adapted signature for syncengine protocol)."""
+        return self._manager.get_all_recursive(
+            folder_id=folder_id, path_prefix=path_prefix
+        )
+
+    def iter_all_recursive(
+        self, folder_id: Optional[int], path_prefix: str, batch_size: int
+    ):
+        """Iterate all entries recursively in batches (adapted signature for 
+        syncengine protocol)."""
+        return self._manager.iter_all_recursive(
+            folder_id=folder_id, path_prefix=path_prefix, batch_size=batch_size
+        )
+
+
+class _DrimeClientAdapter:
+    """Adapter to make DrimeClient compatible with syncengine's StorageClientProtocol.
+
+    This adapter wraps pydrime's DrimeClient and adapts parameter names
+    to match the protocol expected by syncengine (storage_id vs workspace_id).
+    It's scoped to a specific storage_id so that methods like create_folder
+    that don't receive storage_id in the protocol can still use the correct workspace.
+    """
+
+    def __init__(self, client: DrimeClient, storage_id: int = 0):
+        self._client = client
+        self._storage_id = storage_id
+
+    def __getattr__(self, name):
+        """Forward all other attributes to the wrapped client."""
+        return getattr(self._client, name)
+
+    def upload_file(
+        self,
+        file_path: Path,
+        relative_path: str,
+        storage_id: int = 0,
+        chunk_size: int = 25 * 1024 * 1024,
+        use_multipart_threshold: int = 100 * 1024 * 1024,
+        progress_callback: Optional[Callable] = None,
+    ):
+        """Upload file (adapted signature for syncengine protocol).
+
+        Converts storage_id → workspace_id for DrimeClient.
+        """
+        return self._client.upload_file(
+            file_path=file_path,
+            relative_path=relative_path,
+            workspace_id=storage_id,  # Convert storage_id to workspace_id
+            chunk_size=chunk_size,
+            use_multipart_threshold=use_multipart_threshold,
+            progress_callback=progress_callback,
+        )
+
+    def create_folder(
+        self,
+        name: str,
+        parent_id: Optional[int] = None,
+    ):
+        """Create folder (adapted signature for syncengine protocol).
+
+        Uses the adapter's storage_id since the protocol doesn't pass it.
+        """
+        return self._client.create_folder(
+            name=name,
+            parent_id=parent_id,
+            workspace_id=self._storage_id,
+        )
+
+
+def _create_entries_manager_factory():
+    """Create a factory function for FileEntriesManager.
+
+    This factory is required by SyncEngine to create FileEntriesManager instances
+    that implement the FileEntriesManagerProtocol from syncengine.
+
+    Returns:
+        A callable that takes (client, storage_id) and returns an adapted 
+        FileEntriesManager
+    """
+
+    def factory(client, storage_id: int):
+        manager = FileEntriesManager(client, workspace_id=storage_id)
+        return _FileEntriesManagerAdapter(manager)
+
+    return factory
+
+
 def scan_directory(
     path: Path, base_path: Path, out: OutputFormatter
 ) -> list[tuple[Path, str]]:
@@ -262,10 +370,10 @@ def upload(  # noqa: C901
         pydrime upload ./data                  # Upload directory
         pydrime upload ./data --validate       # Upload and validate
     """
-    from .sync import SyncEngine
+    from syncengine import SyncEngine
 
     out: OutputFormatter = ctx.obj["out"]
-    local_path = Path(path)
+    source_path = Path(path)
 
     # Validate and convert MB to bytes
     if chunk_size < 5:
@@ -321,11 +429,11 @@ def upload(  # noqa: C901
         out.info("")  # Empty line for readability
 
     # Handle single file upload separately (not using sync engine)
-    if local_path.is_file():
+    if source_path.is_file():
         _upload_single_file(
             ctx=ctx,
             client=client,
-            local_path=local_path,
+            source_path=source_path,
             remote_path=remote_path,
             workspace=workspace,
             current_folder_id=current_folder_id,
@@ -341,11 +449,11 @@ def upload(  # noqa: C901
         return
 
     # Directory upload - collect files for preview and duplicate handling
-    out.info(f"Scanning directory: {local_path}")
+    out.info(f"Scanning directory: {source_path}")
     # Always use parent as base_path so the folder name is included in
     # relative paths
-    base_path = local_path.parent
-    files_to_upload = scan_directory(local_path, base_path, out)
+    base_path = source_path.parent
+    files_to_upload = scan_directory(source_path, base_path, out)
 
     # If remote_path is specified, prepend it to all relative paths
     if remote_path:
@@ -394,9 +502,9 @@ def upload(  # noqa: C901
         # Build skip set and rename map for sync engine
         # The DuplicateHandler uses paths like "sync/test_folder/file.txt"
         # (with folder name prefix from scan_directory using base_path=parent)
-        # but SyncEngine.upload_folder scans relative to local_path, so paths
+        # but SyncEngine.upload_folder scans relative to source_path, so paths
         # are like "test_folder/file.txt". We need to strip the folder prefix.
-        folder_prefix = f"{local_path.name}/"
+        folder_prefix = f"{source_path.name}/"
         files_to_skip = {
             p[len(folder_prefix) :] if p.startswith(folder_prefix) else p
             for p in dup_handler.files_to_skip
@@ -410,9 +518,9 @@ def upload(  # noqa: C901
         # When remote_path is specified, include the local folder name
         # e.g., uploading "test/" with remote_path="dest" -> "dest/test/..."
         if remote_path:
-            effective_remote_path = f"{remote_path}/{local_path.name}"
+            effective_remote_path = f"{remote_path}/{source_path.name}"
         else:
-            effective_remote_path = local_path.name
+            effective_remote_path = source_path.name
 
         # Create output formatter for engine (respect no_progress)
         engine_out = OutputFormatter(
@@ -420,12 +528,14 @@ def upload(  # noqa: C901
         )
 
         # Create sync engine and upload using sync infrastructure
-        engine = SyncEngine(client, engine_out)
+        engine = SyncEngine(
+            client, _create_entries_manager_factory(), output=engine_out
+        )
 
         stats = engine.upload_folder(
-            local_path=local_path,
+            local_path=source_path,
             remote_path=effective_remote_path,
-            workspace_id=workspace,
+            storage_id=workspace,
             parent_id=current_folder_id,
             max_workers=workers,
             start_delay=start_delay,
@@ -462,7 +572,7 @@ def upload(  # noqa: C901
             validation_result = validate_cloud_files(
                 client=client,
                 out=out,
-                local_path=local_path,
+                local_path=source_path,
                 remote_path=effective_remote_path,
                 workspace_id=workspace,
             )
@@ -492,7 +602,7 @@ def upload(  # noqa: C901
 def _upload_single_file(
     ctx: Any,
     client: DrimeClient,
-    local_path: Path,
+    source_path: Path,
     remote_path: Optional[str],
     workspace: int,
     current_folder_id: Optional[int],
@@ -511,7 +621,7 @@ def _upload_single_file(
     dry-run preview, duplicate handling, and progress display.
     """
 
-    files_to_upload = [(local_path, remote_path or local_path.name)]
+    files_to_upload = [(source_path, remote_path or source_path.name)]
 
     if dry_run:
         display_upload_preview(
@@ -559,17 +669,6 @@ def _upload_single_file(
         # Apply rename if needed
         upload_path = dup_handler.apply_renames(rel_path)
 
-        # Extract directory part for relative_path (API appends filename automatically)
-        # e.g., "folder/file.txt" -> relative_path="folder", file from local_path
-        # e.g., "file.txt" -> relative_path=None
-        path_parts = upload_path.rsplit("/", 1)
-        if len(path_parts) == 2:
-            # Has directory component
-            upload_dir = path_parts[0]
-        else:
-            # Just filename, no directory
-            upload_dir = None
-
         # Create progress display for single file
         if not no_progress and not out.quiet:
             progress_display = Progress(
@@ -610,7 +709,7 @@ def _upload_single_file(
             result = client.upload_file(
                 file_path,
                 parent_id=current_folder_id,
-                relative_path=upload_dir,
+                relative_path=upload_path,  # Use full path including filename
                 workspace_id=workspace,
                 progress_callback=progress_callback_fn,
                 chunk_size=chunk_size_bytes,
@@ -640,9 +739,9 @@ def _upload_single_file(
                     validation_result = validate_single_file(
                         client=client,
                         out=out,
-                        local_path=file_path,
+                        source_path=file_path,
                         remote_path=upload_path,
-                        workspace_id=workspace,
+                        storage_id=workspace,
                     )
                     json_result["validation"] = validation_result
                     if validation_result.get("has_issues", False):
@@ -657,9 +756,9 @@ def _upload_single_file(
                     validation_result = validate_single_file(
                         client=client,
                         out=out,
-                        local_path=file_path,
+                        source_path=file_path,
                         remote_path=upload_path,
-                        workspace_id=workspace,
+                        storage_id=workspace,
                     )
                     if validation_result.get("has_issues", False):
                         ctx.exit(1)
@@ -1708,12 +1807,13 @@ def download(
         pydrime download "bench*"                     # Entries starting with "bench"
         pydrime download "file?.txt"                  # Match file1.txt, file2.txt
     """
+    from syncengine import SyncEngine
+
     from .download_helpers import (
         download_single_file,
         get_entry_from_hash,
         resolve_identifier_to_hash,
     )
-    from .sync import SyncEngine
     from .utils import is_glob_pattern
 
     api_key = ctx.obj.get("api_key")
@@ -1802,14 +1902,16 @@ def download(
                     json_output=out.json_output,
                     quiet=no_progress or out.quiet,
                 )
-                engine = SyncEngine(client, engine_out)
+                engine = SyncEngine(
+                    client, _create_entries_manager_factory(), output=engine_out
+                )
 
                 # Use sync engine's download_folder method
                 # overwrite=True uses CLOUD_BACKUP mode (download only, no delete)
                 stats = engine.download_folder(
                     remote_entry=entry,
                     local_path=folder_path,
-                    workspace_id=workspace,
+                    storage_id=workspace,
                     overwrite=(on_duplicate == "overwrite"),
                     max_workers=workers,
                 )
@@ -2061,10 +2163,10 @@ def sync(
 
     Sync Modes:
       - twoWay (tw): Mirror every action in both directions
-      - localToCloud (ltc): Mirror local actions to cloud only
-      - localBackup (lb): Upload to cloud, never delete
-      - cloudToLocal (ctl): Mirror cloud actions to local only
-      - cloudBackup (cb): Download from cloud, never delete
+      - localToCloud (std): Mirror local actions to cloud only
+      - localBackup (sb): Upload to cloud, never delete
+      - cloudToLocal (dts): Mirror cloud actions to local only
+      - cloudBackup (db): Download from cloud, never delete
 
     Ignore Files (.pydrignore):
       Place a .pydrignore file in any directory to exclude files from sync.
@@ -2114,8 +2216,8 @@ def sync(
 
         # With abbreviations
         pydrime sync /home/user/pics:tw:/Pictures
-        pydrime sync ./backup:ltc:/CloudBackup
-        pydrime sync ./local:lb:/Backup
+        pydrime sync ./backup:std:/CloudBackup
+        pydrime sync ./local:sb:/Backup
 
         # JSON config file with multiple sync pairs
         pydrime sync --config sync_pairs.json
@@ -2128,14 +2230,15 @@ def sync(
         pydrime sync ./data --no-streaming           # Scan all files upfront
         pydrime sync ./data --validate               # Validate files after sync
     """
-    from .cli_progress import run_sync_with_progress
-    from .sync import (
+    from syncengine import (
         SyncConfigError,
         SyncEngine,
         SyncMode,
         SyncPair,
         load_sync_pairs_from_json,
     )
+
+    from .cli_progress import run_sync_with_progress
 
     out: OutputFormatter = ctx.obj["out"]
 
@@ -2209,11 +2312,11 @@ def sync(
 
             # Create SyncPair from dict data
             config_pair = SyncPair(
-                local=Path(pair_data["local"]),
-                remote=pair_data["remote"],
+                source=Path(pair_data["local"]),
+                destination=pair_data["remote"],
                 sync_mode=SyncMode.from_string(pair_data["syncMode"]),
-                workspace_id=resolved_workspace_id,
-                disable_local_trash=pair_data["disableLocalTrash"],
+                storage_id=resolved_workspace_id,
+                disable_source_trash=pair_data["disableLocalTrash"],
                 ignore=pair_data["ignore"],
                 exclude_dot_files=pair_data["excludeDotFiles"],
             )
@@ -2223,21 +2326,21 @@ def sync(
                 out.info(f"Sync Pair {i + 1}/{len(sync_pairs_data)}")
                 out.info("=" * 60)
                 workspace_display, _ = format_workspace_display(
-                    client, config_pair.workspace_id
+                    client, config_pair.storage_id
                 )
                 out.info(f"Workspace: {workspace_display}")
                 out.info(f"Sync mode: {config_pair.sync_mode.value}")
-                out.info(f"Local path: {config_pair.local}")
+                out.info(f"Local path: {config_pair.source}")
                 # Display "/" for root when remote is empty (normalized from "/")
                 remote_display = (
-                    config_pair.remote if config_pair.remote else "/ (root)"
+                    config_pair.destination if config_pair.destination else "/ (root)"
                 )
                 out.info(f"Remote path: {remote_display}")
                 if config_pair.ignore:
                     out.info(f"Ignore patterns: {config_pair.ignore}")
                 if config_pair.exclude_dot_files:
                     out.info("Excluding dot files")
-                if config_pair.disable_local_trash:
+                if config_pair.disable_source_trash:
                     out.info("Local trash disabled")
                 out.info("")
 
@@ -2251,7 +2354,9 @@ def sync(
                 )
 
                 # Create sync engine
-                engine = SyncEngine(client, engine_out)
+                engine = SyncEngine(
+                    client, _create_entries_manager_factory(), output=engine_out
+                )
 
                 # Execute sync - use progress display for non-dry-run
                 if use_progress_display:
@@ -2286,8 +2391,8 @@ def sync(
 
                 # Add pair info to stats
                 stats["pair_index"] = i
-                stats["local"] = str(config_pair.local)
-                stats["remote"] = config_pair.remote
+                stats["local"] = str(config_pair.source)
+                stats["remote"] = config_pair.destination
                 all_stats.append(stats)
                 total_conflicts += stats.get("conflicts", 0)
 
@@ -2296,8 +2401,8 @@ def sync(
                     validation_result = validate_cloud_files(
                         client=client,
                         out=out,
-                        local_path=config_pair.local,
-                        remote_path=config_pair.remote,
+                        local_path=config_pair.source,
+                        remote_path=config_pair.destination,
                         workspace_id=resolved_workspace_id,
                     )
                     stats["validation"] = validation_result
@@ -2312,8 +2417,8 @@ def sync(
                 all_stats.append(
                     {
                         "pair_index": i,
-                        "local": str(config_pair.local),
-                        "remote": config_pair.remote,
+                        "local": str(config_pair.source),
+                        "remote": config_pair.destination,
                         "error": str(e),
                     }
                 )
@@ -2322,8 +2427,8 @@ def sync(
                 all_stats.append(
                     {
                         "pair_index": i,
-                        "local": str(config_pair.local),
-                        "remote": config_pair.remote,
+                        "local": str(config_pair.source),
+                        "remote": config_pair.destination,
                         "error": str(e),
                     }
                 )
@@ -2388,41 +2493,41 @@ def sync(
 
         try:
             pair = SyncPair.parse_literal(path)
-            pair.workspace_id = workspace
-            local_path = pair.local
+            pair.storage_id = workspace
+            source_path = pair.source
 
             if not out.quiet:
                 out.info(f"Parsed sync pair: {pair.sync_mode.value}")
-                out.info(f"  Local:  {pair.local}")
-                out.info(f"  Remote: {pair.remote}")
+                out.info(f"  Local:  {pair.source}")
+                out.info(f"  Remote: {pair.destination}")
         except ValueError as e:
             out.error(f"Invalid sync pair format: {e}")
             ctx.exit(1)
             return  # Unreachable, but helps type checker
     else:
         # Path is a simple directory path
-        local_path = Path(path)
+        source_path = Path(path)
 
         # Validate path exists and is a directory
-        if not local_path.exists():
+        if not source_path.exists():
             out.error(f"Path does not exist: {path}")
             ctx.exit(1)
 
-        if not local_path.is_dir():
+        if not source_path.is_dir():
             out.error(f"Path is not a directory: {path}")
             ctx.exit(1)
 
         # Determine remote path
         if remote_path is None:
             # Use folder name as remote path
-            remote_path = local_path.name
+            remote_path = source_path.name
 
         # Create sync pair with TWO_WAY as default
         pair = SyncPair(
-            local=local_path,
-            remote=remote_path,
+            source=source_path,
+            destination=remote_path,
             sync_mode=SyncMode.TWO_WAY,
-            workspace_id=workspace,
+            storage_id=workspace,
         )
 
     if not out.quiet:
@@ -2430,10 +2535,11 @@ def sync(
         workspace_display, _ = format_workspace_display(client, workspace)
         out.info(f"Workspace: {workspace_display}")
         out.info(f"Sync mode: {pair.sync_mode.value}")
-        out.info(f"Local path: {pair.local}")
+        out.info(f"Local path: {pair.source}")
         # Display "/" for root when remote is empty (normalized from "/")
-        remote_display = pair.remote if pair.remote else "/ (root)"
+        remote_display = pair.destination if pair.destination else "/ (root)"
         out.info(f"Remote path: {remote_display}")
+        logger.debug(f"SyncPair storage_id: {pair.storage_id}")
         out.info("")  # Empty line for readability
 
     try:
@@ -2446,8 +2552,11 @@ def sync(
             quiet=use_progress_display or no_progress or out.quiet,
         )
 
-        # Create sync engine
-        engine = SyncEngine(client, engine_out)
+        # Create sync engine with storage-scoped client adapter
+        client_adapter = _DrimeClientAdapter(client, pair.storage_id)
+        engine = SyncEngine(
+            client_adapter, _create_entries_manager_factory(), output=engine_out
+        )
 
         # Execute sync - use progress display for non-dry-run
         if use_progress_display:
@@ -2496,8 +2605,8 @@ def sync(
             validation_result = validate_cloud_files(
                 client=client,
                 out=out,
-                local_path=pair.local,
-                remote_path=pair.remote,
+                local_path=pair.source,
+                remote_path=pair.destination,
                 workspace_id=workspace,
             )
             if out.json_output:
@@ -4650,7 +4759,7 @@ def vault_upload(
                     return
 
         # Expand glob patterns and collect files with their relative paths
-        # Each entry is (local_path, relative_path_in_vault)
+        # Each entry is (source_path, relative_path_in_vault)
         files_to_upload: list[tuple[Path, str]] = []
 
         def collect_directory_files(dir_path: Path, base_name: str) -> None:
@@ -4759,7 +4868,7 @@ def vault_upload(
             get_or_create_vault_folder(folder_path)
 
         # Helper function to upload a single file
-        def upload_single_file(local_path: Path, rel_path: str) -> bool:
+        def upload_single_file(source_path: Path, rel_path: str) -> bool:
             """Upload and encrypt a single file. Returns True on success."""
             try:
                 # Determine the parent folder ID for this file
@@ -4776,10 +4885,10 @@ def vault_upload(
                     out.info(f"Encrypting {rel_path}...")
 
                 # Read file content
-                file_content = local_path.read_bytes()
+                file_content = source_path.read_bytes()
 
                 # Encrypt the filename
-                encrypted_name, name_iv = encrypt_filename(vault_key, local_path.name)
+                encrypted_name, name_iv = encrypt_filename(vault_key, source_path.name)
 
                 # Encrypt the file content
                 ciphertext, content_iv_bytes = vault_key.encrypt(file_content)
@@ -4792,7 +4901,7 @@ def vault_upload(
                     out.info(f"Uploading: {rel_path}")
 
                 result = client.upload_vault_file(
-                    file_path=local_path,
+                    file_path=source_path,
                     encrypted_content=ciphertext,
                     encrypted_name=encrypted_name,
                     name_iv=name_iv,
@@ -4816,8 +4925,8 @@ def vault_upload(
 
         # Upload all files
         success_count = 0
-        for local_path, rel_path in files_to_upload:
-            if upload_single_file(local_path, rel_path):
+        for source_path, rel_path in files_to_upload:
+            if upload_single_file(source_path, rel_path):
                 success_count += 1
 
         if len(files_to_upload) > 1:
@@ -5060,7 +5169,7 @@ def validate(
     """
     api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
-    local_path = Path(path)
+    source_path = Path(path)
 
     if not config.is_configured() and not api_key:
         out.error("API key not configured.")
@@ -5103,13 +5212,13 @@ def validate(
             out.info("")  # Empty line for readability
 
         # Collect files to validate
-        if local_path.is_file():
-            files_to_validate = [(local_path, remote_path or local_path.name)]
+        if source_path.is_file():
+            files_to_validate = [(source_path, remote_path or source_path.name)]
         else:
-            out.info(f"Scanning directory: {local_path}")
+            out.info(f"Scanning directory: {source_path}")
             # Use parent as base_path so the folder name is included in relative paths
-            base_path = local_path.parent if remote_path is None else local_path
-            files_to_validate = scan_directory(local_path, base_path, out)
+            base_path = source_path.parent if remote_path is None else source_path
+            files_to_validate = scan_directory(source_path, base_path, out)
 
         if not files_to_validate:
             out.warning("No files found to validate.")
@@ -5148,10 +5257,10 @@ def validate(
 
             remote_folder_id = folder_id
             remote_base_path = remote_path
-        elif not local_path.is_file():
+        elif not source_path.is_file():
             # If validating a directory without remote_path, look for matching folder
             folder_entry = file_manager.find_folder_by_name(
-                local_path.name, current_folder_id
+                source_path.name, current_folder_id
             )
             if folder_entry:
                 remote_folder_id = folder_entry.id
@@ -5693,7 +5802,7 @@ def rest(
             client=client,
             host=host,
             port=port,
-            workspace_id=workspace,
+            storage_id=workspace,
             readonly=readonly,
             username=username,
             password=password,
@@ -5918,7 +6027,7 @@ def webdav(
             client=client,
             host=host,
             port=port,
-            workspace_id=workspace,
+            storage_id=workspace,
             readonly=readonly,
             cache_ttl=cache_ttl,
             max_file_size=max_file_size_bytes,

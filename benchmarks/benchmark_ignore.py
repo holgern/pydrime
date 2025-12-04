@@ -22,8 +22,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from pydrime.sync.ignore import IGNORE_FILE_NAME
-from pydrime.sync.scanner import DirectoryScanner
+from syncengine.ignore import DEFAULT_IGNORE_FILE_NAME
+from syncengine.scanner import DirectoryScanner
 
 
 def create_test_directory(base_dir: Path) -> dict[str, list[Path]]:
@@ -126,7 +126,7 @@ def create_test_directory(base_dir: Path) -> dict[str, list[Path]]:
 
 def create_pydrignore(base_dir: Path, patterns: list[str]) -> Path:
     """Create a .pydrignore file with the given patterns."""
-    ignore_file = base_dir / IGNORE_FILE_NAME
+    ignore_file = base_dir / DEFAULT_IGNORE_FILE_NAME
     content = "\n".join(patterns)
     ignore_file.write_text(content)
     return ignore_file
@@ -527,7 +527,7 @@ def main() -> None:
     print("PYDRIME BENCHMARK: .pydrignore IGNORE FILE FUNCTIONALITY")
     print("=" * 80)
     print("\nTests gitignore-style ignore file feature similar to Kopia's .kopiaignore")
-    print(f"Ignore file name: {IGNORE_FILE_NAME}")
+    print(f"Ignore file name: {DEFAULT_IGNORE_FILE_NAME}")
 
     # Track results
     results = {}
