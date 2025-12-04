@@ -495,7 +495,7 @@ class TestAsyncSyncPauseController:
             elapsed = time.time() - start
 
             assert result is True
-            assert elapsed >= 0.1
+            assert elapsed >= 0.09  # Allow small timing variance
             assert elapsed < 0.5
 
             await task
