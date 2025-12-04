@@ -43,7 +43,7 @@ def resolve_workspace_identifier(
         identifier_lower = identifier.lower()
         for ws in result["workspaces"]:
             if ws.get("name", "").lower() == identifier_lower:
-                return ws.get("id", 0)
+                return int(ws.get("id", 0))
 
     raise ValueError(
         f"Workspace '{identifier}' not found. "

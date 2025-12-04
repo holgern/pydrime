@@ -166,10 +166,10 @@ class FileComparator:
                 f.file_id: f.relative_path for f in local_files.values()
             }
 
-            for file_id, prev_state in self.previous_local_tree.file_ids.items():
+            for file_id, prev_local_state in self.previous_local_tree.file_ids.items():
                 if file_id in current_local_by_file_id:
                     current_path = current_local_by_file_id[file_id]
-                    prev_path = prev_state.path
+                    prev_path = prev_local_state.path
                     if current_path != prev_path:
                         # Local rename detected!
                         self._local_renames[file_id] = current_path
@@ -181,10 +181,10 @@ class FileComparator:
                 f.id: f.relative_path for f in remote_files.values()
             }
 
-            for remote_id, prev_state in self.previous_remote_tree.ids.items():
+            for remote_id, prev_remote_state in self.previous_remote_tree.ids.items():
                 if remote_id in current_remote_by_id:
                     current_path = current_remote_by_id[remote_id]
-                    prev_path = prev_state.path
+                    prev_path = prev_remote_state.path
                     if current_path != prev_path:
                         # Remote rename detected!
                         self._remote_renames[remote_id] = current_path

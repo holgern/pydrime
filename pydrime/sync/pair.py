@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .modes import SyncMode
 
@@ -55,9 +55,11 @@ class SyncPair:
 
     def __post_init__(self) -> None:
         """Validate and normalize sync pair configuration."""
-        # Ensure local is a Path object
-        if not isinstance(self.local, Path):
-            self.local = Path(self.local)
+        # Ensure local is a Path object (runtime coercion when passed as str)
+        # Cast to Any to allow runtime type check without mypy complaining
+        local_value: Any = self.local
+        if not isinstance(local_value, Path):
+            object.__setattr__(self, "local", Path(local_value))
 
         # Ensure sync_mode is SyncMode enum
         if isinstance(self.sync_mode, str):

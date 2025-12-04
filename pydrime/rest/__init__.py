@@ -13,8 +13,10 @@ Restic usage:
     restic -r rest:http://localhost:8000/repo backup /path/to/data
 """
 
+from typing import Any
 
-def __getattr__(name: str):
+
+def __getattr__(name: str) -> Any:
     """Lazy import to avoid importing cheroot unless needed."""
     if name == "ResticStorageProvider":
         from .provider import ResticStorageProvider
