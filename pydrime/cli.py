@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 class _FileEntriesManagerAdapter:
-    """Adapter to make FileEntriesManager compatible with syncengine's 
+    """Adapter to make FileEntriesManager compatible with syncengine's
     FileEntriesManagerProtocol.
 
     This adapter wraps pydrime's FileEntriesManager and adapts its method signatures
@@ -65,7 +65,7 @@ class _FileEntriesManagerAdapter:
     def iter_all_recursive(
         self, folder_id: Optional[int], path_prefix: str, batch_size: int
     ):
-        """Iterate all entries recursively in batches (adapted signature for 
+        """Iterate all entries recursively in batches (adapted signature for
         syncengine protocol)."""
         return self._manager.iter_all_recursive(
             folder_id=folder_id, path_prefix=path_prefix, batch_size=batch_size
@@ -76,14 +76,11 @@ class _DrimeClientAdapter:
     """Adapter to make DrimeClient compatible with syncengine's StorageClientProtocol.
 
     This adapter wraps pydrime's DrimeClient and adapts parameter names
-    to match the protocol expected by syncengine (storage_id vs workspace_id).
-    It's scoped to a specific storage_id so that methods like create_folder
-    that don't receive storage_id in the protocol can still use the correct workspace.
+    to match the protocol expected by syncengine (storage_id → workspace_id).
     """
 
-    def __init__(self, client: DrimeClient, storage_id: int = 0):
+    def __init__(self, client: DrimeClient):
         self._client = client
-        self._storage_id = storage_id
 
     def __getattr__(self, name):
         """Forward all other attributes to the wrapped client."""
@@ -115,15 +112,16 @@ class _DrimeClientAdapter:
         self,
         name: str,
         parent_id: Optional[int] = None,
+        storage_id: int = 0,
     ):
         """Create folder (adapted signature for syncengine protocol).
 
-        Uses the adapter's storage_id since the protocol doesn't pass it.
+        Converts storage_id → workspace_id for DrimeClient.
         """
         return self._client.create_folder(
             name=name,
             parent_id=parent_id,
-            workspace_id=self._storage_id,
+            workspace_id=storage_id,
         )
 
 
@@ -134,7 +132,7 @@ def _create_entries_manager_factory():
     that implement the FileEntriesManagerProtocol from syncengine.
 
     Returns:
-        A callable that takes (client, storage_id) and returns an adapted 
+        A callable that takes (client, storage_id) and returns an adapted
         FileEntriesManager
     """
 
@@ -2552,8 +2550,8 @@ def sync(
             quiet=use_progress_display or no_progress or out.quiet,
         )
 
-        # Create sync engine with storage-scoped client adapter
-        client_adapter = _DrimeClientAdapter(client, pair.storage_id)
+        # Create sync engine with client adapter
+        client_adapter = _DrimeClientAdapter(client)
         engine = SyncEngine(
             client_adapter, _create_entries_manager_factory(), output=engine_out
         )
