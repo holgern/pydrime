@@ -211,3 +211,4 @@ pydrime/_version.py
 coverage.json
 .serena/
 test_folder/
+uv.lock
