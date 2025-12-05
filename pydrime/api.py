@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import ssl
 import time
 from pathlib import Path
@@ -24,10 +25,13 @@ from .exceptions import (
     DrimeSSLError,
     DrimeUploadError,
 )
+from .logging import log_api_request
 
 if TYPE_CHECKING:
     from .file_entries_manager import FileEntriesManager
     from .models import FileEntry
+
+logger = logging.getLogger(__name__)
 
 FileEntryType = Literal["folder", "image", "text", "audio", "video", "pdf"]
 Permission = Literal["view", "edit", "download"]
@@ -399,6 +403,15 @@ class DrimeClient:
         url = f"{self.api_url}/{endpoint.lstrip('/')}"
         last_exception: Exception | None = None
         client = self._get_client()
+
+        # Log the API request
+        log_api_request(
+            logger,
+            method,
+            endpoint,
+            params=kwargs.get("params"),
+            json_data=kwargs.get("json"),
+        )
 
         for attempt in range(self.max_retries + 1):
             try:

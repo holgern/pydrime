@@ -12,6 +12,8 @@ class Config:
 
     CONFIG_DIR = Path.home() / ".config" / "pydrime"
     CONFIG_FILE = CONFIG_DIR / "config"
+    LOG_DIR = CONFIG_DIR / "logs"
+    DEFAULT_LOG_FILE = LOG_DIR / "pydrime.log"
 
     def __init__(self) -> None:
         """Initialize configuration by loading from multiple sources."""
