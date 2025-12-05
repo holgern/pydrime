@@ -129,8 +129,10 @@ class TestTruncateValue:
 
     def test_path_converted_to_string(self):
         """Path objects should be converted to strings."""
-        result = truncate_value(Path("/home/user/file.txt"))
-        assert result == "/home/user/file.txt"
+        test_path = Path("/home/user/file.txt")
+        result = truncate_value(test_path)
+        # Compare as Path objects to handle platform differences
+        assert result == str(test_path)
 
     def test_other_types_unchanged(self):
         """Other types should be returned unchanged."""
@@ -218,6 +220,10 @@ class TestSetupLogging:
             content = log_path.read_text()
             assert "test message" in content
 
+            # Close handler before temp directory cleanup (important for Windows)
+            logger.handlers[0].close()
+            logger.handlers.clear()
+
     def test_file_logging_creates_directory(self):
         """Log file directory should be created if it doesn't exist."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -225,6 +231,12 @@ class TestSetupLogging:
             setup_logging(log_level="info", log_file=str(log_path))
 
             assert log_path.parent.exists()
+
+            # Close handler before temp directory cleanup (important for Windows)
+            logger = logging.getLogger("pydrime")
+            if logger.handlers:
+                logger.handlers[0].close()
+                logger.handlers.clear()
 
     def test_api_level_logging(self):
         """API level should enable most verbose logging."""
@@ -256,6 +268,10 @@ class TestSetupLogging:
                 logger = logging.getLogger("pydrime")
                 assert isinstance(logger.handlers[0], logging.FileHandler)
 
+                # Close handler before temp directory cleanup (important for Windows)
+                logger.handlers[0].close()
+                logger.handlers.clear()
+
     def test_explicit_params_override_env_vars(self):
         """Explicit parameters should override environment variables."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -272,6 +288,10 @@ class TestSetupLogging:
                 setup_logging(log_level="debug", log_file=str(explicit_log_path))
                 logger = logging.getLogger("pydrime")
                 assert logger.level == logging.DEBUG
+
+                # Close handler before temp directory cleanup (important for Windows)
+                logger.handlers[0].close()
+                logger.handlers.clear()
 
     def test_repeated_setup_clears_old_handlers(self):
         """Calling setup_logging multiple times should not add duplicate handlers."""
