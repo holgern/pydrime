@@ -79,25 +79,35 @@ def parse_iso_timestamp(timestamp_str: str | None) -> datetime | None:
 # Size formatting utilities
 # =============================================================================
 
-
 def format_size(size_bytes: int) -> str:
-    """Format file size in human-readable format.
+    """Format bytes into human-readable size string.
 
     Args:
         size_bytes: Size in bytes
 
     Returns:
-        Formatted size string (e.g., "1.5 MB", "256 B")
-    """
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    elif size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    elif size_bytes < 1024 * 1024 * 1024:
-        return f"{size_bytes / 1024 / 1024:.1f} MB"
-    else:
-        return f"{size_bytes / 1024 / 1024 / 1024:.1f} GB"
+        Human-readable size string (e.g., "1.5 MB", "256 KB")
 
+    Examples:
+        >>> format_size(1024)
+        '1.00 KB'
+        >>> format_size(1536000)
+        '1.46 MB'
+        >>> format_size(1073741824)
+        '1.00 GB'
+    """
+    if size_bytes < 0:
+        return "0 B"
+
+    size_float = float(size_bytes)
+    for unit in ["B", "KB", "MB", "GB", "TB", "PB"]:
+        if abs(size_float) < 1024.0:
+            if unit == "B":
+                return f"{int(size_float)} {unit}"
+            return f"{size_float:.2f} {unit}"
+        size_float /= 1024.0
+
+    return f"{size_float:.2f} EB"
 
 # =============================================================================
 # Hash calculation utilities

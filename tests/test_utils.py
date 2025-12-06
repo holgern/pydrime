@@ -423,20 +423,20 @@ class TestFormatSize:
 
     def test_format_kilobytes(self):
         """Test formatting sizes in KB range."""
-        assert format_size(1024) == "1.0 KB"
-        assert format_size(2048) == "2.0 KB"
-        assert format_size(1536) == "1.5 KB"
+        assert format_size(1024) == "1.00 KB"
+        assert format_size(2048) == "2.00 KB"
+        assert format_size(1536) == "1.50 KB"
 
     def test_format_megabytes(self):
         """Test formatting sizes in MB range."""
-        assert format_size(1024 * 1024) == "1.0 MB"
-        assert format_size(1024 * 1024 * 2) == "2.0 MB"
-        assert format_size(int(1024 * 1024 * 1.5)) == "1.5 MB"
+        assert format_size(1024 * 1024) == "1.00 MB"
+        assert format_size(1024 * 1024 * 2) == "2.00 MB"
+        assert format_size(int(1024 * 1024 * 1.5)) == "1.50 MB"
 
     def test_format_gigabytes(self):
         """Test formatting sizes in GB range."""
-        assert format_size(1024 * 1024 * 1024) == "1.0 GB"
-        assert format_size(1024 * 1024 * 1024 * 2) == "2.0 GB"
+        assert format_size(1024 * 1024 * 1024) == "1.00 GB"
+        assert format_size(1024 * 1024 * 1024 * 2) == "2.00 GB"
 
 
 class TestRemoteFileVerificationResult:

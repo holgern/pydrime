@@ -159,7 +159,10 @@ class TestOutputFormatter:
             assert mock_print.call_count >= 3
 
     def test_format_size_bytes(self):
-        """Test format_size with bytes."""
+        """Test format_size with bytes.
+
+        Note: Uses syncengine.constants.format_size which formats with 2 decimals.
+        """
         out = OutputFormatter()
         assert out.format_size(100) == "100 B"
         assert out.format_size(1023) == "1023 B"

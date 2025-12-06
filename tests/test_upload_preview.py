@@ -166,6 +166,7 @@ class TestDisplayUploadPreview:
 
         captured = capsys.readouterr()
         assert "[F] test.txt" in captured.out
+        # format_size now uses 2 decimals (from syncengine)
         assert "11 B" in captured.out
 
     @patch("pydrime.upload_preview.format_workspace_display")
@@ -181,6 +182,7 @@ class TestDisplayUploadPreview:
         display_upload_preview(out, mock_client, files, 0, None, None, is_dry_run=False)
 
         captured = capsys.readouterr()
+        # format_size now uses 2 decimals (from syncengine)
         assert "Total: 1 files, 11 B" in captured.out
 
     @patch("pydrime.upload_preview.format_workspace_display")
