@@ -26,6 +26,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 # Configure logging BEFORE imports to capture all debug messages
 logging.basicConfig(
@@ -45,8 +46,115 @@ from syncengine.scanner import DirectoryScanner  # noqa: E402
 
 from pydrime.api import DrimeClient  # noqa: E402
 from pydrime.file_entries_manager import FileEntriesManager  # noqa: E402
-from pydrime.models import FileEntriesResult  # noqa: E402
+from pydrime.models import FileEntriesResult, FileEntry  # noqa: E402
 from pydrime.output import OutputFormatter  # noqa: E402
+
+logger = logging.getLogger(__name__)
+
+
+class _FileEntriesManagerAdapter:
+    """Adapter to make FileEntriesManager compatible with syncengine's
+    FileEntriesManagerProtocol.
+
+    This adapter wraps pydrime's FileEntriesManager and adapts its method signatures
+    to match the protocol expected by syncengine.
+    """
+
+    def __init__(self, manager: FileEntriesManager):
+        self._manager = manager
+
+    def find_folder_by_name(self, name: str, parent_id: int = 0) -> FileEntry | None:
+        """Find folder by name (adapted signature for syncengine protocol)."""
+        # Convert parent_id: 0 → None (syncengine uses 0 for root, pydrime uses None)
+        actual_parent_id = None if parent_id == 0 else parent_id
+        return self._manager.find_folder_by_name(name, parent_id=actual_parent_id)
+
+    def get_all_recursive(
+        self, folder_id: int | None, path_prefix: str
+    ) -> list[tuple[FileEntry, str]]:
+        """Get all entries recursively (adapted signature for syncengine protocol)."""
+        return self._manager.get_all_recursive(
+            folder_id=folder_id, path_prefix=path_prefix
+        )
+
+    def iter_all_recursive(
+        self, folder_id: int | None, path_prefix: str, batch_size: int
+    ):
+        """Iterate all entries recursively in batches (adapted signature for
+        syncengine protocol)."""
+        return self._manager.iter_all_recursive(
+            folder_id=folder_id, path_prefix=path_prefix, batch_size=batch_size
+        )
+
+
+class _DrimeClientAdapter:
+    """Adapter to make DrimeClient compatible with syncengine's StorageClientProtocol.
+
+    This adapter wraps pydrime's DrimeClient and adapts parameter names
+    to match the protocol expected by syncengine (storage_id → workspace_id).
+    """
+
+    def __init__(self, client: DrimeClient):
+        self._client = client
+
+    def __getattr__(self, name):
+        """Forward all other attributes to the wrapped client."""
+        return getattr(self._client, name)
+
+    def upload_file(
+        self,
+        file_path: Path,
+        relative_path: str,
+        storage_id: int = 0,
+        chunk_size: int = 25 * 1024 * 1024,
+        use_multipart_threshold: int = 100 * 1024 * 1024,
+        progress_callback: Any = None,
+    ):
+        """Upload file (adapted signature for syncengine protocol).
+
+        Converts storage_id → workspace_id for DrimeClient.
+        """
+        return self._client.upload_file(
+            file_path=file_path,
+            relative_path=relative_path,
+            workspace_id=storage_id,  # Convert storage_id to workspace_id
+            chunk_size=chunk_size,
+            use_multipart_threshold=use_multipart_threshold,
+            progress_callback=progress_callback,
+        )
+
+    def create_folder(
+        self,
+        name: str,
+        storage_id: int = 0,
+        parent_id: int | None = None,
+    ):
+        """Create folder (adapted signature for syncengine protocol).
+
+        Converts storage_id → workspace_id for DrimeClient.
+        """
+        return self._client.create_folder(
+            name=name,
+            workspace_id=storage_id,  # Convert storage_id to workspace_id
+            parent_id=parent_id,
+        )
+
+    def delete_file_entries(
+        self,
+        entry_ids: list[int],
+        delete_forever: bool = False,
+        storage_id: int = 0,
+    ):
+        """Delete file entries (adapted signature for syncengine protocol).
+
+        Converts storage_id → workspace_id for DrimeClient.
+        """
+        return self._client.delete_file_entries(
+            entry_ids=entry_ids,
+            delete_forever=delete_forever,
+            workspace_id=storage_id,  # Convert storage_id to workspace_id
+        )
+
 
 logger = logging.getLogger(__name__)
 
@@ -490,20 +598,30 @@ def run_sync_engine(
         source=local_dir,
         destination=f"/{remote_folder}",
         sync_mode=sync_mode,
-        workspace_id=workspace_id,
+        storage_id=workspace_id,
     )
 
-    print_debug(f"SyncPair created: source={pair.local}, destination={pair.remote}", 1)
-    print_debug(f"requires_local_scan: {sync_mode.requires_local_scan}", 1)
-    print_debug(f"requires_remote_scan: {sync_mode.requires_remote_scan}", 1)
+    print_debug(
+        f"SyncPair created: source={pair.source}, destination={pair.destination}", 1
+    )
+    print_debug(f"requires_source_scan: {sync_mode.requires_source_scan}", 1)
+    print_debug(f"requires_destination_scan: {sync_mode.requires_destination_scan}", 1)
     print_debug(f"allows_upload: {sync_mode.allows_upload}", 1)
     print_debug(f"allows_download: {sync_mode.allows_download}", 1)
 
     # Create output formatter (quiet mode for cleaner output)
     output = OutputFormatter(quiet=False)
 
-    # Create sync engine
-    engine = SyncEngine(client, output)
+    # Create client adapter (required by SyncEngine to convert storage_id to workspace_id)
+    client_adapter = _DrimeClientAdapter(client)
+
+    # Create entries manager factory (required by SyncEngine)
+    def entries_manager_factory(client_inst, storage_id: int):
+        manager = FileEntriesManager(client_inst._client, workspace_id=storage_id)
+        return _FileEntriesManagerAdapter(manager)
+
+    # Create sync engine with adapted client
+    engine = SyncEngine(client_adapter, entries_manager_factory, output=output)
 
     print_info("Executing sync_pair()...")
     start_time = time.time()

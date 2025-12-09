@@ -4,7 +4,19 @@ This directory contains benchmark scripts to validate PyDrime sync functionality
 
 ## Scripts
 
-### `test_sync_modes.py`
+### `benchmark_timestamp_preservation.py`
+
+**NEW** - Tests if uploaded files preserve their creation and modification timestamps:
+
+- Creates test files with specific modification timestamps (recent, old, nested)
+- Uploads files to cloud using CLI
+- Downloads files to a different location
+- Compares original and downloaded timestamps (with 2 second tolerance)
+- Reports pass/fail for each file
+
+This benchmark helps verify that file metadata (timestamps) are correctly preserved through the upload/download cycle.
+
+### `benchmark_sync_modes.py`
 
 Validates basic sync mode behavior:
 
@@ -35,8 +47,21 @@ Validates basic sync mode behavior:
 ### Running Benchmarks
 
 ```bash
-# Run the sync mode benchmark
-python benchmarks/test_sync_modes.py
+# Run all benchmarks
+python benchmarks/run_benchmarks.py
+
+# Run a specific benchmark
+python benchmarks/run_benchmarks.py timestamp_preservation
+
+# List available benchmarks
+python benchmarks/run_benchmarks.py --list
+
+# Generate a markdown report
+python benchmarks/run_benchmarks.py --report
+
+# Run specific benchmarks directly
+python benchmarks/benchmark_timestamp_preservation.py
+python benchmarks/benchmark_sync_modes.py
 ```
 
 ### What to Expect

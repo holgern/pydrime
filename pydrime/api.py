@@ -1390,7 +1390,7 @@ class DrimeClient:
         Returns:
             Response with 'status' and 'fileEntry' keys
         """
-        endpoint = f"/file-entries/{entry_id}"
+        endpoint = f"/file-entries/{entry_id}?workspaceId={workspace_id}"
         data: dict[str, Any] = {}
 
         if name:
