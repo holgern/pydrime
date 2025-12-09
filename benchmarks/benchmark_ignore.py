@@ -148,7 +148,7 @@ def test_basic_patterns(base_dir: Path) -> bool:
 
     # Scan
     scanner = DirectoryScanner(use_ignore_files=True)
-    files = scanner.scan_local(base_dir)
+    files = scanner.scan_source(base_dir)
     paths = [f.relative_path for f in files]
 
     print(f"\n[RESULT] Found {len(files)} files: {paths}")
@@ -189,7 +189,7 @@ def test_negation(base_dir: Path) -> bool:
 
     # Scan
     scanner = DirectoryScanner(use_ignore_files=True)
-    files = scanner.scan_local(base_dir)
+    files = scanner.scan_source(base_dir)
     paths = [f.relative_path for f in files]
 
     print(f"\n[RESULT] Found {len(files)} files: {paths}")
@@ -224,7 +224,7 @@ def test_directory_patterns(base_dir: Path) -> bool:
 
     # Scan
     scanner = DirectoryScanner(use_ignore_files=True)
-    files = scanner.scan_local(base_dir)
+    files = scanner.scan_source(base_dir)
     paths = [f.relative_path for f in files]
 
     print(f"\n[RESULT] Found {len(files)} files: {paths}")
@@ -264,7 +264,7 @@ def test_hierarchical_ignore(base_dir: Path) -> bool:
 
     # Scan
     scanner = DirectoryScanner(use_ignore_files=True)
-    files = scanner.scan_local(base_dir)
+    files = scanner.scan_source(base_dir)
     paths = [f.relative_path for f in files]
 
     print(f"\n[RESULT] Found {len(files)} files: {paths}")
@@ -309,7 +309,7 @@ def test_double_wildcards(base_dir: Path) -> bool:
 
     # Scan
     scanner = DirectoryScanner(use_ignore_files=True)
-    files = scanner.scan_local(base_dir)
+    files = scanner.scan_source(base_dir)
     paths = [f.relative_path for f in files]
 
     print(f"\n[RESULT] Found {len(files)} files: {paths}")
@@ -349,7 +349,7 @@ def test_anchored_patterns(base_dir: Path) -> bool:
 
     # Scan
     scanner = DirectoryScanner(use_ignore_files=True)
-    files = scanner.scan_local(base_dir)
+    files = scanner.scan_source(base_dir)
     paths = [f.relative_path for f in files]
 
     print(f"\n[RESULT] Found {len(files)} files: {paths}")
@@ -398,7 +398,7 @@ def test_kopia_example(base_dir: Path) -> bool:
 
     # Scan
     scanner = DirectoryScanner(use_ignore_files=True)
-    files = scanner.scan_local(base_dir)
+    files = scanner.scan_source(base_dir)
     paths = sorted(f.relative_path for f in files)
 
     print(f"\n[RESULT] Found {len(files)} files:")
@@ -495,7 +495,7 @@ def test_performance(base_dir: Path, file_count: int = 1000) -> bool:
     print("\n[BENCHMARK] Scanning with ignore patterns...")
     start_scan = time.time()
     scanner = DirectoryScanner(use_ignore_files=True)
-    files = scanner.scan_local(base_dir)
+    files = scanner.scan_source(base_dir)
     scan_time = time.time() - start_scan
 
     print(f"  Scanned and filtered to {len(files)} files in {scan_time:.3f}s")

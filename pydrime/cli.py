@@ -2301,7 +2301,7 @@ def sync(
             default_ws = config.get_default_workspace() or 0
             try:
                 resolved_workspace_id = resolve_workspace_identifier(
-                    client, pair_data["workspace"], default_ws
+                    client, pair_data.get("workspace", 0), default_ws
                 )
             except ValueError as e:
                 out.error(f"Sync pair at index {i}: {e}")
@@ -2314,9 +2314,9 @@ def sync(
                 destination=pair_data["remote"],
                 sync_mode=SyncMode.from_string(pair_data["syncMode"]),
                 storage_id=resolved_workspace_id,
-                disable_source_trash=pair_data["disableLocalTrash"],
-                ignore=pair_data["ignore"],
-                exclude_dot_files=pair_data["excludeDotFiles"],
+                disable_source_trash=pair_data.get("disableLocalTrash", False),
+                ignore=pair_data.get("ignore", []),
+                exclude_dot_files=pair_data.get("excludeDotFiles", False),
             )
 
             if not out.quiet:

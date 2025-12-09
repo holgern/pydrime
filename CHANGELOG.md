@@ -2,7 +2,88 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.6.1
+
+### ⛰️ Features
+
+- (No Category) Do not automatically let folder created, cache for sufficient folder
+  handling, threadsafe chaching
+
+### 🐛 Bug Fixes
+
+- (No Category) Add wsgidav to test req
+- (No Category) Typo
+- (No Category) Mypy errors fixed
+- (No Category) Test for windows
+
+### 🧪 Testing
+
+- (No Category) Add unit tests for webdav and rest
+- (No Category) Add missing req
+
+### ⚙️ Miscellaneous Tasks
+
+- (No Category) Fix pre-commit
+
+## 0.6.0
+
+### ⛰️ Features
+
+- (rest) Adding REST api for restic
+- (webdav) Pass webdav litmus test
+- (No Category) Pydrime webdav starts a webdav server
+
+### 📚 Documentation
+
+- (No Category) Update doc (webdav and rest)
+
+## 0.5.15
+
+### 🐛 Bug Fixes
+
+- (No Category) Remove dead code and fix typing for 3.9
+- (No Category) Remove unused code
+- (No Category) Python 3.9 support
+- (No Category) Fix validation for python 3.9
+
+### ⚙️ Miscellaneous Tasks
+
+- (No Category) Fix pre-commit
+- (No Category) Fix pre-commit
+
+## 0.5.14
+
+### ⛰️ Features
+
+- (benchmark) New upload benchmark file for testing upload and replacing
+- (upload) Use simpler upload endpoint as it is more reliable, do not delete before
+  upload the same file again
+
+### 🐛 Bug Fixes
+
+- (api) Full relative path from file name
+
+### 🚜 Refactor
+
+- (validation) Reduce function complexity
+- (No Category) Validation moved into own file
+
+## 0.5.13
+
+### <!-- 0 -->⛰️ Features
+
+- (api) Add notes related api calls and add workspace_id to notification api
+- (cli) Duplicate finder finds renamed files
+- (cli) New cli commands: recent, trash and starred
+
+## 0.5.12
+
+⛰️ Features
+
+- (cli) Increase default start-delay to 3 seconds
+- (cli) Wet default workers to 1 and start-delay to 0
+
+## 0.5.10
 
 ### <!-- 1 -->🐛 Bug Fixes
 

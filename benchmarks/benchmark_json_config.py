@@ -223,7 +223,7 @@ def test_multi_pair_sync(
         create_test_files(local_dir, count=file_count, size_kb=1)
 
         # Alternate sync modes for variety
-        modes = ["localToCloud", "localBackup", "twoWay"]
+        modes = ["sourceToDestination", "sourceBackup", "twoWay"]
         mode = modes[i % len(modes)]
 
         sync_pairs.append(
@@ -392,7 +392,7 @@ def test_ignore_patterns(
             "workspace": 0,
             "local": str(local_dir),
             "remote": f"/{remote_folder}",
-            "syncMode": "localToCloud",
+            "syncMode": "sourceToDestination",
             "ignore": ["*.tmp", "*.log"],
             "excludeDotFiles": False,
         }

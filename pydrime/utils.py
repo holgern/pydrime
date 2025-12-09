@@ -79,6 +79,7 @@ def parse_iso_timestamp(timestamp_str: str | None) -> datetime | None:
 # Size formatting utilities
 # =============================================================================
 
+
 def format_size(size_bytes: int) -> str:
     """Format bytes into human-readable size string.
 
@@ -108,6 +109,7 @@ def format_size(size_bytes: int) -> str:
         size_float /= 1024.0
 
     return f"{size_float:.2f} EB"
+
 
 # =============================================================================
 # Hash calculation utilities
