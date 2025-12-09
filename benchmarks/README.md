@@ -14,7 +14,8 @@ This directory contains benchmark scripts to validate PyDrime sync functionality
 - Compares original and downloaded timestamps (with 2 second tolerance)
 - Reports pass/fail for each file
 
-This benchmark helps verify that file metadata (timestamps) are correctly preserved through the upload/download cycle.
+This benchmark helps verify that file metadata (timestamps) are correctly preserved
+through the upload/download cycle.
 
 ### `benchmark_sync_modes.py`
 

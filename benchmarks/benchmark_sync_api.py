@@ -612,7 +612,8 @@ def run_sync_engine(
     # Create output formatter (quiet mode for cleaner output)
     output = OutputFormatter(quiet=False)
 
-    # Create client adapter (required by SyncEngine to convert storage_id to workspace_id)
+    # Create client adapter (required by SyncEngine to convert
+    # storage_id to workspace_id)
     client_adapter = _DrimeClientAdapter(client)
 
     # Create entries manager factory (required by SyncEngine)
