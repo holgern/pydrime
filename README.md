@@ -428,7 +428,9 @@ pip install pywebdavserver
 pywebdavserver serve
 ```
 
-See the [pywebdavserver documentation](https://github.com/holgern/pydrime/tree/main/pywebdavserver) for more information.
+See the
+[pywebdavserver documentation](https://github.com/holgern/pydrime/tree/main/pywebdavserver)
+for more information.
 
 ### pyrestserver
 
@@ -439,7 +441,9 @@ pip install pyrestserver
 pyrestserver serve
 ```
 
-See the [pyrestserver documentation](https://github.com/holgern/pydrime/tree/main/pyrestserver) for more information.
+See the
+[pyrestserver documentation](https://github.com/holgern/pydrime/tree/main/pyrestserver)
+for more information.
 
 ## Command Reference
 

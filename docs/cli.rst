@@ -1630,17 +1630,17 @@ By default, files are moved to trash. Use ``--no-trash`` to delete permanently.
 .. note::
 
    **Server Features Moved to Separate Packages**
-   
+
    WebDAV and REST server functionality has been moved to dedicated packages:
-   
+
    * **pywebdavserver** - WebDAV server for mounting Drime Cloud as a network drive
    * **pyrestserver** - REST server for restic backup integration
-   
+
    Install these packages separately if you need server functionality:
-   
+
    .. code-block:: bash
-   
+
       pip install pywebdavserver
       pip install pyrestserver
-   
+
    See their respective documentation for usage instructions.
