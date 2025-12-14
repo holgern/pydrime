@@ -35,10 +35,19 @@ Features
 * JSON output for programmatic processing
 * Context-aware file operations (current directory support)
 * **Sync** - Bidirectional and one-way sync between local and cloud
-* **WebDAV Server** - Mount Drime Cloud as a network drive
 * **Encrypted Vault** - Client-side encryption for sensitive files
 * **Duplicate Finder** - Find and remove duplicate files
 * **Storage Usage** - Monitor your cloud storage usage
+
+Server Features
+~~~~~~~~~~~~~~~
+
+WebDAV and REST server functionality has been moved to separate packages:
+
+* **pywebdavserver** - Mount Drime Cloud as a network drive via WebDAV
+* **pyrestserver** - Use Drime Cloud as a restic backup destination
+
+These can be installed separately if needed. See their respective documentation for more information.
 
 Quick Example
 -------------

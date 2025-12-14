@@ -29,10 +29,6 @@ dev = [
     "pytest>=7.0.0",
     "ruff>=0.1.0",
 ]
-webdav = [
-    "wsgidav>=4.0",
-    "cheroot>=9.0",
-]
 
 [project.scripts]
 pydrime = "pydrime.cli:main"
