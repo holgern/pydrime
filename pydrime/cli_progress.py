@@ -4,6 +4,7 @@ This module provides Rich-based progress displays that work with
 the SyncProgressTracker from the sync engine.
 """
 
+import sys
 from typing import Any, Optional
 
 from rich.progress import (
@@ -175,6 +176,90 @@ class SyncProgressDisplay:
             self._progress.__exit__(exc_type, exc_val, exc_tb)
             self._progress = None
             self._upload_task = None
+
+
+class SimpleTextProgressDisplay:
+    """Simple text-based progress display without spinners or animations.
+
+    This class is suitable for CI/CD environments, piped output, or when
+    Rich's interactive display is not desired. It outputs one line per
+    significant event (file completion, folder completion).
+    """
+
+    def __init__(self) -> None:
+        """Initialize the simple text progress display."""
+        self._total_files = 0
+        self._uploaded_files = 0
+        self._total_bytes = 0
+        self._uploaded_bytes = 0
+        self._current_folder = ""
+
+    def create_tracker(self) -> SyncProgressTracker:
+        """Create a SyncProgressTracker that updates this display.
+
+        Returns:
+            A configured SyncProgressTracker
+        """
+        return SyncProgressTracker(callback=self._handle_event)
+
+    def _handle_event(self, info: SyncProgressInfo) -> None:
+        """Handle a progress event from the tracker.
+
+        Args:
+            info: Progress information
+        """
+        if info.event == SyncProgressEvent.UPLOAD_BATCH_START:
+            self._current_folder = info.directory
+            self._total_files = info.folder_files_total
+            self._total_bytes = info.folder_bytes_total
+            folder_name = info.directory if info.directory else "root"
+            print(
+                f"Starting upload: {folder_name} ({info.folder_files_total} files, {_format_size(info.folder_bytes_total)})",
+                file=sys.stderr,
+            )
+
+        elif info.event == SyncProgressEvent.UPLOAD_FILE_START:
+            # Print when starting a new file
+            print(f"  Uploading: {info.file_path}", file=sys.stderr)
+
+        elif info.event == SyncProgressEvent.UPLOAD_FILE_COMPLETE:
+            # Print completion with running totals
+            self._uploaded_files = info.folder_files_uploaded
+            self._uploaded_bytes = info.folder_bytes_uploaded
+            print(
+                f"  ✓ Completed: {info.file_path} "
+                f"({info.folder_files_uploaded}/{info.folder_files_total} files, "
+                f"{_format_size(info.folder_bytes_uploaded)}/{_format_size(info.folder_bytes_total)})",
+                file=sys.stderr,
+            )
+
+        elif info.event == SyncProgressEvent.UPLOAD_FILE_ERROR:
+            # Print error
+            print(
+                f"  ✗ Failed: {info.file_path} - {info.error_message}", file=sys.stderr
+            )
+
+        elif info.event == SyncProgressEvent.UPLOAD_BATCH_COMPLETE:
+            # Print folder completion summary
+            folder_name = info.directory if info.directory else "root"
+            print(
+                f"Completed: {folder_name} "
+                f"({info.folder_files_uploaded} files, {_format_size(info.folder_bytes_uploaded)})",
+                file=sys.stderr,
+            )
+
+    def __enter__(self) -> "SimpleTextProgressDisplay":
+        """Enter context manager."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Any,
+    ) -> None:
+        """Exit context manager."""
+        pass
 
 
 def run_sync_with_progress(

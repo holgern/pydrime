@@ -47,6 +47,7 @@ class DuplicateHandler:
 
         self.files_to_skip: set[str] = set()
         self.rename_map: dict[str, str] = {}
+        self.entries_to_delete: list[int] = []  # Entry IDs to delete for replace action
 
         # Performance optimization: cache for folder ID lookups
         self._folder_id_cache: dict[str, Optional[int]] = {}
@@ -955,24 +956,28 @@ class DuplicateHandler:
     ) -> None:
         """Handle replace action for duplicates.
 
-        The API handles replacement automatically when uploading with the same
-        name, so we don't need to delete anything first. We just proceed with
-        the upload and the server will replace the existing file.
+        This tracks which entries need to be deleted after upload completes.
+        The upload will use force_upload=True to ensure files are uploaded
+        even if they're identical to existing files.
 
         Args:
             duplicate_name: Name of duplicate file
-            duplicate_info: Dict of duplicate IDs (for logging only)
+            duplicate_info: Dict of duplicate IDs
         """
-        # The API handles replacement automatically - no deletion needed
-        if not self.out.quiet:
-            if duplicate_name in duplicate_info and duplicate_info[duplicate_name]:
+        # Track entries to delete after successful upload
+        if duplicate_name in duplicate_info and duplicate_info[duplicate_name]:
+            for entry_id, _ in duplicate_info[duplicate_name]:
+                self.entries_to_delete.append(entry_id)
+
+            if not self.out.quiet:
                 ids_str = ", ".join(
                     str(entry_id) for entry_id, _ in duplicate_info[duplicate_name]
                 )
                 self.out.info(
                     f"Will replace existing '{duplicate_name}' (ID: {ids_str})"
                 )
-            else:
+        else:
+            if not self.out.quiet:
                 self.out.info(f"Will replace existing '{duplicate_name}'")
 
     def apply_renames(self, rel_path: str) -> str:

@@ -14,6 +14,8 @@ from rich.progress import (
     TimeRemainingColumn,
     TransferSpeedColumn,
 )
+from syncengine.modes import SyncMode
+from syncengine.pair import SyncPair
 
 from .api import DrimeClient
 from .auth import require_api_key
@@ -309,6 +311,11 @@ def init(ctx: Any, api_key: str) -> None:
     help="Disable progress bars",
 )
 @click.option(
+    "--simple-progress",
+    is_flag=True,
+    help="Use simple text progress (no spinners/animations, suitable for CI/CD or piped output)",
+)
+@click.option(
     "--chunk-size",
     "-c",
     type=int,
@@ -343,6 +350,7 @@ def upload(  # noqa: C901
     on_duplicate: str,
     workers: int,
     no_progress: bool,
+    simple_progress: bool,
     chunk_size: int,
     multipart_threshold: int,
     start_delay: float,
@@ -369,6 +377,8 @@ def upload(  # noqa: C901
         pydrime upload ./data --validate       # Upload and validate
     """
     from syncengine import SyncEngine
+    from syncengine.modes import SyncMode
+    from syncengine.pair import SyncPair
 
     out: OutputFormatter = ctx.obj["out"]
     source_path = Path(path)
@@ -512,6 +522,12 @@ def upload(  # noqa: C901
             for k, v in dup_handler.rename_map.items()
         }
 
+        # Determine if force upload is needed (for replace action)
+        force_upload = (
+            dup_handler.chosen_action == "replace"
+            and len(dup_handler.entries_to_delete) > 0
+        )
+
         # Determine the remote path for the sync engine
         # When remote_path is specified, include the local folder name
         # e.g., uploading "test/" with remote_path="dest" -> "dest/test/..."
@@ -520,28 +536,102 @@ def upload(  # noqa: C901
         else:
             effective_remote_path = source_path.name
 
-        # Create output formatter for engine (respect no_progress)
-        engine_out = OutputFormatter(
-            json_output=out.json_output, quiet=no_progress or out.quiet
-        )
+        # Wrap client in adapter for syncengine compatibility
+        adapted_client = _DrimeClientAdapter(client)
 
-        # Create sync engine and upload using sync infrastructure
-        engine = SyncEngine(
-            client, _create_entries_manager_factory(), output=engine_out
-        )
-
-        stats = engine.upload_folder(
-            local_path=source_path,
-            remote_path=effective_remote_path,
+        # Create sync pair for upload
+        pair = SyncPair(
+            source=source_path,
+            destination=effective_remote_path,
+            sync_mode=SyncMode.SOURCE_TO_DESTINATION,
             storage_id=workspace,
             parent_id=current_folder_id,
-            max_workers=workers,
-            start_delay=start_delay,
-            chunk_size=chunk_size_bytes,
-            multipart_threshold=multipart_threshold_bytes,
-            files_to_skip=files_to_skip,
-            file_renames=file_renames,
         )
+
+        # Create progress tracker if progress display is enabled
+        if no_progress or out.quiet:
+            tracker = None
+            engine_out = OutputFormatter(json_output=out.json_output, quiet=True)
+        elif simple_progress:
+            from .cli_progress import SimpleTextProgressDisplay
+
+            progress_display = SimpleTextProgressDisplay()
+            tracker = progress_display.create_tracker()
+            # Silence engine output when progress display is active
+            engine_out = OutputFormatter(json_output=out.json_output, quiet=True)
+        else:
+            from .cli_progress import SyncProgressDisplay
+
+            progress_display = SyncProgressDisplay()
+            tracker = progress_display.create_tracker()
+            # Silence engine output when progress display is active
+            engine_out = OutputFormatter(json_output=out.json_output, quiet=True)
+
+        # Create sync engine
+        engine = SyncEngine(
+            adapted_client, _create_entries_manager_factory(), output=engine_out
+        )
+
+        # Perform upload using sync_pair with progress tracking
+        try:
+            if tracker and not (no_progress or out.quiet):
+                # Use progress display for interactive uploads
+                with progress_display:  # type: ignore[possibly-unbound]
+                    stats = engine.sync_pair(
+                        pair,
+                        dry_run=False,
+                        chunk_size=chunk_size_bytes,
+                        multipart_threshold=multipart_threshold_bytes,
+                        batch_size=50,  # Process 50 files per batch
+                        use_streaming=True,  # Enable streaming mode
+                        max_workers=workers,
+                        start_delay=start_delay,
+                        sync_progress_tracker=tracker,
+                        files_to_skip=files_to_skip,
+                        file_renames=file_renames,
+                        force_upload=force_upload,  # Force upload when replacing
+                    )
+            else:
+                # No progress display
+                stats = engine.sync_pair(
+                    pair,
+                    dry_run=False,
+                    chunk_size=chunk_size_bytes,
+                    multipart_threshold=multipart_threshold_bytes,
+                    batch_size=50,  # Process 50 files per batch
+                    use_streaming=True,  # Enable streaming mode
+                    max_workers=workers,
+                    start_delay=start_delay,
+                    files_to_skip=files_to_skip,
+                    file_renames=file_renames,
+                    force_upload=force_upload,  # Force upload when replacing
+                )
+        except KeyboardInterrupt:
+            out.warning("\nUpload cancelled by user")
+            raise
+
+        # Delete old duplicate entries after successful upload (for replace action)
+        if dup_handler.entries_to_delete and stats.get("uploads", 0) > 0:
+            if not out.quiet:
+                out.info(
+                    f"\nDeleting {len(dup_handler.entries_to_delete)} old duplicate file(s)..."
+                )
+            try:
+                # Delete old duplicate entries (move to trash)
+                client.delete_file_entries(
+                    entry_ids=dup_handler.entries_to_delete,
+                    delete_forever=False,  # Move to trash by default
+                    workspace_id=workspace,
+                )
+                if not out.quiet:
+                    out.success(
+                        f"✓ Deleted {len(dup_handler.entries_to_delete)} old file(s)"
+                    )
+            except Exception as e:
+                out.warning(
+                    f"Warning: Failed to delete some old files: {e}. "
+                    "New files were uploaded successfully."
+                )
 
         # Show summary
         if out.json_output:
@@ -693,11 +783,17 @@ def _upload_single_file(
                 )
 
                 def _progress_callback(bytes_uploaded: int, total_bytes: int) -> None:
-                    progress_display.update(
-                        task_id, completed=bytes_uploaded, total=total_bytes
-                    )
+                    if progress_display:
+                        progress_display.update(
+                            task_id, completed=bytes_uploaded, total=total_bytes
+                        )
 
                 progress_callback_fn = _progress_callback
+            elif not out.quiet:
+                # Show a simple message when progress bar is disabled
+                file_size = file_path.stat().st_size
+                size_str = out.format_size(file_size)
+                out.progress_message(f"Uploading {upload_path} ({size_str})...")
             else:
                 task_id = None
                 file_size = file_path.stat().st_size
@@ -1900,8 +1996,10 @@ def download(
                     json_output=out.json_output,
                     quiet=no_progress or out.quiet,
                 )
+                # Wrap client in adapter for syncengine compatibility
+                adapted_client = _DrimeClientAdapter(client)
                 engine = SyncEngine(
-                    client, _create_entries_manager_factory(), output=engine_out
+                    adapted_client, _create_entries_manager_factory(), output=engine_out
                 )
 
                 # Use sync engine's download_folder method
@@ -2351,9 +2449,12 @@ def sync(
                     quiet=use_progress_display or no_progress or out.quiet,
                 )
 
+                # Wrap client in adapter for syncengine compatibility
+                adapted_client = _DrimeClientAdapter(client)
+
                 # Create sync engine
                 engine = SyncEngine(
-                    client, _create_entries_manager_factory(), output=engine_out
+                    adapted_client, _create_entries_manager_factory(), output=engine_out
                 )
 
                 # Execute sync - use progress display for non-dry-run

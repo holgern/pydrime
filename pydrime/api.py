@@ -29,7 +29,61 @@ from .logging import log_api_request
 
 if TYPE_CHECKING:
     from .file_entries_manager import FileEntriesManager
+
+
+class _ProgressFileWrapper:
+    """Wrapper around a file object to track upload progress.
+
+    This wrapper reports progress as the file is read during upload.
+    Note: httpx may read the file multiple times (once to calculate content-length,
+    then again during actual upload), so we track progress based on position.
+    """
+
+    def __init__(
+        self,
+        file_obj,
+        total_size: int,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ):
+        self.file_obj = file_obj
+        self.total_size = total_size
+        self.progress_callback = progress_callback
+        self.bytes_read = 0
+        self._last_reported_position = 0
+
+    def read(self, size: int = -1) -> bytes:
+        """Read from file and report progress."""
+        data = self.file_obj.read(size)
+        self.bytes_read += len(data)
+
+        # Report progress based on current file position to handle re-reads
+        if self.progress_callback and data:
+            current_pos = self.file_obj.tell()
+            # Only report if we've made progress forward
+            if current_pos > self._last_reported_position:
+                self._last_reported_position = current_pos
+                self.progress_callback(current_pos, self.total_size)
+
+        return data
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        """Seek to a position in the file."""
+        result = self.file_obj.seek(offset, whence)
+        # Reset tracking when seeking back to start
+        if offset == 0 and whence == 0:
+            self._last_reported_position = 0
+        return result
+
+    def tell(self) -> int:
+        """Return current file position."""
+        return self.file_obj.tell()
+
+    def __getattr__(self, name):
+        """Forward all other attributes to the wrapped file object."""
+        return getattr(self.file_obj, name)
+
     from .models import FileEntry
+
 
 logger = logging.getLogger(__name__)
 
@@ -730,8 +784,14 @@ class DrimeClient:
 
         try:
             with open(file_path, "rb") as f:
+                # Wrap file object to track upload progress
+                if progress_callback:
+                    file_wrapper = _ProgressFileWrapper(f, file_size, progress_callback)
+                else:
+                    file_wrapper = f
+
                 # Use multipart form data upload
-                files = {"file": (file_name, f, mime_type)}
+                files = {"file": (file_name, file_wrapper, mime_type)}  # type: ignore[dict-item]
                 data: dict[str, Any] = {
                     "relativePath": full_relative_path,
                     "workspaceId": str(workspace_id),
@@ -740,7 +800,7 @@ class DrimeClient:
                     data["parentId"] = str(parent_id)
 
                 client = self._get_client()
-                response = client.post(
+                response = client.post(  # type: ignore[arg-type]
                     f"{self.api_url}/uploads",
                     files=files,
                     data=data,
@@ -748,7 +808,7 @@ class DrimeClient:
                     timeout=self.s3_timeout,
                 )
 
-            # Report completion
+            # Report completion (in case final read didn't reach exactly file_size)
             if progress_callback:
                 progress_callback(file_size, file_size)
 
@@ -1391,7 +1451,9 @@ class DrimeClient:
             Response with 'status' and 'fileEntry' keys
         """
         endpoint = f"/file-entries/{entry_id}?workspaceId={workspace_id}"
-        data: dict[str, Any] = {}
+        data: dict[str, Any] = {
+            "workspaceId": workspace_id,
+        }
 
         if name:
             data["name"] = name
@@ -1428,6 +1490,7 @@ class DrimeClient:
         data = {
             "entryIds": entry_ids,
             "deleteForever": delete_forever,
+            "workspaceId": workspace_id,
         }
         result = self._request("POST", endpoint, json=data)
 
@@ -1490,7 +1553,10 @@ class DrimeClient:
             Response with 'status' and 'entries' keys
         """
         endpoint = f"/file-entries/duplicate?workspaceId={workspace_id}"
-        data: dict[str, Any] = {"entryIds": entry_ids}
+        data: dict[str, Any] = {
+            "entryIds": entry_ids,
+            "workspaceId": workspace_id,
+        }
 
         if destination_id is not None:
             data["destinationId"] = destination_id
