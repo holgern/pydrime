@@ -93,6 +93,61 @@ Specify a remote path:
 
    pydrime upload /path/to/file.txt --remote-path "folder/file.txt"
 
+Advanced Upload Options
+~~~~~~~~~~~~~~~~~~~~~~~
+
+**Progress Tracking**
+
+By default, uploads show an interactive progress bar with file-level details. For CI/CD environments or log files, use simple text progress:
+
+.. code-block:: bash
+
+   # CI/CD friendly progress (line-by-line updates)
+   pydrime upload /path/to/directory --simple-progress
+
+   # Silent mode (no progress output)
+   pydrime upload /path/to/directory --no-progress
+
+**Parallel Uploads**
+
+Speed up directory uploads by uploading multiple files in parallel:
+
+.. code-block:: bash
+
+   # Upload with 10 parallel workers (default is 5, max is 20)
+   pydrime upload /path/to/directory -j 10
+
+   # Maximum parallelism
+   pydrime upload /path/to/directory -j 20
+
+**Duplicate Handling**
+
+Control what happens when a file with the same name already exists:
+
+.. code-block:: bash
+
+   # Skip existing files (fastest for incremental uploads)
+   pydrime upload /path/to/directory --on-duplicate skip
+
+   # Rename new files as "file (1).txt", "file (2).txt", etc.
+   pydrime upload /path/to/file.txt --on-duplicate rename
+
+   # Replace existing files (old versions moved to trash)
+   pydrime upload /path/to/file.txt --on-duplicate replace
+
+   # Ask interactively for each duplicate
+   pydrime upload /path/to/directory --on-duplicate ask
+
+**Combining Options**
+
+.. code-block:: bash
+
+   # Fast incremental backup: parallel + skip duplicates + simple progress
+   pydrime upload ./backup -j 10 --on-duplicate skip --simple-progress
+
+   # CI/CD deployment: replace old files with silent mode
+   pydrime upload ./dist --on-duplicate replace --no-progress
+
 List Files
 ~~~~~~~~~~
 

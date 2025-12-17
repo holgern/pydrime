@@ -1174,3 +1174,203 @@ class TestUnicodeFolderDuplicates:
         # Only existing/report.txt should be skipped
         assert "existing/report.txt" in handler.files_to_skip
         assert "new_folder/report.txt" not in handler.files_to_skip
+
+
+class TestEntriesToDeleteReplace:
+    """Tests for entries_to_delete list population with replace action."""
+
+    def test_replace_populates_entries_to_delete(self, tmp_path):
+        """Test replace action populates entries_to_delete list."""
+        mock_client = MagicMock()
+        mock_client.validate_uploads.return_value = {"duplicates": ["test.txt"]}
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 123,
+                    "name": "test.txt",
+                    "type": "text",
+                    "hash": "hash123",
+                    "mime": "text/plain",
+                    "file_size": 100,
+                    "parent_id": 0,
+                    "created_at": "2023-01-01",
+                    "updated_at": "2023-01-01",
+                    "owner": {"email": "test@example.com"},
+                }
+            ]
+        }
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "replace")
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("new content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        # entries_to_delete should be populated with the duplicate ID
+        assert len(handler.entries_to_delete) == 1
+        assert 123 in handler.entries_to_delete
+
+    def test_replace_multiple_duplicates(self, tmp_path):
+        """Test replace action handles multiple duplicates."""
+        mock_client = MagicMock()
+        mock_client.validate_uploads.return_value = {
+            "duplicates": ["file1.txt", "file2.txt"]
+        }
+
+        def mock_get_entries(query=None, parent_ids=None, workspace_id=0, **kwargs):
+            if query == "file1.txt":
+                return {
+                    "data": [
+                        {
+                            "id": 111,
+                            "name": "file1.txt",
+                            "type": "text",
+                            "hash": "hash1",
+                            "mime": "text/plain",
+                            "file_size": 100,
+                            "parent_id": 0,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                        }
+                    ]
+                }
+            elif query == "file2.txt":
+                return {
+                    "data": [
+                        {
+                            "id": 222,
+                            "name": "file2.txt",
+                            "type": "text",
+                            "hash": "hash2",
+                            "mime": "text/plain",
+                            "file_size": 200,
+                            "parent_id": 0,
+                            "created_at": "2023-01-01",
+                            "updated_at": "2023-01-01",
+                            "owner": {"email": "test@example.com"},
+                        }
+                    ]
+                }
+            return {"data": []}
+
+        mock_client.get_file_entries.side_effect = mock_get_entries
+
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "replace")
+
+        test_file1 = tmp_path / "file1.txt"
+        test_file1.write_text("content1")
+        test_file2 = tmp_path / "file2.txt"
+        test_file2.write_text("content2")
+
+        files_to_upload = [(test_file1, "file1.txt"), (test_file2, "file2.txt")]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        # Both duplicate IDs should be in entries_to_delete
+        assert len(handler.entries_to_delete) == 2
+        assert 111 in handler.entries_to_delete
+        assert 222 in handler.entries_to_delete
+
+    def test_skip_does_not_populate_entries_to_delete(self, tmp_path):
+        """Test skip action does NOT populate entries_to_delete."""
+        mock_client = MagicMock()
+        mock_client.validate_uploads.return_value = {"duplicates": ["test.txt"]}
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "skip")
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        # entries_to_delete should be empty for skip action
+        assert len(handler.entries_to_delete) == 0
+
+    def test_rename_does_not_populate_entries_to_delete(self, tmp_path):
+        """Test rename action does NOT populate entries_to_delete."""
+        mock_client = MagicMock()
+        mock_client.validate_uploads.return_value = {"duplicates": ["test.txt"]}
+        mock_client.get_available_name.return_value = "test (1).txt"
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "rename")
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        # entries_to_delete should be empty for rename action
+        assert len(handler.entries_to_delete) == 0
+
+    def test_replace_with_multiple_ids_per_file(self, tmp_path):
+        """Test replace when a file has multiple duplicates (different locations)."""
+        mock_client = MagicMock()
+        mock_client.validate_uploads.return_value = {"duplicates": ["doc.txt"]}
+
+        # Return multiple entries with same name but different IDs
+        mock_client.get_file_entries.return_value = {
+            "data": [
+                {
+                    "id": 333,
+                    "name": "doc.txt",
+                    "type": "text",
+                    "hash": "hash1",
+                    "mime": "text/plain",
+                    "file_size": 100,
+                    "parent_id": 10,
+                    "created_at": "2023-01-01",
+                    "updated_at": "2023-01-01",
+                    "owner": {"email": "test@example.com"},
+                    "path": "/folder1/doc.txt",
+                },
+                {
+                    "id": 444,
+                    "name": "doc.txt",
+                    "type": "text",
+                    "hash": "hash2",
+                    "mime": "text/plain",
+                    "file_size": 100,
+                    "parent_id": 20,
+                    "created_at": "2023-01-01",
+                    "updated_at": "2023-01-01",
+                    "owner": {"email": "test@example.com"},
+                    "path": "/folder2/doc.txt",
+                },
+            ]
+        }
+
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "replace")
+
+        test_file = tmp_path / "doc.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "doc.txt")]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        # Both duplicate IDs should be in entries_to_delete
+        assert len(handler.entries_to_delete) == 2
+        assert 333 in handler.entries_to_delete
+        assert 444 in handler.entries_to_delete
+
+    def test_replace_empty_when_no_duplicates(self, tmp_path):
+        """Test entries_to_delete remains empty when no duplicates."""
+        mock_client = MagicMock()
+        mock_client.validate_uploads.return_value = {"duplicates": []}
+        out = OutputFormatter(json_output=False, quiet=False)
+        handler = DuplicateHandler(mock_client, out, 0, "replace")
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("content")
+        files_to_upload = [(test_file, "test.txt")]
+
+        handler.validate_and_handle_duplicates(files_to_upload)
+
+        # No duplicates, so entries_to_delete should be empty
+        assert len(handler.entries_to_delete) == 0

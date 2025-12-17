@@ -90,17 +90,18 @@ Upload a file or directory to Drime Cloud.
 
 * ``-r, --remote-path TEXT`` - Remote destination path with folder structure
 * ``-w, --workspace INTEGER`` - Workspace ID (default: 0 for personal space)
-* ``-j, --workers INTEGER`` - Number of parallel workers (default: 1, use 4-8 for parallel uploads)
+* ``-j, --workers INTEGER`` - Number of parallel upload workers (default: 5, range: 1-20)
 * ``--chunk-size INTEGER`` - Chunk size in MB for multipart uploads (default: 25MB, range: 5-100MB)
 * ``--multipart-threshold INTEGER`` - File size threshold in MB for using multipart upload (default: 30MB, minimum: 1MB)
-* ``--on-duplicate [ask|replace|rename|skip]`` - What to do when duplicate files are detected (default: ask)
-* ``--no-progress`` - Disable progress bars
+* ``--on-duplicate [skip|rename|replace|ask]`` - How to handle duplicate files (default: skip)
+* ``--simple-progress`` - Use simple text progress display (CI/CD friendly)
+* ``--no-progress`` - Disable progress display
 * ``--dry-run`` - Show what would be uploaded without actually uploading
 * ``-k, --api-key TEXT`` - Drime Cloud API key
 
 **Description:**
 
-Uploads files to Drime Cloud with automatic selection between simple and multipart upload based on file size.
+Uploads files to Drime Cloud with real-time progress tracking, automatic selection between simple and multipart upload based on file size, and flexible duplicate handling. Supports parallel uploads for faster transfers.
 
 **Upload Destination Information:**
 

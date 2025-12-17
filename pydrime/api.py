@@ -29,6 +29,7 @@ from .logging import log_api_request
 
 if TYPE_CHECKING:
     from .file_entries_manager import FileEntriesManager
+    from .models import FileEntry
 
 
 class _ProgressFileWrapper:

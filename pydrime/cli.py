@@ -313,7 +313,10 @@ def init(ctx: Any, api_key: str) -> None:
 @click.option(
     "--simple-progress",
     is_flag=True,
-    help="Use simple text progress (no spinners/animations, suitable for CI/CD or piped output)",
+    help=(
+        "Use simple text progress "
+        "(no spinners/animations, suitable for CI/CD or piped output)"
+    ),
 )
 @click.option(
     "--chunk-size",
@@ -377,8 +380,6 @@ def upload(  # noqa: C901
         pydrime upload ./data --validate       # Upload and validate
     """
     from syncengine import SyncEngine
-    from syncengine.modes import SyncMode
-    from syncengine.pair import SyncPair
 
     out: OutputFormatter = ctx.obj["out"]
     source_path = Path(path)
@@ -613,9 +614,8 @@ def upload(  # noqa: C901
         # Delete old duplicate entries after successful upload (for replace action)
         if dup_handler.entries_to_delete and stats.get("uploads", 0) > 0:
             if not out.quiet:
-                out.info(
-                    f"\nDeleting {len(dup_handler.entries_to_delete)} old duplicate file(s)..."
-                )
+                count = len(dup_handler.entries_to_delete)
+                out.info(f"\nDeleting {count} old duplicate file(s)...")
             try:
                 # Delete old duplicate entries (move to trash)
                 client.delete_file_entries(

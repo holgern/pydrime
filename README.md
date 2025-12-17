@@ -174,6 +174,78 @@ pydrime upload /path/to/file.txt --remote-path "folder/file.txt"
 pydrime upload /path/to/directory --dry-run
 ```
 
+### Progress Tracking
+
+PyDrime provides real-time progress tracking during uploads with three modes:
+
+**Rich Interactive Progress (default):**
+
+```bash
+pydrime upload /path/to/folder
+```
+
+Shows an animated progress bar with file names, transfer speed, and ETA.
+
+**Simple Text Progress (CI/CD friendly):**
+
+```bash
+pydrime upload /path/to/folder --simple-progress
+```
+
+Outputs clean line-by-line progress suitable for logs and CI/CD pipelines.
+
+**No Progress (silent mode):**
+
+```bash
+pydrime upload /path/to/folder --no-progress
+```
+
+Disables all progress output for automated scripts.
+
+### Parallel Uploads
+
+Upload multiple files simultaneously for faster transfers:
+
+```bash
+pydrime upload /path/to/folder -j 10
+```
+
+The `-j` flag controls the number of parallel uploads (default: 5, max: 20).
+
+### Duplicate File Handling
+
+Control how duplicate files are handled during upload:
+
+**Skip duplicates (default):**
+
+```bash
+pydrime upload /path/to/folder --on-duplicate skip
+```
+
+**Rename duplicates:**
+
+```bash
+pydrime upload /path/to/folder --on-duplicate rename
+```
+
+Automatically renames files like `file.txt` → `file (1).txt`.
+
+**Replace duplicates:**
+
+```bash
+pydrime upload /path/to/folder --on-duplicate replace
+```
+
+Replaces existing files with the new version (old files moved to trash).
+
+**Ask for each duplicate:**
+
+```bash
+pydrime upload /path/to/folder --on-duplicate ask
+```
+
+Prompts for each duplicate file individually.
+
 ### List Remote Files
 
 List files in root:
@@ -496,9 +568,15 @@ pydrime upload [OPTIONS] PATH
 - `-w, --workspace INTEGER`: Workspace ID (default: 0 for personal space)
 - `-k, --api-key TEXT`: Drime Cloud API key
 - `--dry-run`: Show what would be uploaded without actually uploading
+- `-j, --workers INTEGER`: Number of parallel upload workers (default: 5, range: 1-20)
+- `--simple-progress`: Use simple text progress display (CI/CD friendly)
+- `--no-progress`: Disable progress display
+- `--on-duplicate [skip|rename|replace|ask]`: How to handle duplicate files (default:
+  skip)
 
-**Description:** Uploads files to Drime Cloud. For files larger than 30MB, automatically
-uses multipart upload for better reliability.
+**Description:** Uploads files to Drime Cloud with real-time progress tracking. For
+files larger than 30MB, automatically uses multipart upload for better reliability.
+Supports parallel uploads for faster transfers and flexible duplicate handling.
 
 ### ls
 

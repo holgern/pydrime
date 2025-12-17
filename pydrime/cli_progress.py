@@ -213,8 +213,10 @@ class SimpleTextProgressDisplay:
             self._total_files = info.folder_files_total
             self._total_bytes = info.folder_bytes_total
             folder_name = info.directory if info.directory else "root"
+            size_str = _format_size(info.folder_bytes_total)
             print(
-                f"Starting upload: {folder_name} ({info.folder_files_total} files, {_format_size(info.folder_bytes_total)})",
+                f"Starting upload: {folder_name} "
+                f"({info.folder_files_total} files, {size_str})",
                 file=sys.stderr,
             )
 
@@ -242,9 +244,10 @@ class SimpleTextProgressDisplay:
         elif info.event == SyncProgressEvent.UPLOAD_BATCH_COMPLETE:
             # Print folder completion summary
             folder_name = info.directory if info.directory else "root"
+            size_str = _format_size(info.folder_bytes_uploaded)
             print(
                 f"Completed: {folder_name} "
-                f"({info.folder_files_uploaded} files, {_format_size(info.folder_bytes_uploaded)})",
+                f"({info.folder_files_uploaded} files, {size_str})",
                 file=sys.stderr,
             )
 
