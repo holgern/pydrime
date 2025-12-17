@@ -611,27 +611,8 @@ def upload(  # noqa: C901
             out.warning("\nUpload cancelled by user")
             raise
 
-        # Delete old duplicate entries after successful upload (for replace action)
-        if dup_handler.entries_to_delete and stats.get("uploads", 0) > 0:
-            if not out.quiet:
-                count = len(dup_handler.entries_to_delete)
-                out.info(f"\nDeleting {count} old duplicate file(s)...")
-            try:
-                # Delete old duplicate entries (move to trash)
-                client.delete_file_entries(
-                    entry_ids=dup_handler.entries_to_delete,
-                    delete_forever=False,  # Move to trash by default
-                    workspace_id=workspace,
-                )
-                if not out.quiet:
-                    out.success(
-                        f"✓ Deleted {len(dup_handler.entries_to_delete)} old file(s)"
-                    )
-            except Exception as e:
-                out.warning(
-                    f"Warning: Failed to delete some old files: {e}. "
-                    "New files were uploaded successfully."
-                )
+        # Note: When using replace mode, files are automatically overwritten
+        # by the cloud service during upload. No need to delete old entries.
 
         # Show summary
         if out.json_output:

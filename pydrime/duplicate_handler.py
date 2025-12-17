@@ -956,15 +956,15 @@ class DuplicateHandler:
     ) -> None:
         """Handle replace action for duplicates.
 
-        This tracks which entries need to be deleted after upload completes.
         The upload will use force_upload=True to ensure files are uploaded
-        even if they're identical to existing files.
+        even if they're identical to existing files. The cloud service will
+        automatically overwrite the existing file entry during upload.
 
         Args:
             duplicate_name: Name of duplicate file
             duplicate_info: Dict of duplicate IDs
         """
-        # Track entries to delete after successful upload
+        # Track entries that will be replaced (for summary display)
         if duplicate_name in duplicate_info and duplicate_info[duplicate_name]:
             for entry_id, _ in duplicate_info[duplicate_name]:
                 self.entries_to_delete.append(entry_id)
