@@ -39,7 +39,7 @@ classifiers=[
 
 dynamic=["version"]
 [project.optional-dependencies]
-server = ["pyrestserver>=0.1.0", "pys3local>=0.1.0", "pywebdavserver>=0.1.0"]
+server = ["pyrestserver>=0.1.1", "pys3local>=0.1.0", "pywebdavserver>=0.1.0"]
 dev = [
     "pytest>=7.0.0",
     "ruff>=0.1.0",

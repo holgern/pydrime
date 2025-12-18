@@ -290,13 +290,28 @@ def upload(  # noqa: C901
         adapted_client = _DrimeClientAdapter(client)
 
         # Create sync pair for upload
-        pair = SyncPair(
-            source=source_path,
-            destination=effective_remote_path,
-            sync_mode=SyncMode.SOURCE_TO_DESTINATION,
-            storage_id=workspace,
-            parent_id=current_folder_id,
-        )
+        # Try with parent_id first (syncengine >= 0.2.2)
+        try:
+            pair = SyncPair(
+                source=source_path,
+                destination=effective_remote_path,
+                sync_mode=SyncMode.SOURCE_TO_DESTINATION,
+                storage_id=workspace,
+                parent_id=current_folder_id,
+            )
+        except TypeError:
+            # Fallback for older syncengine versions without parent_id support
+            pair = SyncPair(
+                source=source_path,
+                destination=effective_remote_path,
+                sync_mode=SyncMode.SOURCE_TO_DESTINATION,
+                storage_id=workspace,
+            )
+            if current_folder_id:
+                out.warning(
+                    "Your syncengine version doesn't support parent_id. "
+                    "Please upgrade: pip install -U syncengine>=0.2.2"
+                )
 
         # Create progress tracker if progress display is enabled
         if no_progress or out.quiet:
