@@ -21,6 +21,7 @@ from ..utils import (
 from ..vault_crypto import (
     VaultPasswordError,
     decrypt_file_content,
+    decrypt_filename,
     encrypt_filename,
     unlock_vault,
 )
@@ -214,6 +215,19 @@ def vault_show(ctx: Any) -> None:
     default="desc",
     help="Order direction (default: desc)",
 )
+@click.option(
+    "--decrypt",
+    "-d",
+    is_flag=True,
+    default=False,
+    help="Decrypt file names (will prompt for password)",
+)
+@click.option(
+    "--password",
+    type=str,
+    default=None,
+    help="Vault password for decryption (will prompt if not provided)",
+)
 @click.pass_context
 def vault_ls(
     ctx: Any,
@@ -222,10 +236,13 @@ def vault_ls(
     page_size: int,
     order_by: str,
     order: str,
+    decrypt: bool,
+    password: Optional[str],
 ) -> None:
     """List files and folders in the vault.
 
     Lists encrypted files and folders stored in your vault.
+    Use --decrypt to show decrypted file names (requires password).
 
     FOLDER_IDENTIFIER: Folder name, ID, or hash to list (default: root)
 
@@ -236,6 +253,7 @@ def vault_ls(
         pydrime vault ls MzQ0MzB8cGFkZA   # List folder by hash
         pydrime vault ls --page 2         # Show page 2 of results
         pydrime vault ls --order-by name  # Sort by name
+        pydrime vault ls --decrypt        # Show decrypted file names
     """
     api_key = ctx.obj.get("api_key")
     out: OutputFormatter = ctx.obj["out"]
@@ -360,11 +378,59 @@ def vault_ls(
                 out.info(f"No files in vault folder '{folder_display}'")
             return
 
+        # Handle decryption if requested
+        vault_key = None
+        if decrypt:
+            # Get encryption parameters from vault
+            salt = vault_info.get("salt") if vault_info else None
+            check = vault_info.get("check") if vault_info else None
+            iv = vault_info.get("iv") if vault_info else None
+
+            if not all([salt, check, iv]):
+                out.error("Vault encryption parameters not found.")
+                ctx.exit(1)
+                return
+
+            # Get password from: CLI option > environment variable > prompt
+            if not password:
+                password = get_vault_password_from_env()
+            if not password:
+                password = click.prompt("Vault password", hide_input=True)
+
+            # Verify password and get vault key
+            # Type assertions - we already checked these are not None above
+            assert password is not None
+            assert salt is not None
+            assert check is not None
+            assert iv is not None
+            try:
+                vault_key = unlock_vault(password, salt, check, iv)
+            except VaultPasswordError:
+                out.error("Invalid vault password")
+                ctx.exit(1)
+                return
+
         # Display files in table format (same as regular ls)
         table_data = []
         for entry in entries:
             entry_type = entry.get("type", "file")
             name = entry.get("name", "Unknown")
+
+            # Decrypt file name if requested and vault key is available
+            if vault_key and name != "Unknown":
+                name_iv = entry.get("name_iv")
+                if name_iv:
+                    try:
+                        decrypted_name = decrypt_filename(vault_key, name, name_iv)
+                        name = decrypted_name
+                    except Exception as e:
+                        # If decryption fails, keep encrypted name and add indicator
+                        if not out.quiet:
+                            entry_id = entry.get("id")
+                            out.warning(
+                                f"Failed to decrypt name for entry {entry_id}: {e}"
+                            )
+                        name = f"{name} [encrypted]"
 
             # Format created timestamp
             created_at = entry.get("created_at", "")
