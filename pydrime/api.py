@@ -42,10 +42,10 @@ class _ProgressFileWrapper:
 
     def __init__(
         self,
-        file_obj,
+        file_obj: Any,
         total_size: int,
         progress_callback: Callable[[int, int], None] | None = None,
-    ):
+    ) -> None:
         self.file_obj = file_obj
         self.total_size = total_size
         self.progress_callback = progress_callback
@@ -65,7 +65,7 @@ class _ProgressFileWrapper:
                 self._last_reported_position = current_pos
                 self.progress_callback(current_pos, self.total_size)
 
-        return data
+        return data  # type: ignore[no-any-return]
 
     def seek(self, offset: int, whence: int = 0) -> int:
         """Seek to a position in the file."""
@@ -73,13 +73,13 @@ class _ProgressFileWrapper:
         # Reset tracking when seeking back to start
         if offset == 0 and whence == 0:
             self._last_reported_position = 0
-        return result
+        return result  # type: ignore[no-any-return]
 
     def tell(self) -> int:
         """Return current file position."""
-        return self.file_obj.tell()
+        return self.file_obj.tell()  # type: ignore[no-any-return]
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         """Forward all other attributes to the wrapped file object."""
         return getattr(self.file_obj, name)
 
@@ -789,12 +789,14 @@ class DrimeClient:
             with open(file_path, "rb") as f:
                 # Wrap file object to track upload progress
                 if progress_callback:
-                    file_wrapper = _ProgressFileWrapper(f, file_size, progress_callback)
+                    file_wrapper: Any = _ProgressFileWrapper(
+                        f, file_size, progress_callback
+                    )
                 else:
                     file_wrapper = f
 
                 # Use multipart form data upload
-                files = {"file": (file_name, file_wrapper, mime_type)}  # type: ignore[dict-item]
+                files = {"file": (file_name, file_wrapper, mime_type)}
                 data: dict[str, Any] = {
                     "relativePath": full_relative_path,
                     "workspaceId": str(workspace_id),
@@ -803,7 +805,7 @@ class DrimeClient:
                     data["parentId"] = str(parent_id)
 
                 client = self._get_client()
-                response = client.post(  # type: ignore[arg-type]
+                response = client.post(
                     f"{self.api_url}/uploads",
                     files=files,
                     data=data,

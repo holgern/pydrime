@@ -17,10 +17,14 @@ from rich.progress import (
     TimeElapsedColumn,
     TransferSpeedColumn,
 )
-from syncengine.engine import SyncEngine
-from syncengine.modes import SyncMode
-from syncengine.pair import SyncPair
-from syncengine.progress import SyncProgressEvent, SyncProgressInfo, SyncProgressTracker
+from syncengine.engine import SyncEngine  # type: ignore[import-not-found]
+from syncengine.modes import SyncMode  # type: ignore[import-not-found]
+from syncengine.pair import SyncPair  # type: ignore[import-not-found]
+from syncengine.progress import (  # type: ignore[import-not-found]
+    SyncProgressEvent,
+    SyncProgressInfo,
+    SyncProgressTracker,
+)
 
 from .file_entries_manager import FileEntriesManager
 from .output import OutputFormatter
@@ -392,7 +396,7 @@ def run_sync_with_progress(
     """
     # For dry-run, don't show progress bar (just text output)
     if dry_run:
-        return engine.sync_pair(
+        return engine.sync_pair(  # type: ignore[no-any-return]
             pair,
             dry_run=dry_run,
             chunk_size=chunk_size,
@@ -412,7 +416,7 @@ def run_sync_with_progress(
     with SyncProgressDisplay() as display:
         tracker = display.create_tracker()
 
-        return engine.sync_pair(
+        return engine.sync_pair(  # type: ignore[no-any-return]
             pair,
             dry_run=dry_run,
             chunk_size=chunk_size,

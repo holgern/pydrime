@@ -1,9 +1,12 @@
 """Upload command for pydrime CLI."""
 
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import click
+
+if TYPE_CHECKING:
+    pass
 from rich.progress import (
     BarColumn,
     DownloadColumn,
@@ -126,9 +129,9 @@ def upload(  # noqa: C901
         pydrime upload ./data                  # Upload directory
         pydrime upload ./data --validate       # Upload and validate
     """
-    from syncengine import SyncEngine
-    from syncengine.modes import SyncMode
-    from syncengine.pair import SyncPair
+    from syncengine import SyncEngine  # type: ignore[import-not-found]
+    from syncengine.modes import SyncMode  # type: ignore[import-not-found]
+    from syncengine.pair import SyncPair  # type: ignore[import-not-found]
 
     out: OutputFormatter = ctx.obj["out"]
     source_path = Path(path)
@@ -314,6 +317,7 @@ def upload(  # noqa: C901
                 )
 
         # Create progress tracker if progress display is enabled
+        progress_display: Any = None
         if no_progress or out.quiet:
             tracker = None
             engine_out = OutputFormatter(json_output=out.json_output, quiet=True)
@@ -341,7 +345,7 @@ def upload(  # noqa: C901
         try:
             if tracker and not (no_progress or out.quiet):
                 # Use progress display for interactive uploads
-                with progress_display:  # type: ignore[possibly-unbound]
+                with progress_display:
                     stats = engine.sync_pair(
                         pair,
                         dry_run=False,
@@ -579,6 +583,7 @@ def _upload_single_file(
                         client=client,
                         out=out,
                         local_path=file_path,
+                        remote_path=upload_path,
                         workspace_id=workspace,
                     )
                     json_result["validation"] = validation_result
@@ -595,6 +600,7 @@ def _upload_single_file(
                         client=client,
                         out=out,
                         local_path=file_path,
+                        remote_path=upload_path,
                         workspace_id=workspace,
                     )
                     if validation_result.get("has_issues", False):

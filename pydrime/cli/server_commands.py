@@ -128,8 +128,12 @@ def restic(
 
     # Check if pyrestserver is installed
     try:
-        from pyrestserver.providers.drime import DrimeStorageProvider
-        from pyrestserver.server import run_rest_server
+        from pyrestserver.providers.drime import (  # type: ignore[import-not-found]
+            DrimeStorageProvider,
+        )
+        from pyrestserver.server import (  # type: ignore[import-not-found]
+            run_rest_server,
+        )
     except ImportError:
         out.error("pyrestserver is not installed.")
         out.info("Install with: pip install pydrime[server]")
@@ -361,8 +365,8 @@ def s3(
 
     # Check if pys3local is installed
     try:
-        from pys3local.config import S3Config
-        from pys3local.server import run_server
+        from pys3local.config import S3Config  # type: ignore[import-not-found]
+        from pys3local.server import run_server  # type: ignore[import-not-found]
     except ImportError:
         out.error("pys3local is not installed.")
         out.info("Install with: pip install pydrime[server]")
@@ -586,8 +590,12 @@ def webdav(
 
     # Check if pywebdavserver is installed
     try:
-        from pywebdavserver.providers.drime import DrimeDAVProvider
-        from pywebdavserver.server import run_webdav_server
+        from pywebdavserver.providers.drime import (  # type: ignore[import-not-found]
+            DrimeDAVProvider,
+        )
+        from pywebdavserver.server import (  # type: ignore[import-not-found]
+            run_webdav_server,
+        )
     except ImportError:
         out.error("pywebdavserver is not installed.")
         out.info("Install with: pip install pydrime[server]")

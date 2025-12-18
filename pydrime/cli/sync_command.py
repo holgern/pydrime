@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import click
-from syncengine import (
+from syncengine import (  # type: ignore[import-not-found]
     SyncConfigError,
     SyncEngine,
     SyncMode,

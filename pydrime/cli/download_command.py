@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import click
-from syncengine import SyncEngine
+from syncengine import SyncEngine  # type: ignore[import-not-found]
 
 from ..api import DrimeClient
 from ..config import config
@@ -174,12 +174,12 @@ def download(
                     return False
 
                 # Create progress tracker if progress display is enabled
+                progress_display: Any = None
                 if no_progress or out.quiet:
                     tracker = None
                     engine_out = OutputFormatter(
                         json_output=out.json_output, quiet=out.quiet
                     )
-                    progress_display = None
                 elif simple_progress:
                     from ..cli_progress import SimpleTextProgressDisplay
 
@@ -210,7 +210,7 @@ def download(
                 try:
                     if tracker and not (no_progress or out.quiet):
                         # Use progress display for interactive downloads
-                        with progress_display:  # type: ignore[union-attr]
+                        with progress_display:
                             stats = engine.download_folder(
                                 remote_entry=entry,
                                 local_path=folder_path,
