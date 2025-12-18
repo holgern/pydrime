@@ -90,7 +90,7 @@ class TestAPIRequest:
 
         client = DrimeClient(api_key="test_key")
         with pytest.raises(
-            DrimeAPIError, match="Invalid API key - server returned HTML"
+            DrimeAPIError, match="Invalid API key. The stored API key is not valid"
         ):
             client._request("GET", "/test")
 

@@ -480,7 +480,9 @@ class DrimeClient:
                     # This often means authentication failed
                     if "text/html" in content_type:
                         raise DrimeAuthenticationError(
-                            "Invalid API key - server returned HTML instead of JSON"
+                            "Invalid API key. The stored API key is not valid.\n"
+                            "Please run 'pydrime init' to configure a valid API key, "
+                            "or use the -k flag to provide one."
                         )
                     raise DrimeInvalidResponseError(
                         f"Unexpected response type: {content_type}"

@@ -11,7 +11,7 @@ class TestDrimeClientAdapter:
     def test_initialization(self):
         """Test adapter initialization."""
         # Import inside test to avoid syncengine dependency at module level
-        from pydrime.cli import _DrimeClientAdapter
+        from pydrime.cli.adapters import _DrimeClientAdapter
 
         mock_client = MagicMock(spec=DrimeClient)
         adapter = _DrimeClientAdapter(mock_client)
@@ -20,7 +20,7 @@ class TestDrimeClientAdapter:
 
     def test_upload_file_adapts_storage_id(self, tmp_path):
         """Test upload_file converts storage_id to workspace_id."""
-        from pydrime.cli import _DrimeClientAdapter
+        from pydrime.cli.adapters import _DrimeClientAdapter
 
         mock_client = MagicMock(spec=DrimeClient)
         mock_client.upload_file.return_value = {"fileEntry": {"id": 123}}
@@ -52,7 +52,7 @@ class TestDrimeClientAdapter:
 
     def test_upload_file_with_progress_callback(self, tmp_path):
         """Test upload_file forwards progress_callback."""
-        from pydrime.cli import _DrimeClientAdapter
+        from pydrime.cli.adapters import _DrimeClientAdapter
 
         mock_client = MagicMock(spec=DrimeClient)
         mock_client.upload_file.return_value = {"fileEntry": {"id": 456}}
@@ -76,7 +76,7 @@ class TestDrimeClientAdapter:
 
     def test_create_folder_adapts_storage_id(self):
         """Test create_folder converts storage_id to workspace_id."""
-        from pydrime.cli import _DrimeClientAdapter
+        from pydrime.cli.adapters import _DrimeClientAdapter
 
         mock_client = MagicMock(spec=DrimeClient)
         mock_client.create_folder.return_value = {"folder": {"id": 789}}
@@ -96,7 +96,7 @@ class TestDrimeClientAdapter:
 
     def test_create_folder_without_parent(self):
         """Test create_folder works with no parent_id."""
-        from pydrime.cli import _DrimeClientAdapter
+        from pydrime.cli.adapters import _DrimeClientAdapter
 
         mock_client = MagicMock(spec=DrimeClient)
         mock_client.create_folder.return_value = {"folder": {"id": 999}}
@@ -113,7 +113,7 @@ class TestDrimeClientAdapter:
 
     def test_attribute_forwarding(self):
         """Test that unknown attributes are forwarded to wrapped client."""
-        from pydrime.cli import _DrimeClientAdapter
+        from pydrime.cli.adapters import _DrimeClientAdapter
 
         mock_client = MagicMock(spec=DrimeClient)
         mock_client.get_workspaces.return_value = {"workspaces": []}
@@ -130,7 +130,7 @@ class TestDrimeClientAdapter:
 
     def test_adapter_with_syncengine(self, tmp_path):
         """Integration test: verify adapter works with SyncEngine."""
-        from pydrime.cli import _DrimeClientAdapter
+        from pydrime.cli.adapters import _DrimeClientAdapter
 
         mock_client = MagicMock(spec=DrimeClient)
         mock_client.upload_file.return_value = {"fileEntry": {"id": 111}}
@@ -165,9 +165,9 @@ class TestEntriesManagerFactory:
 
     def test_factory_creates_adapted_manager(self):
         """Test factory creates FileEntriesManager with proper adaptation."""
-        from pydrime.cli import _create_entries_manager_factory
+        from pydrime.cli.adapters import create_entries_manager_factory
 
-        factory = _create_entries_manager_factory()
+        factory = create_entries_manager_factory()
 
         mock_client = MagicMock()
 

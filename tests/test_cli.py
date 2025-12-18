@@ -47,8 +47,8 @@ class TestMainGroup:
 class TestInitCommand:
     """Tests for the init command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.init_command.DrimeClient")
+    @patch("pydrime.cli.init_command.config")
     def test_init_with_valid_api_key(self, mock_config, mock_client_class, runner):
         """Test init with a valid API key."""
         # Mock the client and its methods
@@ -69,8 +69,11 @@ class TestInitCommand:
         assert "Configuration saved successfully" in result.output
         mock_config.save_api_key.assert_called_once_with("valid_api_key")
 
-    @patch("pydrime.cli.DrimeClient")
-    def test_init_with_invalid_api_key_cancel(self, mock_client_class, runner):
+    @patch("pydrime.cli.init_command.config")
+    @patch("pydrime.cli.init_command.DrimeClient")
+    def test_init_with_invalid_api_key_cancel(
+        self, mock_client_class, mock_config, runner
+    ):
         """Test init with invalid API key and user cancels."""
         mock_client = Mock()
         mock_client.get_logged_user.return_value = {"user": None}
@@ -81,9 +84,11 @@ class TestInitCommand:
         assert result.exit_code == 1
         assert "Invalid API key" in result.output
         assert "Configuration cancelled" in result.output
+        # Ensure config.save_api_key was NOT called since user cancelled
+        mock_config.save_api_key.assert_not_called()
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.init_command.DrimeClient")
+    @patch("pydrime.cli.init_command.config")
     def test_init_with_invalid_api_key_save_anyway(
         self, mock_config, mock_client_class, runner
     ):
@@ -101,8 +106,9 @@ class TestInitCommand:
         assert "Configuration saved successfully" in result.output
         mock_config.save_api_key.assert_called_once()
 
-    @patch("pydrime.cli.DrimeClient")
-    def test_init_with_network_error(self, mock_client_class, runner):
+    @patch("pydrime.cli.init_command.config")
+    @patch("pydrime.cli.init_command.DrimeClient")
+    def test_init_with_network_error(self, mock_client_class, mock_config, runner):
         """Test init when network error occurs."""
         mock_client = Mock()
         mock_client.get_logged_user.side_effect = DrimeAPIError("Network error")
@@ -112,13 +118,15 @@ class TestInitCommand:
 
         assert result.exit_code == 1
         assert "Network error" in result.output
+        # Ensure config.save_api_key was NOT called since user cancelled
+        mock_config.save_api_key.assert_not_called()
 
 
 class TestStatusCommand:
     """Tests for the status command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.utility_commands.DrimeClient")
+    @patch("pydrime.cli.utility_commands.config")
     def test_status_with_valid_api_key(self, mock_config, mock_client_class, runner):
         """Test status command with valid API key."""
         mock_config.is_configured.return_value = True
@@ -137,7 +145,7 @@ class TestStatusCommand:
         assert "test@example.com" in result.output
         assert "Email:" in result.output or "test@example.com" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.utility_commands.DrimeClient")
     def test_status_with_invalid_api_key(self, mock_client_class, runner):
         """Test status command with invalid API key."""
         mock_client = Mock()
@@ -149,7 +157,7 @@ class TestStatusCommand:
         assert result.exit_code == 1
         assert "Invalid API key" in result.output
 
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.utility_commands.config")
     def test_status_without_api_key(self, mock_config, runner):
         """Test status command without API key configured."""
         mock_config.is_configured.return_value = False
@@ -163,9 +171,9 @@ class TestStatusCommand:
 class TestUploadCommand:
     """Tests for the upload command."""
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_upload_file_success(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -191,7 +199,7 @@ class TestUploadCommand:
         assert "Dry run mode" in result.output or "Upload cancelled" in result.output
 
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_upload_without_api_key(
         self, mock_cli_config, mock_auth_config, runner, tmp_path
     ):
@@ -209,9 +217,9 @@ class TestUploadCommand:
         assert result.exit_code == 1
         assert "API key not configured" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_upload_displays_destination_info(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -240,9 +248,9 @@ class TestUploadCommand:
         assert "Base location: /MyFolder" in result.output
         assert "Dry run mode" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_upload_displays_root_folder(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -267,10 +275,10 @@ class TestUploadCommand:
         # In dry-run, it shows "Base location:"
         assert "Base location: /" in result.output
 
-    @patch("pydrime.cli.scan_directory")
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.helpers.scan_directory")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_upload_uses_current_folder_as_parent(
         self,
         mock_cli_config,
@@ -311,10 +319,10 @@ class TestUploadCommand:
         assert call_args.kwargs["parent_id"] == 480983233
         assert call_args.kwargs["workspace_id"] == 1465
 
-    @patch("pydrime.cli.scan_directory")
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.scan_directory")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_upload_directory_with_remote_path_includes_folder_name(
         self,
         mock_cli_config,
@@ -364,10 +372,10 @@ class TestUploadCommand:
         assert scan_call_args[0][0] == test_dir  # path argument
         assert scan_call_args[0][1] == test_dir.parent  # base_path argument
 
-    @patch("pydrime.cli.scan_directory")
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.helpers.scan_directory")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_upload_shows_same_format_as_dry_run(
         self,
         mock_cli_config,
@@ -415,8 +423,8 @@ class TestUploadCommand:
 class TestLsCommand:
     """Tests for the ls (list files) command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.list_commands.DrimeClient")
+    @patch("pydrime.cli.list_commands.config")
     def test_ls_with_files(self, mock_config, mock_client_class, runner):
         """Test ls command with files present."""
         mock_config.is_configured.return_value = True
@@ -465,8 +473,8 @@ class TestLsCommand:
         assert "folder" in result.output
         assert "file" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.list_commands.DrimeClient")
+    @patch("pydrime.cli.list_commands.config")
     def test_ls_no_files(self, mock_config, mock_client_class, runner):
         """Test ls command with no files."""
         mock_config.is_configured.return_value = True
@@ -482,8 +490,8 @@ class TestLsCommand:
         # ls command outputs nothing when directory is empty (like Unix ls)
         assert result.output.strip() == ""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.list_commands.DrimeClient")
+    @patch("pydrime.cli.list_commands.config")
     def test_ls_with_query(self, mock_config, mock_client_class, runner):
         """Test ls command with search query."""
         mock_config.is_configured.return_value = True
@@ -499,8 +507,8 @@ class TestLsCommand:
         call_kwargs = mock_client.get_file_entries.call_args.kwargs
         assert call_kwargs["query"] == "test"
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.list_commands.DrimeClient")
+    @patch("pydrime.cli.list_commands.config")
     def test_ls_with_folder_name(self, mock_config, mock_client_class, runner):
         """Test ls command with folder name instead of ID."""
         mock_config.is_configured.return_value = True
@@ -524,8 +532,8 @@ class TestLsCommand:
         call_kwargs = mock_client.get_file_entries.call_args.kwargs
         assert call_kwargs["parent_ids"] == [123]
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.list_commands.DrimeClient")
+    @patch("pydrime.cli.list_commands.config")
     def test_ls_with_folder_id(self, mock_config, mock_client_class, runner):
         """Test ls command with numeric folder ID."""
         mock_config.is_configured.return_value = True
@@ -551,8 +559,8 @@ class TestLsCommand:
 class TestDuCommand:
     """Tests for the du (disk usage) command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.list_commands.DrimeClient")
+    @patch("pydrime.cli.list_commands.config")
     def test_du_with_files(self, mock_config, mock_client_class, runner):
         """Test du command with files."""
         mock_config.is_configured.return_value = True
@@ -597,8 +605,8 @@ class TestDuCommand:
         assert "folder" in result.output
         assert "file" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.list_commands.DrimeClient")
+    @patch("pydrime.cli.list_commands.config")
     def test_du_no_files(self, mock_config, mock_client_class, runner):
         """Test du command with no files."""
         mock_config.is_configured.return_value = True
@@ -613,8 +621,8 @@ class TestDuCommand:
         # du command outputs a warning when directory is empty
         assert "No files found" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.list_commands.DrimeClient")
+    @patch("pydrime.cli.list_commands.config")
     def test_du_with_query(self, mock_config, mock_client_class, runner):
         """Test du command with search query."""
         mock_config.is_configured.return_value = True
@@ -630,8 +638,8 @@ class TestDuCommand:
         call_kwargs = mock_client.get_file_entries.call_args.kwargs
         assert call_kwargs["query"] == "test"
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.list_commands.DrimeClient")
+    @patch("pydrime.cli.list_commands.config")
     def test_du_with_folder_name(self, mock_config, mock_client_class, runner):
         """Test du command with folder name instead of ID."""
         mock_config.is_configured.return_value = True
@@ -655,8 +663,8 @@ class TestDuCommand:
         call_kwargs = mock_client.get_file_entries.call_args.kwargs
         assert call_kwargs["parent_ids"] == [123]
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.list_commands.DrimeClient")
+    @patch("pydrime.cli.list_commands.config")
     def test_du_pagination(self, mock_config, mock_client_class, runner):
         """Test du command fetches all pages of results."""
         mock_config.is_configured.return_value = True
@@ -740,8 +748,8 @@ class TestDuCommand:
 class TestMkdirCommand:
     """Tests for the mkdir command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_mkdir_success(self, mock_config, mock_client_class, runner):
         """Test successful directory creation."""
         mock_config.is_configured.return_value = True
@@ -758,8 +766,8 @@ class TestMkdirCommand:
         assert "Directory created" in result.output
         assert "test_folder" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_mkdir_with_parent(self, mock_config, mock_client_class, runner):
         """Test directory creation with parent ID."""
         mock_config.is_configured.return_value = True
@@ -779,8 +787,8 @@ class TestMkdirCommand:
 class TestRmCommand:
     """Tests for the rm (delete) command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_rm_to_trash(self, mock_config, mock_client_class, runner):
         """Test moving files to trash."""
         mock_config.is_configured.return_value = True
@@ -802,8 +810,8 @@ class TestRmCommand:
             [1, 2], delete_forever=False, workspace_id=0
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_rm_permanent(self, mock_config, mock_client_class, runner):
         """Test permanent file deletion."""
         mock_config.is_configured.return_value = True
@@ -825,8 +833,8 @@ class TestRmCommand:
             [1], delete_forever=True, workspace_id=0
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_rm_cancel(self, mock_config, mock_client_class, runner):
         """Test canceling file deletion."""
         mock_config.is_configured.return_value = True
@@ -843,8 +851,8 @@ class TestRmCommand:
 
         assert "Deletion cancelled" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_rm_by_name(self, mock_config, mock_client_class, runner):
         """Test deleting file by name."""
         mock_config.is_configured.return_value = True
@@ -865,8 +873,8 @@ class TestRmCommand:
             [123], delete_forever=False, workspace_id=0
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_rm_by_path(self, mock_config, mock_client_class, runner):
         """Test deleting file by path (folder/file.txt)."""
         mock_config.is_configured.return_value = True
@@ -891,8 +899,8 @@ class TestRmCommand:
             [456], delete_forever=False, workspace_id=0
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_rm_by_absolute_path(self, mock_config, mock_client_class, runner):
         """Test deleting file by absolute path (/folder/file.txt)."""
         mock_config.is_configured.return_value = True
@@ -921,8 +929,8 @@ class TestRmCommand:
 class TestWorkspacesCommand:
     """Tests for the workspaces command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_workspaces_list(self, mock_config, mock_client_class, runner):
         """Test listing workspaces."""
         mock_config.is_configured.return_value = True
@@ -946,8 +954,8 @@ class TestWorkspacesCommand:
         assert "My Workspace" in result.output
         assert "owner@example.com" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_workspaces_empty(self, mock_config, mock_client_class, runner):
         """Test listing workspaces when none exist."""
         mock_config.is_configured.return_value = True
@@ -965,8 +973,8 @@ class TestWorkspacesCommand:
 class TestFoldersCommand:
     """Tests for the folders command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_folders_list(self, mock_config, mock_client_class, runner):
         """Test listing folders."""
         mock_config.is_configured.return_value = True
@@ -1007,8 +1015,8 @@ class TestFoldersCommand:
         assert "Work" in result.output
         mock_client.get_user_folders.assert_called_once_with(123, 0)
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_folders_with_workspace(self, mock_config, mock_client_class, runner):
         """Test listing folders in a specific workspace."""
         mock_config.is_configured.return_value = True
@@ -1035,8 +1043,8 @@ class TestFoldersCommand:
         assert "Shared Folder" in result.output
         mock_client.get_user_folders.assert_called_once_with(456, 5)
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_folders_empty(self, mock_config, mock_client_class, runner):
         """Test listing folders when none exist."""
         mock_config.is_configured.return_value = True
@@ -1053,8 +1061,8 @@ class TestFoldersCommand:
         assert result.exit_code == 0
         assert "No folders found" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_folders_json_output(self, mock_config, mock_client_class, runner):
         """Test folders command with JSON output."""
         mock_config.is_configured.return_value = True
@@ -1074,8 +1082,8 @@ class TestFoldersCommand:
         assert '"folders"' in result.output
         assert '"Test"' in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_folders_user_not_found(self, mock_config, mock_client_class, runner):
         """Test folders command when user info is not available."""
         mock_config.is_configured.return_value = True
@@ -1089,8 +1097,8 @@ class TestFoldersCommand:
         assert result.exit_code == 1
         assert "Failed to get user information" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_folders_api_error(self, mock_config, mock_client_class, runner):
         """Test folders command handles API errors."""
         mock_config.is_configured.return_value = True
@@ -1104,7 +1112,8 @@ class TestFoldersCommand:
         assert result.exit_code == 1
         assert "Network error" in result.output
 
-    def test_folders_not_configured(self, runner, mock_config):
+    @patch("pydrime.cli.workspace_commands.config")
+    def test_folders_not_configured(self, mock_config, runner):
         """Test folders command when not configured."""
         mock_config.is_configured.return_value = False
 
@@ -1117,8 +1126,8 @@ class TestFoldersCommand:
 class TestVaultShowCommand:
     """Tests for the vault show command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_show(self, mock_config, mock_client_class, runner):
         """Test showing vault information."""
         mock_config.is_configured.return_value = True
@@ -1145,8 +1154,8 @@ class TestVaultShowCommand:
         assert "Created:" in result.output
         assert "Updated:" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_show_no_vault(self, mock_config, mock_client_class, runner):
         """Test vault show when no vault exists."""
         mock_config.is_configured.return_value = True
@@ -1160,8 +1169,8 @@ class TestVaultShowCommand:
         assert result.exit_code == 0
         assert "No vault found" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_show_json_output(self, mock_config, mock_client_class, runner):
         """Test vault show with JSON output."""
         mock_config.is_configured.return_value = True
@@ -1176,8 +1185,8 @@ class TestVaultShowCommand:
         assert '"vault"' in result.output
         assert '"id"' in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_show_api_error(self, mock_config, mock_client_class, runner):
         """Test vault show handles API errors."""
         mock_config.is_configured.return_value = True
@@ -1191,7 +1200,8 @@ class TestVaultShowCommand:
         assert result.exit_code == 1
         assert "Network error" in result.output
 
-    def test_vault_show_not_configured(self, runner, mock_config):
+    @patch("pydrime.cli.vault_commands.config")
+    def test_vault_show_not_configured(self, mock_config, runner):
         """Test vault show when not configured."""
         mock_config.is_configured.return_value = False
 
@@ -1204,8 +1214,8 @@ class TestVaultShowCommand:
 class TestVaultLsCommand:
     """Tests for the vault ls command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_ls_root(self, mock_config, mock_client_class, runner):
         """Test listing vault root."""
         mock_config.is_configured.return_value = True
@@ -1226,8 +1236,8 @@ class TestVaultLsCommand:
         assert "Documents" in result.output
         assert "photo.jpg" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_ls_by_folder_name(self, mock_config, mock_client_class, runner):
         """Test listing vault folder by name."""
         mock_config.is_configured.return_value = True
@@ -1264,8 +1274,8 @@ class TestVaultLsCommand:
         assert "Path: /Test1" in result.output
         assert "file1.txt" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_ls_by_folder_id(self, mock_config, mock_client_class, runner):
         """Test listing vault folder by ID."""
         mock_config.is_configured.return_value = True
@@ -1286,8 +1296,8 @@ class TestVaultLsCommand:
         assert "Path: /Test1" in result.output
         assert "file1.txt" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_ls_folder_not_found(self, mock_config, mock_client_class, runner):
         """Test vault ls when folder not found - falls back to using as hash."""
         mock_config.is_configured.return_value = True
@@ -1308,8 +1318,8 @@ class TestVaultLsCommand:
         assert result.exit_code == 0
         assert "No files in vault folder 'NonExistent'" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_ls_empty(self, mock_config, mock_client_class, runner):
         """Test vault ls when vault is empty."""
         mock_config.is_configured.return_value = True
@@ -1324,8 +1334,8 @@ class TestVaultLsCommand:
         assert result.exit_code == 0
         assert "Vault is empty" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_ls_pagination(self, mock_config, mock_client_class, runner):
         """Test vault ls with pagination info."""
         mock_config.is_configured.return_value = True
@@ -1350,8 +1360,8 @@ class TestVaultLsCommand:
         assert "Page 1 of 3" in result.output
         assert "150 total" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_ls_json_output(self, mock_config, mock_client_class, runner):
         """Test vault ls with JSON output."""
         mock_config.is_configured.return_value = True
@@ -1368,8 +1378,8 @@ class TestVaultLsCommand:
         assert result.exit_code == 0
         assert '"data"' in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_ls_api_error(self, mock_config, mock_client_class, runner):
         """Test vault ls handles API errors."""
         mock_config.is_configured.return_value = True
@@ -1383,7 +1393,8 @@ class TestVaultLsCommand:
         assert result.exit_code == 1
         assert "Network error" in result.output
 
-    def test_vault_ls_not_configured(self, runner, mock_config):
+    @patch("pydrime.cli.vault_commands.config")
+    def test_vault_ls_not_configured(self, mock_config, runner):
         """Test vault ls when not configured."""
         mock_config.is_configured.return_value = False
 
@@ -1413,10 +1424,10 @@ class TestVaultDownloadCommand:
             }
         }
 
-    @patch("pydrime.vault_crypto.decrypt_file_content")
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.decrypt_file_content")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_download_by_hash(
         self,
         mock_config,
@@ -1467,10 +1478,10 @@ class TestVaultDownloadCommand:
         mock_unlock.assert_called_once()
         mock_decrypt.assert_called_once()
 
-    @patch("pydrime.vault_crypto.decrypt_file_content")
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.decrypt_file_content")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_download_by_name(
         self,
         mock_config,
@@ -1522,10 +1533,10 @@ class TestVaultDownloadCommand:
         assert "Resolved 'document.pdf' to hash: MzQ0MzF8cGFkZA" in result.output
         assert "Downloaded and decrypted" in result.output
 
-    @patch("pydrime.vault_crypto.decrypt_file_content")
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.decrypt_file_content")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_download_by_id(
         self,
         mock_config,
@@ -1567,10 +1578,10 @@ class TestVaultDownloadCommand:
         assert result.exit_code == 0
         mock_client.download_vault_file.assert_called_once()
 
-    @patch("pydrime.vault_crypto.decrypt_file_content")
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.decrypt_file_content")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_download_with_output(
         self,
         mock_config,
@@ -1615,10 +1626,10 @@ class TestVaultDownloadCommand:
         assert result.exit_code == 0
         assert output_file.exists()
 
-    @patch("pydrime.vault_crypto.decrypt_file_content")
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.decrypt_file_content")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_download_folder(
         self,
         mock_config,
@@ -1697,10 +1708,10 @@ class TestVaultDownloadCommand:
         assert (tmp_path / "Documents" / "doc1.txt").exists()
         assert (tmp_path / "Documents" / "doc2.txt").exists()
 
-    @patch("pydrime.vault_crypto.decrypt_file_content")
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.decrypt_file_content")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_download_by_path(
         self,
         mock_config,
@@ -1766,10 +1777,10 @@ class TestVaultDownloadCommand:
         assert "Resolved 'Test1/secret.txt' to hash: file_hash_456" in result.output
         assert "Downloaded and decrypted" in result.output
 
-    @patch("pydrime.vault_crypto.decrypt_file_content")
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.decrypt_file_content")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_download_by_nested_path(
         self,
         mock_config,
@@ -1820,9 +1831,9 @@ class TestVaultDownloadCommand:
 
         assert result.exit_code == 0
 
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_download_path_folder_not_found(
         self, mock_config, mock_client_class, mock_unlock, runner
     ):
@@ -1844,9 +1855,9 @@ class TestVaultDownloadCommand:
         assert result.exit_code == 1
         assert "Folder 'NonExistent' not found" in result.output
 
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_download_path_file_not_found(
         self, mock_config, mock_client_class, mock_unlock, runner
     ):
@@ -1871,9 +1882,9 @@ class TestVaultDownloadCommand:
         assert result.exit_code == 1
         assert "'missing.txt' not found" in result.output
 
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_download_filename_not_in_root(
         self, mock_config, mock_client_class, mock_unlock, runner
     ):
@@ -1896,9 +1907,9 @@ class TestVaultDownloadCommand:
         assert "not found in vault root" in result.output
         assert "Folder/file.txt" in result.output  # Helpful hint
 
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_download_api_error(
         self, mock_config, mock_client_class, mock_unlock, runner
     ):
@@ -1919,9 +1930,9 @@ class TestVaultDownloadCommand:
         assert result.exit_code == 1
         assert "Network error" in result.output
 
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_download_invalid_password(
         self, mock_config, mock_client_class, mock_unlock, runner
     ):
@@ -1943,7 +1954,8 @@ class TestVaultDownloadCommand:
         assert result.exit_code == 1
         assert "Invalid vault password" in result.output
 
-    def test_vault_download_not_configured(self, runner, mock_config):
+    @patch("pydrime.cli.vault_commands.config")
+    def test_vault_download_not_configured(self, mock_config, runner):
         """Test vault download when not configured."""
         mock_config.is_configured.return_value = False
 
@@ -1972,10 +1984,10 @@ class TestVaultUploadCommand:
             }
         }
 
-    @patch("pydrime.vault_crypto.encrypt_filename")
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.encrypt_filename")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_upload_to_root(
         self,
         mock_config,
@@ -2014,10 +2026,10 @@ class TestVaultUploadCommand:
         mock_unlock.assert_called_once()
         mock_client.upload_vault_file.assert_called_once()
 
-    @patch("pydrime.vault_crypto.encrypt_filename")
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.encrypt_filename")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_upload_to_folder(
         self,
         mock_config,
@@ -2066,9 +2078,9 @@ class TestVaultUploadCommand:
         call_kwargs = mock_client.upload_vault_file.call_args
         assert call_kwargs[1]["parent_id"] == 100
 
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_upload_invalid_password(
         self,
         mock_config,
@@ -2098,10 +2110,10 @@ class TestVaultUploadCommand:
         assert result.exit_code == 1
         assert "Invalid vault password" in result.output
 
-    @patch("pydrime.vault_crypto.encrypt_filename")
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.encrypt_filename")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_upload_folder_not_found(
         self,
         mock_config,
@@ -2141,7 +2153,8 @@ class TestVaultUploadCommand:
         assert result.exit_code == 1
         assert "not found" in result.output
 
-    def test_vault_upload_not_configured(self, runner, mock_config, tmp_path):
+    @patch("pydrime.cli.vault_commands.config")
+    def test_vault_upload_not_configured(self, mock_config, runner, tmp_path):
         """Test vault upload when not configured."""
         mock_config.is_configured.return_value = False
 
@@ -2166,8 +2179,8 @@ class TestVaultRmCommand:
             }
         }
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_rm_by_name(self, mock_config, mock_client_class, runner):
         """Test deleting vault file by name."""
         mock_config.is_configured.return_value = True
@@ -2190,8 +2203,8 @@ class TestVaultRmCommand:
             entry_ids=[123], delete_forever=False
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_rm_by_id(self, mock_config, mock_client_class, runner):
         """Test deleting vault file by ID."""
         mock_config.is_configured.return_value = True
@@ -2214,8 +2227,8 @@ class TestVaultRmCommand:
             entry_ids=[456], delete_forever=False
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_rm_no_trash(self, mock_config, mock_client_class, runner):
         """Test permanently deleting vault file."""
         mock_config.is_configured.return_value = True
@@ -2238,8 +2251,8 @@ class TestVaultRmCommand:
             entry_ids=[123], delete_forever=True
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_rm_not_found(self, mock_config, mock_client_class, runner):
         """Test deleting non-existent vault file."""
         mock_config.is_configured.return_value = True
@@ -2254,8 +2267,8 @@ class TestVaultRmCommand:
         assert result.exit_code == 1
         assert "not found" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_rm_confirmation_cancelled(
         self, mock_config, mock_client_class, runner
     ):
@@ -2277,8 +2290,8 @@ class TestVaultRmCommand:
         assert "Cancelled" in result.output
         mock_client.delete_vault_file_entries.assert_not_called()
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_rm_folder(self, mock_config, mock_client_class, runner):
         """Test deleting vault folder."""
         mock_config.is_configured.return_value = True
@@ -2306,7 +2319,8 @@ class TestVaultRmCommand:
             entry_ids=[100], delete_forever=False
         )
 
-    def test_vault_rm_not_configured(self, runner, mock_config):
+    @patch("pydrime.cli.vault_commands.config")
+    def test_vault_rm_not_configured(self, mock_config, runner):
         """Test vault rm when not configured."""
         mock_config.is_configured.return_value = False
 
@@ -2330,9 +2344,9 @@ class TestVaultLockUnlockCommands:
             }
         }
 
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_unlock_success(
         self, mock_config, mock_client_class, mock_unlock, runner
     ):
@@ -2350,9 +2364,9 @@ class TestVaultLockUnlockCommands:
         assert "export PYDRIME_VAULT_PASSWORD=" in result.output
         assert "Vault unlocked" in result.output
 
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_unlock_invalid_password(
         self, mock_config, mock_client_class, mock_unlock, runner
     ):
@@ -2372,8 +2386,8 @@ class TestVaultLockUnlockCommands:
         assert result.exit_code == 1
         assert "Invalid vault password" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_unlock_no_vault(self, mock_config, mock_client_class, runner):
         """Test vault unlock when no vault exists."""
         mock_config.is_configured.return_value = True
@@ -2387,7 +2401,8 @@ class TestVaultLockUnlockCommands:
         assert result.exit_code == 1
         assert "No vault found" in result.output
 
-    def test_vault_unlock_not_configured(self, runner, mock_config):
+    @patch("pydrime.cli.vault_commands.config")
+    def test_vault_unlock_not_configured(self, mock_config, runner):
         """Test vault unlock when not configured."""
         mock_config.is_configured.return_value = False
 
@@ -2405,11 +2420,11 @@ class TestVaultLockUnlockCommands:
         assert "Vault locked" in result.output
 
     @patch("pydrime.vault_crypto.decrypt_filename")
-    @patch("pydrime.vault_crypto.decrypt_file_content")
-    @patch("pydrime.vault_crypto.unlock_vault")
-    @patch("pydrime.cli.get_vault_password_from_env")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.vault_commands.decrypt_file_content")
+    @patch("pydrime.cli.vault_commands.unlock_vault")
+    @patch("pydrime.cli.vault_commands.get_vault_password_from_env")
+    @patch("pydrime.cli.vault_commands.DrimeClient")
+    @patch("pydrime.cli.vault_commands.config")
     def test_vault_download_uses_env_password(
         self,
         mock_config,
@@ -2464,8 +2479,8 @@ class TestVaultLockUnlockCommands:
 class TestDownloadCommandWithIdSupport:
     """Tests for the download command with ID and hash support."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_by_hash(self, mock_config, mock_client_class, runner):
         """Test downloading file by hash (original functionality)."""
         mock_config.is_configured.return_value = True
@@ -2500,8 +2515,8 @@ class TestDownloadCommandWithIdSupport:
         call_args = mock_client.download_file.call_args
         assert call_args[0][0] == "NDgwNDI0Nzk2fA"
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_by_id(self, mock_config, mock_client_class, runner):
         """Test downloading file by numeric ID (new functionality)."""
         mock_config.is_configured.return_value = True
@@ -2536,8 +2551,8 @@ class TestDownloadCommandWithIdSupport:
         call_args = mock_client.download_file.call_args
         assert call_args[0][0] == "NDgwNDI0Nzk2fA"
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_multiple_ids(self, mock_config, mock_client_class, runner):
         """Test downloading multiple files by ID."""
         mock_config.is_configured.return_value = True
@@ -2584,8 +2599,8 @@ class TestDownloadCommandWithIdSupport:
         assert result.exit_code == 0
         assert mock_client.download_file.call_count == 2
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_mixed_ids_and_hashes(
         self, mock_config, mock_client_class, runner
     ):
@@ -2651,8 +2666,8 @@ class TestDownloadCommandWithIdSupport:
         assert calls[1][0][0] == "NDgwNDI0ODAyfA"  # Already a hash
         assert calls[2][0][0] == "NDgwNDMyMDI0fA"  # Converted from ID
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_by_id_with_output_option(
         self, mock_config, mock_client_class, runner
     ):
@@ -2680,8 +2695,8 @@ class TestDownloadCommandWithIdSupport:
         assert result.exit_code == 0
         mock_client.download_file.assert_called_once()
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_shows_conversion_message(
         self, mock_config, mock_client_class, runner
     ):
@@ -2718,8 +2733,8 @@ class TestDownloadCommandWithIdSupport:
         assert "480424796" in result.output
         assert "NDgwNDI0Nzk2fA" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_no_conversion_message_for_hash(
         self, mock_config, mock_client_class, runner
     ):
@@ -2754,8 +2769,8 @@ class TestDownloadCommandWithIdSupport:
         # Check that no conversion message is shown
         assert "Converting ID" not in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_quiet_mode_no_conversion_message(
         self, mock_config, mock_client_class, runner
     ):
@@ -2790,8 +2805,8 @@ class TestDownloadCommandWithIdSupport:
         # Check that conversion message is suppressed in quiet mode
         assert "Converting ID" not in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_help_mentions_ids(self, mock_config, mock_client_class, runner):
         """Test that download help mentions both IDs and hashes."""
         result = runner.invoke(main, ["download", "--help"])
@@ -2800,8 +2815,8 @@ class TestDownloadCommandWithIdSupport:
         assert "ID" in result.output or "id" in result.output.lower()
         assert "hash" in result.output.lower()
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_by_name(self, mock_config, mock_client_class, runner):
         """Test downloading file by name."""
         mock_config.is_configured.return_value = True
@@ -2834,8 +2849,8 @@ class TestDownloadCommandWithIdSupport:
         mock_client.resolve_entry_identifier.assert_called_once()
         mock_client.download_file.assert_called_once()
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_by_path(self, mock_config, mock_client_class, runner):
         """Test downloading file by path (e.g., folder/file.txt)."""
         mock_config.is_configured.return_value = True
@@ -2894,8 +2909,8 @@ class TestDownloadCommandWithIdSupport:
         )
         mock_client.download_file.assert_called_once()
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_by_nested_path(self, mock_config, mock_client_class, runner):
         """Test downloading file by nested path (e.g., a/b/c/file.txt)."""
         mock_config.is_configured.return_value = True
@@ -2919,8 +2934,8 @@ class TestDownloadCommandWithIdSupport:
         assert result.exit_code == 0
         mock_client.download_file.assert_called_once()
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_path_folder_not_found(
         self, mock_config, mock_client_class, runner
     ):
@@ -2939,8 +2954,8 @@ class TestDownloadCommandWithIdSupport:
         assert result.exit_code == 1
         assert "Path not found" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_folder_by_name(self, mock_config, mock_client_class, runner):
         """Test downloading folder by name (automatically recursive)."""
         mock_config.is_configured.return_value = True
@@ -2986,8 +3001,8 @@ class TestDownloadCommandWithIdSupport:
         assert "Downloading folder: test_folder" in result.output
         mock_client.resolve_entry_identifier.assert_called_once()
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_on_duplicate_skip(self, mock_config, mock_client_class, runner):
         """Test download with --on-duplicate skip."""
         mock_config.is_configured.return_value = True
@@ -3026,8 +3041,8 @@ class TestDownloadCommandWithIdSupport:
         # download_file should not be called when skipping
         mock_client.download_file.assert_not_called()
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_on_duplicate_overwrite(
         self, mock_config, mock_client_class, runner
     ):
@@ -3075,8 +3090,8 @@ class TestDownloadCommandWithIdSupport:
         # download_file should be called when overwriting
         mock_client.download_file.assert_called_once()
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_on_duplicate_rename(self, mock_config, mock_client_class, runner):
         """Test download with --on-duplicate rename."""
         mock_config.is_configured.return_value = True
@@ -3129,8 +3144,8 @@ class TestStatCommand:
 
     @patch("pydrime.download_helpers.get_entry_from_hash")
     @patch("pydrime.download_helpers.resolve_identifier_to_hash")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.info_commands.DrimeClient")
+    @patch("pydrime.cli.info_commands.config")
     def test_stat_by_id(
         self,
         mock_config,
@@ -3174,8 +3189,8 @@ class TestStatCommand:
 
     @patch("pydrime.download_helpers.get_entry_from_hash")
     @patch("pydrime.download_helpers.resolve_identifier_to_hash")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.info_commands.DrimeClient")
+    @patch("pydrime.cli.info_commands.config")
     def test_stat_by_hash(
         self,
         mock_config,
@@ -3218,8 +3233,8 @@ class TestStatCommand:
         assert "test.txt" in result.output
 
     @patch("pydrime.download_helpers.resolve_identifier_to_hash")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.info_commands.DrimeClient")
+    @patch("pydrime.cli.info_commands.config")
     def test_stat_not_found(self, mock_config, mock_client_class, mock_resolve, runner):
         """Test stat command with non-existent ID."""
         mock_config.is_configured.return_value = True
@@ -3240,9 +3255,9 @@ class TestStatCommand:
 class TestCatCommand:
     """Tests for the cat command."""
 
-    @patch("pydrime.cli._get_file_content_lines")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.read_commands._get_file_content_lines")
+    @patch("pydrime.cli.read_commands.DrimeClient")
+    @patch("pydrime.cli.read_commands.config")
     def test_cat_file(self, mock_config, mock_client_class, mock_get_lines, runner):
         """Test cat command displays file content."""
         mock_config.is_configured.return_value = True
@@ -3264,9 +3279,9 @@ class TestCatCommand:
         assert "line 2" in result.output
         assert "line 3" in result.output
 
-    @patch("pydrime.cli._get_file_content_lines")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.read_commands._get_file_content_lines")
+    @patch("pydrime.cli.read_commands.DrimeClient")
+    @patch("pydrime.cli.read_commands.config")
     def test_cat_with_line_numbers(
         self, mock_config, mock_client_class, mock_get_lines, runner
     ):
@@ -3289,9 +3304,9 @@ class TestCatCommand:
         assert "2" in result.output
         assert "first line" in result.output
 
-    @patch("pydrime.cli._get_file_content_lines")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.read_commands._get_file_content_lines")
+    @patch("pydrime.cli.read_commands.DrimeClient")
+    @patch("pydrime.cli.read_commands.config")
     def test_cat_file_not_found(
         self, mock_config, mock_client_class, mock_get_lines, runner
     ):
@@ -3308,9 +3323,9 @@ class TestCatCommand:
 
         assert result.exit_code == 1
 
-    @patch("pydrime.cli._get_file_content_lines")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.read_commands._get_file_content_lines")
+    @patch("pydrime.cli.read_commands.DrimeClient")
+    @patch("pydrime.cli.read_commands.config")
     def test_cat_json_output(
         self, mock_config, mock_client_class, mock_get_lines, runner
     ):
@@ -3336,9 +3351,9 @@ class TestCatCommand:
 class TestHeadCommand:
     """Tests for the head command."""
 
-    @patch("pydrime.cli._get_file_content_lines")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.read_commands._get_file_content_lines")
+    @patch("pydrime.cli.read_commands.DrimeClient")
+    @patch("pydrime.cli.read_commands.config")
     def test_head_default_lines(
         self, mock_config, mock_client_class, mock_get_lines, runner
     ):
@@ -3360,9 +3375,9 @@ class TestHeadCommand:
         assert "line 10" in result.output
         assert "line 11" not in result.output
 
-    @patch("pydrime.cli._get_file_content_lines")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.read_commands._get_file_content_lines")
+    @patch("pydrime.cli.read_commands.DrimeClient")
+    @patch("pydrime.cli.read_commands.config")
     def test_head_custom_lines(
         self, mock_config, mock_client_class, mock_get_lines, runner
     ):
@@ -3384,8 +3399,8 @@ class TestHeadCommand:
 
     @patch("pydrime.download_helpers.get_entry_from_hash")
     @patch("pydrime.download_helpers.resolve_identifier_to_hash")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.read_commands.DrimeClient")
+    @patch("pydrime.cli.read_commands.config")
     def test_head_bytes_mode(
         self,
         mock_config,
@@ -3415,9 +3430,9 @@ class TestHeadCommand:
         assert result.exit_code == 0
         assert "Hello" in result.output
 
-    @patch("pydrime.cli._get_file_content_lines")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.read_commands._get_file_content_lines")
+    @patch("pydrime.cli.read_commands.DrimeClient")
+    @patch("pydrime.cli.read_commands.config")
     def test_head_file_not_found(
         self, mock_config, mock_client_class, mock_get_lines, runner
     ):
@@ -3438,9 +3453,9 @@ class TestHeadCommand:
 class TestTailCommand:
     """Tests for the tail command."""
 
-    @patch("pydrime.cli._get_file_content_lines")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.read_commands._get_file_content_lines")
+    @patch("pydrime.cli.read_commands.DrimeClient")
+    @patch("pydrime.cli.read_commands.config")
     def test_tail_default_lines(
         self, mock_config, mock_client_class, mock_get_lines, runner
     ):
@@ -3462,9 +3477,9 @@ class TestTailCommand:
         assert "line 20" in result.output
         assert "line 10" not in result.output
 
-    @patch("pydrime.cli._get_file_content_lines")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.read_commands._get_file_content_lines")
+    @patch("pydrime.cli.read_commands.DrimeClient")
+    @patch("pydrime.cli.read_commands.config")
     def test_tail_custom_lines(
         self, mock_config, mock_client_class, mock_get_lines, runner
     ):
@@ -3487,8 +3502,8 @@ class TestTailCommand:
 
     @patch("pydrime.download_helpers.get_entry_from_hash")
     @patch("pydrime.download_helpers.resolve_identifier_to_hash")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.read_commands.DrimeClient")
+    @patch("pydrime.cli.read_commands.config")
     def test_tail_bytes_mode(
         self,
         mock_config,
@@ -3518,9 +3533,9 @@ class TestTailCommand:
         assert result.exit_code == 0
         assert "World!" in result.output
 
-    @patch("pydrime.cli._get_file_content_lines")
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.read_commands._get_file_content_lines")
+    @patch("pydrime.cli.read_commands.DrimeClient")
+    @patch("pydrime.cli.read_commands.config")
     def test_tail_file_not_found(
         self, mock_config, mock_client_class, mock_get_lines, runner
     ):
@@ -3541,8 +3556,8 @@ class TestTailCommand:
 class TestCdCommand:
     """Tests for the cd command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.utility_commands.DrimeClient")
+    @patch("pydrime.cli.utility_commands.config")
     def test_cd_to_folder(self, mock_config, mock_client_class, runner):
         """Test changing to a specific folder."""
         mock_config.is_configured.return_value = True
@@ -3560,7 +3575,7 @@ class TestCdCommand:
         assert "Changed to folder ID: 480432024" in result.output
         mock_config.save_current_folder.assert_called_once_with(480432024)
 
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.utility_commands.config")
     def test_cd_to_root(self, mock_config, runner):
         """Test changing to root directory."""
         mock_config.is_configured.return_value = True
@@ -3572,7 +3587,7 @@ class TestCdCommand:
         assert "root" in result.output.lower()
         mock_config.save_current_folder.assert_called_once_with(None)
 
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.utility_commands.config")
     def test_cd_to_root_explicit(self, mock_config, runner):
         """Test changing to root directory with explicit 0."""
         mock_config.is_configured.return_value = True
@@ -3584,7 +3599,7 @@ class TestCdCommand:
         assert "root" in result.output.lower()
         mock_config.save_current_folder.assert_called_once_with(None)
 
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.utility_commands.config")
     def test_cd_to_root_with_slash(self, mock_config, runner):
         """Test changing to root directory with /."""
         mock_config.is_configured.return_value = True
@@ -3600,8 +3615,8 @@ class TestCdCommand:
 class TestPwdCommand:
     """Tests for the pwd command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.info_commands.DrimeClient")
+    @patch("pydrime.cli.info_commands.config")
     def test_pwd_with_current_folder(self, mock_config, mock_client_class, runner):
         """Test pwd when a current folder is set (text format)."""
         mock_config.get_current_folder.return_value = 480432024
@@ -3623,7 +3638,7 @@ class TestPwdCommand:
         assert "/Documents (ID: 480432024)" in result.output
         assert "Workspace: 0" in result.output
 
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.info_commands.config")
     def test_pwd_at_root(self, mock_config, runner):
         """Test pwd when at root directory (text format)."""
         mock_config.get_current_folder.return_value = None
@@ -3635,7 +3650,7 @@ class TestPwdCommand:
         assert "/ (ID: 0)" in result.output
         assert "Workspace: 0" in result.output
 
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.info_commands.config")
     def test_pwd_json_format(self, mock_config, runner):
         """Test pwd with JSON format."""
         mock_config.get_current_folder.return_value = 480432024
@@ -3647,7 +3662,7 @@ class TestPwdCommand:
         assert "480432024" in result.output
         assert "5" in result.output or '"default_workspace"' in result.output
 
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.info_commands.config")
     def test_pwd_id_only_with_folder(self, mock_config, runner):
         """Test pwd with --id-only flag when a current folder is set."""
         mock_config.get_current_folder.return_value = 480432024
@@ -3658,7 +3673,7 @@ class TestPwdCommand:
         assert result.exit_code == 0
         assert result.output.strip() == "480432024"
 
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.info_commands.config")
     def test_pwd_id_only_at_root(self, mock_config, runner):
         """Test pwd with --id-only flag when at root directory."""
         mock_config.get_current_folder.return_value = None
@@ -3669,8 +3684,8 @@ class TestPwdCommand:
         assert result.exit_code == 0
         assert result.output.strip() == "0"
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.info_commands.DrimeClient")
+    @patch("pydrime.cli.info_commands.config")
     def test_pwd_with_workspace_name(self, mock_config, mock_client_class, runner):
         """Test pwd displays workspace name when available."""
         mock_config.get_current_folder.return_value = None
@@ -3693,8 +3708,8 @@ class TestPwdCommand:
         assert "/ (ID: 0)" in result.output
         assert "Workspace: test (1465)" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.utility_commands.DrimeClient")
+    @patch("pydrime.cli.utility_commands.config")
     def test_cd_uses_default_workspace(self, mock_config, mock_client_class, runner):
         """Test cd command uses default workspace when resolving folder names."""
         mock_config.is_configured.return_value = True
@@ -3720,8 +3735,8 @@ class TestPwdCommand:
 class TestRecursiveFlag:
     """Tests for recursive operations."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.list_commands.DrimeClient")
+    @patch("pydrime.cli.list_commands.config")
     def test_ls_recursive(self, mock_config, mock_client_class, runner):
         """Test ls with recursive flag."""
         mock_config.is_configured.return_value = True
@@ -3758,8 +3773,8 @@ class TestRecursiveFlag:
         # With no folders, should only call once
         assert mock_client.get_file_entries.call_count >= 1
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_recursive_folder(self, mock_config, mock_client_class, runner):
         """Test downloading a folder (automatically recursive)."""
         mock_config.is_configured.return_value = True
@@ -3828,8 +3843,8 @@ class TestRecursiveFlag:
         assert result.exit_code == 0
         assert "Downloading folder: myfolder" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_file_when_folder_exists(
         self, mock_config, mock_client_class, runner
     ):
@@ -3883,8 +3898,8 @@ class TestRecursiveFlag:
             call_args = mock_client.download_file.call_args
             assert str(call_args[0][1]).endswith("test (1)")
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_folder_when_file_exists(
         self, mock_config, mock_client_class, runner
     ):
@@ -3932,8 +3947,8 @@ class TestRecursiveFlag:
             # Should not attempt to download folder contents
             assert mock_client.download_file.call_count == 0
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.download_command.DrimeClient")
+    @patch("pydrime.cli.download_command.config")
     def test_download_folder_when_folder_exists(
         self, mock_config, mock_client_class, runner
     ):
@@ -4011,7 +4026,7 @@ class TestRecursiveFlag:
 class TestWorkspaceCommand:
     """Tests for the workspace command."""
 
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_workspace_show_current_default(self, mock_config, runner):
         """Test showing current default workspace."""
         mock_config.is_configured.return_value = True
@@ -4022,8 +4037,8 @@ class TestWorkspaceCommand:
         assert result.exit_code == 0
         assert "Personal (0)" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_workspace_show_custom_default(
         self, mock_config, mock_client_class, runner
     ):
@@ -4045,8 +4060,8 @@ class TestWorkspaceCommand:
         assert "Team Workspace" in result.output
         assert "5" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_workspace_set_to_personal(self, mock_config, mock_client_class, runner):
         """Test setting workspace to personal (0)."""
         mock_config.is_configured.return_value = True
@@ -4060,8 +4075,8 @@ class TestWorkspaceCommand:
         assert "Personal (0)" in result.output
         mock_config.save_default_workspace.assert_called_once_with(None)
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_workspace_set_to_custom(self, mock_config, mock_client_class, runner):
         """Test setting workspace to custom ID."""
         mock_config.is_configured.return_value = True
@@ -4082,8 +4097,8 @@ class TestWorkspaceCommand:
         assert "5" in result.output
         mock_config.save_default_workspace.assert_called_once_with(5)
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_workspace_set_invalid_id(self, mock_config, mock_client_class, runner):
         """Test setting workspace to invalid ID."""
         mock_config.is_configured.return_value = True
@@ -4100,8 +4115,8 @@ class TestWorkspaceCommand:
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_workspace_set_by_name(self, mock_config, mock_client_class, runner):
         """Test setting workspace by name."""
         mock_config.is_configured.return_value = True
@@ -4123,8 +4138,8 @@ class TestWorkspaceCommand:
         assert "5" in result.output
         mock_config.save_default_workspace.assert_called_once_with(5)
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_workspace_set_by_name_case_insensitive(
         self, mock_config, mock_client_class, runner
     ):
@@ -4146,8 +4161,8 @@ class TestWorkspaceCommand:
         assert "Resolved workspace 'team workspace' to ID: 5" in result.output
         mock_config.save_default_workspace.assert_called_once_with(5)
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.workspace_commands.DrimeClient")
+    @patch("pydrime.cli.workspace_commands.config")
     def test_workspace_set_by_invalid_name(
         self, mock_config, mock_client_class, runner
     ):
@@ -4171,8 +4186,8 @@ class TestWorkspaceCommand:
 class TestRenameCommand:
     """Tests for the rename command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_rename_by_id(self, mock_config, mock_client_class, runner):
         """Test renaming file by ID."""
         mock_config.is_configured.return_value = True
@@ -4191,8 +4206,8 @@ class TestRenameCommand:
             123, name="newfile.txt", description=None
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_rename_by_name(self, mock_config, mock_client_class, runner):
         """Test renaming file by name."""
         mock_config.is_configured.return_value = True
@@ -4216,8 +4231,8 @@ class TestRenameCommand:
             123, name="newfile.txt", description=None
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_rename_with_description(self, mock_config, mock_client_class, runner):
         """Test renaming file with description."""
         mock_config.is_configured.return_value = True
@@ -4242,8 +4257,8 @@ class TestRenameCommand:
             123, name="newfile.txt", description="New description"
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_rename_not_found(self, mock_config, mock_client_class, runner):
         """Test renaming non-existent file."""
         mock_config.is_configured.return_value = True
@@ -4265,8 +4280,8 @@ class TestRenameCommand:
 class TestShareCommand:
     """Tests for the share command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_share_by_id(self, mock_config, mock_client_class, runner):
         """Test sharing file by ID."""
         mock_config.is_configured.return_value = True
@@ -4291,8 +4306,8 @@ class TestShareCommand:
             allow_download=True,
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_share_by_name(self, mock_config, mock_client_class, runner):
         """Test sharing file by name."""
         mock_config.is_configured.return_value = True
@@ -4322,8 +4337,8 @@ class TestShareCommand:
             allow_download=True,
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_share_with_password(self, mock_config, mock_client_class, runner):
         """Test sharing file with password."""
         mock_config.is_configured.return_value = True
@@ -4348,8 +4363,8 @@ class TestShareCommand:
             allow_download=True,
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_share_with_expiration(self, mock_config, mock_client_class, runner):
         """Test sharing file with expiration date."""
         mock_config.is_configured.return_value = True
@@ -4376,8 +4391,8 @@ class TestShareCommand:
             allow_download=True,
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_share_with_edit_permission(self, mock_config, mock_client_class, runner):
         """Test sharing file with edit permission."""
         mock_config.is_configured.return_value = True
@@ -4402,8 +4417,8 @@ class TestShareCommand:
             allow_download=True,
         )
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.file_management_commands.DrimeClient")
+    @patch("pydrime.cli.file_management_commands.config")
     def test_share_not_found(self, mock_config, mock_client_class, runner):
         """Test sharing non-existent file."""
         mock_config.is_configured.return_value = True
@@ -4425,8 +4440,8 @@ class TestShareCommand:
 class TestValidateCommand:
     """Tests for the validate command."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.utility_commands.DrimeClient")
+    @patch("pydrime.cli.utility_commands.config")
     def test_validate_single_file_success(self, mock_config, mock_client_class, runner):
         """Test validating a single file that exists with correct size."""
         mock_config.is_configured.return_value = True
@@ -4460,8 +4475,8 @@ class TestValidateCommand:
             assert "Valid: 1 file(s)" in result.output
             assert "validated successfully" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.utility_commands.DrimeClient")
+    @patch("pydrime.cli.utility_commands.config")
     def test_validate_missing_file(self, mock_config, mock_client_class, runner):
         """Test validating a file that doesn't exist in cloud."""
         mock_config.is_configured.return_value = True
@@ -4483,8 +4498,8 @@ class TestValidateCommand:
             assert "Missing: 1 file(s)" in result.output
             assert "Not found in cloud" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.utility_commands.DrimeClient")
+    @patch("pydrime.cli.utility_commands.config")
     def test_validate_size_mismatch(self, mock_config, mock_client_class, runner):
         """Test validating a file with size mismatch."""
         mock_config.is_configured.return_value = True
@@ -4516,8 +4531,8 @@ class TestValidateCommand:
             assert result.exit_code == 1
             assert "Size mismatch: 1 file(s)" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.utility_commands.DrimeClient")
+    @patch("pydrime.cli.utility_commands.config")
     def test_validate_json_output(self, mock_config, mock_client_class, runner):
         """Test validate with JSON output format."""
         mock_config.is_configured.return_value = True
@@ -4551,8 +4566,8 @@ class TestValidateCommand:
             assert '"missing": 0' in result.output
             assert '"incomplete": 0' in result.output
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.utility_commands.DrimeClient")
+    @patch("pydrime.cli.utility_commands.config")
     def test_validate_incomplete_file(self, mock_config, mock_client_class, runner):
         """Test validating a file with correct size but no users field (incomplete)."""
         mock_config.is_configured.return_value = True
@@ -4585,7 +4600,7 @@ class TestValidateCommand:
             assert "Incomplete: 1 file(s)" in result.output
             assert "incomplete upload" in result.output
 
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.utility_commands.config")
     def test_validate_without_api_key(self, mock_config, runner):
         """Test validate without API key configured."""
         mock_config.is_configured.return_value = False
@@ -4604,15 +4619,15 @@ class TestValidateCommand:
 class TestFolderStructureDetection:
     """Tests for folder structure detection in upload and validation."""
 
-    @patch("pydrime.cli.DrimeClient")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.DrimeClient")
+    @patch("pydrime.cli.upload_command.config")
     def test_scan_directory_uses_posix_paths(
         self, mock_config, mock_client_class, runner
     ):
         """Test that scan_directory returns paths with forward slashes."""
         import tempfile
 
-        from pydrime.cli import scan_directory
+        from pydrime.cli.helpers import scan_directory
         from pydrime.output import OutputFormatter
 
         mock_config.is_configured.return_value = True
@@ -4645,9 +4660,9 @@ class TestFolderStructureDetection:
             assert "folder1/file1.txt" in rel_paths
             assert "folder1/folder2/file2.txt" in rel_paths
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_upload_dry_run_shows_folder_structure(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner
     ):
@@ -4697,9 +4712,9 @@ class TestFolderStructureDetection:
             assert "Total: 3 files" in output
             assert "Dry run mode - no files were uploaded" in output
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_upload_dry_run_extracts_folders_correctly(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner
     ):
@@ -4739,9 +4754,9 @@ class TestFolderStructureDetection:
             # Check folder count (a, a/b, a/b/c = 3 folders)
             assert "Folders to create: 3" in output or "[D]" in output
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_upload_dry_run_groups_files_by_directory(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner
     ):
@@ -4785,9 +4800,9 @@ class TestFolderStructureDetection:
             assert "photo.jpg" in output
             assert "root.txt" in output
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_relativepath_validation_uses_posix(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner
     ):
@@ -4837,9 +4852,9 @@ class TestFolderStructureDetection:
 class TestWindowsPathHandling:
     """Tests for Windows path handling in upload and validation."""
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_windows_nested_folders_parsed_correctly(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner
     ):
@@ -4883,9 +4898,9 @@ class TestWindowsPathHandling:
             # Check that files are grouped correctly
             assert "file.txt" in output
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_validation_files_use_pure_posix_paths(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner
     ):
@@ -4930,9 +4945,9 @@ class TestWindowsPathHandling:
                 rel_path == f"{Path(tmpdir).name}/folder1/folder2"
             ), f"Expected proper POSIX path, got: {rel_path}"
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_dry_run_folder_extraction_pure_posix(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner
     ):
@@ -4981,9 +4996,9 @@ class TestWindowsPathHandling:
                         "/"
                     ), f"Folder path should end with /: {path_part}"
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_file_grouping_uses_pure_posix_paths(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner
     ):
@@ -5068,9 +5083,9 @@ class TestWindowsPathHandling:
 class TestRemotePathDuplicateDetection:
     """Tests for duplicate detection when using remote-path parameter."""
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_remote_path_folder_not_flagged_as_duplicate(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -5115,9 +5130,9 @@ class TestRemotePathDuplicateDetection:
         # Should proceed with upload without prompting
         assert "Action" not in result.output  # No prompt shown
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_remote_path_file_duplicates_still_detected(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -5197,9 +5212,9 @@ class TestRemotePathDuplicateDetection:
             if "duplicate" in line.lower() and "ID: 100" in line
         ]
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.upload_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.upload_command.config")
     def test_remote_path_nested_folder_only_top_level_filtered(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -5286,10 +5301,10 @@ class TestRemotePathDuplicateDetection:
 class TestSyncCommand:
     """Tests for the sync command."""
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.sync_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
-    @patch("pydrime.cli.Path")
+    @patch("pydrime.cli.sync_command.config")
+    @patch("pydrime.cli.sync_command.Path")
     def test_sync_files_to_upload_only(
         self,
         mock_path_class,
@@ -5335,9 +5350,9 @@ class TestSyncCommand:
         assert "Dry run:" in result.output or "Dry run complete!" in result.output
         assert "Upload: 2 file(s)" in result.output or "upload" in result.output.lower()
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.sync_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.sync_command.config")
     def test_sync_files_to_download_only(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -5404,9 +5419,9 @@ class TestSyncCommand:
             or "download" in result.output.lower()
         )
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.sync_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.sync_command.config")
     def test_sync_files_already_in_sync(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -5472,9 +5487,9 @@ class TestSyncCommand:
             or "Sync plan:" in result.output
         )
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.sync_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.sync_command.config")
     def test_sync_with_conflicts_newer_local(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -5538,9 +5553,9 @@ class TestSyncCommand:
         # Should upload the newer local file
         assert "Upload: 1 file(s)" in result.output or "upload" in result.output.lower()
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.sync_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.sync_command.config")
     def test_sync_with_conflicts_newer_remote(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -5606,9 +5621,9 @@ class TestSyncCommand:
             or "download" in result.output.lower()
         )
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.sync_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.sync_command.config")
     def test_sync_without_dry_run(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -5660,9 +5675,9 @@ class TestSyncCommand:
         assert mock_client.upload_file.called or "upload" in result.output.lower()
         # Note: download might not be called in dry-run detection logic
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.sync_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.sync_command.config")
     def test_sync_with_remote_path(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -5710,9 +5725,9 @@ class TestSyncCommand:
         assert result.exit_code == 0
         assert "Dry run:" in result.output or "Dry run complete!" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.sync_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.sync_command.config")
     def test_sync_with_workspace(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -5741,7 +5756,7 @@ class TestSyncCommand:
         assert result.exit_code == 0
 
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.sync_command.config")
     def test_sync_without_api_key(
         self, mock_cli_config, mock_auth_config, runner, tmp_path
     ):
@@ -5757,9 +5772,9 @@ class TestSyncCommand:
         assert result.exit_code == 1
         assert "API key not configured" in result.output
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.sync_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.sync_command.config")
     def test_sync_nonexistent_directory(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner
     ):
@@ -5779,9 +5794,9 @@ class TestSyncCommand:
             or "usage:" in result.output.lower()
         )
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.sync_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.sync_command.config")
     def test_sync_file_instead_of_directory(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -5804,9 +5819,9 @@ class TestSyncCommand:
             or "must be a directory" in result.output.lower()
         )
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.sync_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.sync_command.config")
     def test_sync_empty_directory(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -5836,9 +5851,9 @@ class TestSyncCommand:
             or "everything is in sync" in result.output.lower()
         )
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.sync_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.sync_command.config")
     def test_sync_api_error_handling(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
@@ -5872,9 +5887,9 @@ class TestSyncCommand:
         # (errors during recursive fetch are caught and ignored)
         assert result.exit_code == 0
 
-    @patch("pydrime.cli.DrimeClient")
+    @patch("pydrime.cli.sync_command.DrimeClient")
     @patch("pydrime.auth.config")
-    @patch("pydrime.cli.config")
+    @patch("pydrime.cli.sync_command.config")
     def test_sync_with_nested_folders(
         self, mock_cli_config, mock_auth_config, mock_client_class, runner, tmp_path
     ):
