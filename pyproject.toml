@@ -21,7 +21,7 @@ dependencies = [
     "httpx>=0.27.0",
     "python-dotenv>=1.0.0",
     "rich>=13.0.0",
-    "syncengine>=0.2.1",
+    "syncengine>=0.2.2",
 ]
 classifiers=[
     'Intended Audience :: Developers',
@@ -39,6 +39,7 @@ classifiers=[
 
 dynamic=["version"]
 [project.optional-dependencies]
+server = ["pyrestserver>=0.1.0", "pys3local>=0.1.0", "pywebdavserver>=0.1.0"]
 dev = [
     "pytest>=7.0.0",
     "ruff>=0.1.0",

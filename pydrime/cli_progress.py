@@ -62,6 +62,7 @@ class SyncProgressDisplay:
         self._upload_task: Optional[TaskID] = None
         self._total_files = 0
         self._current_dir = ""
+        self._is_download = False  # Track if we're downloading vs uploading
 
     def create_tracker(self) -> SyncProgressTracker:
         """Create a SyncProgressTracker that updates this display.
@@ -95,6 +96,7 @@ class SyncProgressDisplay:
         if self._progress is None:
             return
 
+        # Handle upload events
         if info.event == SyncProgressEvent.UPLOAD_BATCH_START:
             self._current_dir = info.directory
             # Update task description and total for folder
@@ -136,6 +138,49 @@ class SyncProgressDisplay:
                     folder_info=self._format_folder_progress(info),
                 )
 
+        # Handle download events (mirror upload logic)
+        elif info.event == SyncProgressEvent.DOWNLOAD_BATCH_START:
+            self._is_download = True
+            self._current_dir = info.directory
+            # Update task description and total for folder
+            if self._upload_task is not None:
+                folder_name = info.directory if info.directory else "root"
+                self._progress.update(
+                    self._upload_task,
+                    description=f"Downloading: {folder_name}",
+                    total=info.folder_bytes_total,
+                    completed=0,
+                    folder_info=self._format_folder_progress(info),
+                )
+
+        elif info.event == SyncProgressEvent.DOWNLOAD_FILE_PROGRESS:
+            # Update bytes progress for current folder
+            if self._upload_task is not None:
+                self._progress.update(
+                    self._upload_task,
+                    completed=info.folder_bytes_uploaded,
+                    folder_info=self._format_folder_progress(info),
+                )
+
+        elif info.event == SyncProgressEvent.DOWNLOAD_FILE_COMPLETE:
+            # Update file count for folder
+            self._total_files = info.files_uploaded
+            if self._upload_task is not None:
+                self._progress.update(
+                    self._upload_task,
+                    completed=info.folder_bytes_uploaded,
+                    folder_info=self._format_folder_progress(info),
+                )
+
+        elif info.event == SyncProgressEvent.DOWNLOAD_BATCH_COMPLETE:
+            # Update final stats for this batch
+            if self._upload_task is not None:
+                self._progress.update(
+                    self._upload_task,
+                    completed=info.folder_bytes_uploaded,
+                    folder_info=self._format_folder_progress(info),
+                )
+
     def __enter__(self) -> "SyncProgressDisplay":
         """Enter context manager - start progress display."""
         self._progress = Progress(
@@ -167,11 +212,14 @@ class SyncProgressDisplay:
     ) -> None:
         """Exit context manager - stop progress display."""
         if self._progress is not None:
-            # Update final description
+            # Update final description based on operation type
             if self._upload_task is not None:
+                completion_msg = (
+                    "Download complete" if self._is_download else "Upload complete"
+                )
                 self._progress.update(
                     self._upload_task,
-                    description="Upload complete",
+                    description=completion_msg,
                 )
             self._progress.__exit__(exc_type, exc_val, exc_tb)
             self._progress = None
@@ -208,6 +256,7 @@ class SimpleTextProgressDisplay:
         Args:
             info: Progress information
         """
+        # Handle upload events
         if info.event == SyncProgressEvent.UPLOAD_BATCH_START:
             self._current_folder = info.directory
             self._total_files = info.folder_files_total
@@ -242,6 +291,50 @@ class SimpleTextProgressDisplay:
             )
 
         elif info.event == SyncProgressEvent.UPLOAD_BATCH_COMPLETE:
+            # Print folder completion summary
+            folder_name = info.directory if info.directory else "root"
+            size_str = _format_size(info.folder_bytes_uploaded)
+            print(
+                f"Completed: {folder_name} "
+                f"({info.folder_files_uploaded} files, {size_str})",
+                file=sys.stderr,
+            )
+
+        # Handle download events (mirror upload logic)
+        elif info.event == SyncProgressEvent.DOWNLOAD_BATCH_START:
+            self._current_folder = info.directory
+            self._total_files = info.folder_files_total
+            self._total_bytes = info.folder_bytes_total
+            folder_name = info.directory if info.directory else "root"
+            size_str = _format_size(info.folder_bytes_total)
+            print(
+                f"Starting download: {folder_name} "
+                f"({info.folder_files_total} files, {size_str})",
+                file=sys.stderr,
+            )
+
+        elif info.event == SyncProgressEvent.DOWNLOAD_FILE_START:
+            # Print when starting a new file
+            print(f"  Downloading: {info.file_path}", file=sys.stderr)
+
+        elif info.event == SyncProgressEvent.DOWNLOAD_FILE_COMPLETE:
+            # Print completion with running totals
+            self._uploaded_files = info.folder_files_uploaded
+            self._uploaded_bytes = info.folder_bytes_uploaded
+            print(
+                f"  ✓ Completed: {info.file_path} "
+                f"({info.folder_files_uploaded}/{info.folder_files_total} files, "
+                f"{_format_size(info.folder_bytes_uploaded)}/{_format_size(info.folder_bytes_total)})",
+                file=sys.stderr,
+            )
+
+        elif info.event == SyncProgressEvent.DOWNLOAD_FILE_ERROR:
+            # Print error
+            print(
+                f"  ✗ Failed: {info.file_path} - {info.error_message}", file=sys.stderr
+            )
+
+        elif info.event == SyncProgressEvent.DOWNLOAD_BATCH_COMPLETE:
             # Print folder completion summary
             folder_name = info.directory if info.directory else "root"
             size_str = _format_size(info.folder_bytes_uploaded)

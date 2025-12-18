@@ -489,24 +489,363 @@ eval $(pydrime vault lock)
 
 ## Server Features
 
-WebDAV and REST server functionality has been moved to separate packages:
+### Restic Server Mode
 
-### pywebdavserver
+PyDrime can run a restic REST server backed by Drime Cloud storage, allowing you to use
+restic for backups without managing local storage. This feature uses your existing
+pydrime credentials automatically.
 
-Mount Drime Cloud as a network drive via WebDAV protocol.
+#### Installation
+
+```bash
+pip install pydrime[server]
+```
+
+#### Quick Start
+
+```bash
+# Start server (uses your pydrime credentials)
+pydrime server restic
+
+# Server runs on http://localhost:8000
+# Now use restic with this URL:
+restic -r rest:http://localhost:8000/mybackup init
+restic -r rest:http://localhost:8000/mybackup backup ~/Documents
+```
+
+#### Command Options
+
+- `--listen :PORT`: Change server port (default: 8000)
+- `--workspace ID`: Use specific workspace (default: your pydrime default)
+- `--htpasswd-file FILE`: Enable authentication with htpasswd file
+- `--append-only`: Prevent deletions (safer for backups)
+- `--tls`: Enable HTTPS (requires --tls-cert and --tls-key)
+- `--debug`: Show detailed logs
+- `--no-verify-upload`: Disable upload verification (not recommended)
+
+#### Examples
+
+```bash
+# Start on custom port
+pydrime server restic --listen :9000
+
+# Use specific workspace
+pydrime server restic --workspace 1593
+
+# Enable authentication
+pydrime server restic --htpasswd-file ~/.htpasswd
+
+# Append-only mode (recommended for production)
+pydrime server restic --append-only
+
+# HTTPS mode
+pydrime server restic --tls --tls-cert cert.pem --tls-key key.pem
+```
+
+#### Security Notes
+
+- Authentication is **disabled by default** for convenience
+- For production use, enable authentication with `--htpasswd-file`
+- Consider using `--append-only` to prevent accidental deletions
+- Use `--tls` for encrypted connections
+
+#### Integration with Restic
+
+Once the server is running:
+
+```bash
+# Initialize repository
+restic -r rest:http://localhost:8000/myrepo init
+
+# Create backup
+restic -r rest:http://localhost:8000/myrepo backup ~/data
+
+# List snapshots
+restic -r rest:http://localhost:8000/myrepo snapshots
+
+# Restore
+restic -r rest:http://localhost:8000/myrepo restore latest --target ~/restore
+```
+
+### S3 Server Mode
+
+Run an S3-compatible server backed by Drime Cloud storage. This allows you to access
+your Drime files using any S3-compatible client (AWS CLI, rclone, s3cmd, etc.).
+
+#### Installation
+
+```bash
+pip install pydrime[server]
+```
+
+This installs both `pyrestserver` and `pys3local` packages needed for server
+functionality.
+
+#### Quick Start
+
+```bash
+# Start S3 server (no authentication by default)
+pydrime server s3
+
+# Start on custom port
+pydrime server s3 --listen :9001
+
+# Enable authentication with custom credentials
+pydrime server s3 --access-key-id mykey --secret-access-key mysecret --no-auth=false
+
+# Limit access to specific folder
+pydrime server s3 --root-folder /backup
+
+# Use specific workspace
+pydrime server s3 --workspace 123
+```
+
+#### Command Options
+
+- `--listen TEXT`: Listen address (default: `:9000`)
+- `--access-key-id TEXT`: AWS access key ID (default: `minioadmin`)
+- `--secret-access-key TEXT`: AWS secret access key (default: `minioadmin`)
+- `--region TEXT`: AWS region name (default: `us-east-1`)
+- `--no-auth`: Disable authentication (default: enabled)
+- `--workspace INTEGER`: Workspace ID (uses pydrime default if not specified)
+- `--root-folder TEXT`: Root folder path to limit S3 access scope
+- `--debug`: Enable debug logging
+
+#### Security Notes
+
+- **Authentication is DISABLED by default** for convenience
+- To enable authentication, remove the `--no-auth` flag and set custom credentials
+- When authentication is enabled, clients must use the configured access key and secret
+- Always use authentication for production deployments or public-facing servers
+
+#### Using with S3 Clients
+
+**AWS CLI:**
+
+```bash
+# Without authentication (default)
+aws s3 ls --endpoint-url http://localhost:9000 --no-sign-request
+aws s3 cp file.txt s3://mybucket/ --endpoint-url http://localhost:9000 --no-sign-request
+
+# With authentication
+aws configure set aws_access_key_id minioadmin
+aws configure set aws_secret_access_key minioadmin
+aws s3 ls --endpoint-url http://localhost:9000
+```
+
+**rclone:**
+
+```bash
+# Without authentication
+rclone lsd s3server: --s3-endpoint http://localhost:9000 --s3-no-check-bucket
+
+# With authentication - add to rclone config
+[s3server]
+type = s3
+provider = Other
+endpoint = http://localhost:9000
+access_key_id = minioadmin
+secret_access_key = minioadmin
+```
+
+**s3cmd:**
+
+```bash
+# Configure s3cmd
+s3cmd --configure
+
+# Use with custom endpoint
+s3cmd --host=localhost:9000 --host-bucket=localhost:9000 ls
+```
+
+#### Integration Example
+
+```bash
+# Start S3 server in background
+pydrime server s3 &
+
+# Upload files via AWS CLI
+aws s3 cp myfile.txt s3://mybucket/ --endpoint-url http://localhost:9000 --no-sign-request
+
+# Sync directory with rclone
+rclone sync /local/path s3server:mybucket --s3-endpoint http://localhost:9000
+
+# Use as backup target
+aws s3 sync /data s3://backup/ --endpoint-url http://localhost:9000
+```
+
+### WebDAV Server Mode
+
+Run a WebDAV server backed by Drime Cloud storage. This allows you to mount your Drime
+files as a network drive on Windows, macOS, or Linux.
+
+#### Installation
+
+```bash
+pip install pydrime[server]
+```
+
+This installs the `pywebdavserver` package along with `pyrestserver` and `pys3local`
+needed for full server functionality.
+
+#### Quick Start
+
+```bash
+# Start WebDAV server (no authentication by default)
+pydrime server webdav
+
+# Start on custom port
+pydrime server webdav --port 9090
+
+# Enable authentication
+pydrime server webdav --username myuser --password mypass --no-auth=false
+
+# Start in read-only mode
+pydrime server webdav --readonly
+
+# Use specific workspace
+pydrime server webdav --workspace 123
+
+# Enable HTTPS
+pydrime server webdav --ssl-cert cert.pem --ssl-key key.pem
+```
+
+#### Command Options
+
+- `--host TEXT`: Host address to bind to (default: `0.0.0.0`)
+- `--port INTEGER`: Port number to listen on (default: `8080`)
+- `--username TEXT`: WebDAV username for authentication
+- `--password TEXT`: WebDAV password for authentication
+- `--no-auth`: Disable authentication (default: enabled)
+- `--readonly`: Enable read-only mode (no writes allowed)
+- `--workspace INTEGER`: Workspace ID (uses pydrime default if not specified)
+- `--cache-ttl FLOAT`: Cache TTL in seconds for Drime backend (default: `300.0`)
+- `--max-file-size INTEGER`: Maximum file size in bytes (default: 5GB)
+- `--ssl-cert PATH`: Path to SSL certificate file (for HTTPS)
+- `--ssl-key PATH`: Path to SSL private key file (for HTTPS)
+- `--verbose`: Increase verbosity (-v, -vv, -vvv)
+
+#### Security Notes
+
+- **Authentication is DISABLED by default** for convenience
+- To enable authentication, provide both `--username` and `--password`
+- When authentication is enabled, clients must provide credentials when mounting
+- Always use authentication for production deployments or public-facing servers
+- Consider using HTTPS with `--ssl-cert` and `--ssl-key` for encrypted connections
+
+#### Mounting WebDAV Share
+
+**Windows:**
+
+1. Open File Explorer
+2. Right-click "This PC" → "Map network drive"
+3. Enter URL: `http://localhost:8080`
+4. If authentication enabled, provide username and password
+
+Or using command line:
+
+```cmd
+net use Z: http://localhost:8080
+```
+
+**macOS:**
+
+1. Open Finder
+2. Go → Connect to Server (⌘K)
+3. Enter URL: `http://localhost:8080`
+4. Click "Connect"
+
+Or using command line:
+
+```bash
+# Mount to /Volumes/DrimeDrive
+mkdir -p ~/DrimeDrive
+mount_webdav -S http://localhost:8080 ~/DrimeDrive
+```
+
+**Linux (GNOME/Nautilus):**
+
+```bash
+# Using Nautilus file manager
+nautilus http://localhost:8080
+
+# Or mount with davfs2
+sudo apt install davfs2
+sudo mount -t davfs http://localhost:8080 /mnt/drime
+```
+
+**Linux (KDE/Dolphin):**
+
+1. Open Dolphin
+2. Network → Add Network Folder
+3. Select "WebDAV" and enter URL: `http://localhost:8080`
+
+#### Using with Command-Line Tools
+
+**cadaver (WebDAV command-line client):**
+
+```bash
+# Install cadaver
+sudo apt install cadaver  # Debian/Ubuntu
+brew install cadaver      # macOS
+
+# Connect to server
+cadaver http://localhost:8080
+
+# Commands inside cadaver
+ls              # List files
+get file.txt    # Download file
+put local.txt   # Upload file
+```
+
+**curl:**
+
+```bash
+# List files
+curl http://localhost:8080/
+
+# Download file
+curl http://localhost:8080/file.txt -o file.txt
+
+# Upload file
+curl -T myfile.txt http://localhost:8080/myfile.txt
+
+# With authentication
+curl -u myuser:mypass http://localhost:8080/
+```
+
+#### Integration Example
+
+```bash
+# Start WebDAV server with authentication
+pydrime server webdav --username admin --password secret --no-auth=false &
+
+# Mount on Linux
+sudo mount -t davfs -o username=admin,password=secret http://localhost:8080 /mnt/drime
+
+# Copy files to mounted drive
+cp -r /local/data/* /mnt/drime/
+
+# Access from any WebDAV-compatible application
+# (e.g., office suites, media players, backup tools)
+```
+
+#### Standalone WebDAV Server
+
+For more advanced configuration options, you can use pywebdavserver directly:
 
 ```bash
 pip install pywebdavserver
-pywebdavserver serve
+pywebdavserver serve --backend-config drime-personal
 ```
 
 See the
 [pywebdavserver documentation](https://github.com/holgern/pydrime/tree/main/pywebdavserver)
 for more information.
 
-### pyrestserver
+### Standalone REST Server
 
-Use Drime Cloud as a backup destination for [restic](https://restic.net/).
+Use pyrestserver directly for more configuration options:
 
 ```bash
 pip install pyrestserver

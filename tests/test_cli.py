@@ -2979,7 +2979,7 @@ class TestDownloadCommandWithIdSupport:
 
         mock_client.download_file.return_value = Path("/tmp/test_folder/file1.txt")
 
-        result = runner.invoke(main, ["download", "test_folder"])
+        result = runner.invoke(main, ["download", "test_folder", "--no-progress"])
 
         assert result.exit_code == 0
         assert "Resolved 'test_folder' to entry ID: 480432024" in result.output
@@ -3823,7 +3823,7 @@ class TestRecursiveFlag:
         mock_client.download_file.return_value = Path("myfolder/file.txt")
 
         with runner.isolated_filesystem():
-            result = runner.invoke(main, ["download", "1"])
+            result = runner.invoke(main, ["download", "1", "--no-progress"])
 
         assert result.exit_code == 0
         assert "Downloading folder: myfolder" in result.output
@@ -3998,7 +3998,9 @@ class TestRecursiveFlag:
             # Create the folder beforehand
             Path("existingfolder").mkdir()
 
-            result = runner.invoke(main, ["download", "existingfolder"])
+            result = runner.invoke(
+                main, ["download", "existingfolder", "--no-progress"]
+            )
 
             assert result.exit_code == 0
             assert "Downloading folder: existingfolder" in result.output
