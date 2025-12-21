@@ -201,15 +201,19 @@ def sync(
       A JSON file containing a list of sync pair objects:
       [
         {
-          "workspace": "My Team",        // optional, ID or name
-                                         // (default: uses configured default workspace)
-          "local": "/path/to/local",     // required
-          "remote": "remote/path",       // required
-          "syncMode": "twoWay",          // required
-          "disableLocalTrash": false,    // optional, default: false
-          "ignore": ["*.tmp"],           // optional, CLI patterns
-                                         //(in addition to .pydrignore)
-          "excludeDotFiles": false       // optional, default: false
+          "storage": "My Team",              // optional, workspace ID
+                                             // or name
+                                             // (default: uses configured
+                                             // default workspace)
+                                             // Note: "workspace" is also
+                                             // accepted as an alias
+          "local": "/path/to/local",         // required
+          "remote": "remote/path",           // required
+          "syncMode": "twoWay",              // required
+          "disableLocalTrash": false,        // optional, default: false
+          "ignore": ["*.tmp"],               // optional, CLI patterns
+                                             //(in addition to .pydrignore)
+          "excludeDotFiles": false           // optional, default: false
         }
       ]
 
@@ -301,12 +305,19 @@ def sync(
         total_conflicts = 0
 
         for i, pair_data in enumerate(sync_pairs_data):
+            # Support both "workspace" (pydrime terminology) and
+            # "storage" (syncengine terminology)
+            # If user provides "workspace", use it; otherwise fall back to "storage"
+            if "workspace" in pair_data:
+                pair_data["storage"] = pair_data["workspace"]
+
             # Resolve workspace identifier (int, str name, or None) to workspace ID
             # Use the default workspace if not specified in config
             default_ws = config.get_default_workspace() or 0
+            workspace_from_json = pair_data.get("storage")
             try:
                 resolved_workspace_id = resolve_workspace_identifier(
-                    client, pair_data.get("workspace", 0), default_ws
+                    client, workspace_from_json, default_ws
                 )
             except ValueError as e:
                 out.error(f"Sync pair at index {i}: {e}")
