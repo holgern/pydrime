@@ -139,6 +139,7 @@ def restic(
         out.info("Install with: pip install pydrime[server]")
         out.info("Or: pip install pyrestserver[drime]")
         ctx.exit(1)
+        return  # Unreachable but satisfies type checker
 
     # Get API key from pydrime config
     api_key = require_api_key(ctx, out)
@@ -365,13 +366,17 @@ def s3(
 
     # Check if pys3local is installed
     try:
-        from pys3local.config import S3Config  # type: ignore[import-not-found]
-        from pys3local.server import run_server  # type: ignore[import-not-found]
+        import uvicorn  # type: ignore[import-not-found]
+        from pys3local.providers.drime import (  # type: ignore[import-not-found]
+            DrimeStorageProvider,
+        )
+        from pys3local.server import create_s3_app  # type: ignore[import-not-found]
     except ImportError:
         out.error("pys3local is not installed.")
         out.info("Install with: pip install pydrime[server]")
         out.info("Or: pip install pys3local[drime]")
         ctx.exit(1)
+        return  # Unreachable but satisfies type checker
 
     # Get API key from pydrime config
     api_key = require_api_key(ctx, out)
@@ -383,6 +388,23 @@ def s3(
     # Initialize Drime client
     client = DrimeClient(api_key=api_key)
 
+    # Parse listen address
+    if listen.startswith(":"):
+        host = "0.0.0.0"
+        port = int(listen[1:])
+    else:
+        if ":" in listen:
+            host, port_str = listen.rsplit(":", 1)
+            port = int(port_str)
+        else:
+            host = listen
+            port = 9000
+
+    # Create Drime storage provider
+    provider = DrimeStorageProvider(
+        client=client, workspace_id=workspace, root_folder=root_folder, readonly=False
+    )
+
     # Display startup information
     if not out.quiet:
         from rich.console import Console
@@ -393,72 +415,68 @@ def s3(
         console.print(f"Workspace ID: {workspace}")
 
         if no_auth:
-            console.print("Authentication disabled")
+            console.print("[yellow]Authentication disabled[/yellow]")
         else:
-            console.print("Authentication enabled")
-            console.print(f"Access Key ID: {access_key_id}")
+            console.print("[green]Authentication enabled[/green]")
+            console.print(f"Access Key ID: [cyan]{access_key_id}[/cyan]")
+            console.print(f"Secret Access Key: [cyan]{secret_access_key}[/cyan]")
+            console.print(f"Region: [cyan]{region}[/cyan]")
 
         if root_folder:
             console.print(f"Root folder: {root_folder}")
 
-        console.print(f"Listen address: {listen}")
+        console.print(f"\n[green]Starting S3 server at http://{host}:{port}/[/green]\n")
 
         # Show connection examples
+        console.print("[bold]rclone configuration:[/bold]")
+        console.print("[dim]Add this to ~/.config/rclone/rclone.conf:[/dim]")
         console.print()
-        console.print("[bold]Connect with S3 clients:[/bold]")
+        console.print("[pydrime-s3]")
+        console.print("type = s3")
+        console.print("provider = Other")
 
-        endpoint = listen if listen.startswith("http") else f"http://{listen}"
-
-        if no_auth:
-            console.print(
-                f"  AWS CLI: aws s3 ls --endpoint-url {endpoint} --no-sign-request"
-            )
-            console.print(
-                f"  rclone:  rclone lsd s3server: --s3-endpoint {endpoint} "
-                "--s3-no-check-bucket"
-            )
+        if not no_auth:
+            console.print(f"access_key_id = {access_key_id}")
+            console.print(f"secret_access_key = {secret_access_key}")
         else:
-            console.print(
-                f"  AWS CLI: aws configure set aws_access_key_id {access_key_id}"
-            )
-            console.print(
-                f"           aws configure set aws_secret_access_key "
-                f"{secret_access_key}"
-            )
-            console.print(f"           aws s3 ls --endpoint-url {endpoint}")
-            console.print()
-            console.print("  rclone config example:")
-            console.print("    [s3server]")
-            console.print("    type = s3")
-            console.print("    provider = Other")
-            console.print(f"    endpoint = {endpoint}")
-            console.print(f"    access_key_id = {access_key_id}")
-            console.print(f"    secret_access_key = {secret_access_key}")
+            console.print("access_key_id = test")
+            console.print("secret_access_key = test")
 
+        endpoint_display = f"http://{host if host != '0.0.0.0' else 'localhost'}:{port}"
+        console.print(f"endpoint = {endpoint_display}")
+        console.print(f"region = {region}")
         console.print()
-        console.print("[yellow]Press Ctrl+C to stop the server[/yellow]")
-        console.print()
+
+        console.print("[dim]Press Ctrl+C to stop the server[/dim]\n")
 
     # Start the server
     try:
-        # Create S3Config
-        s3_config = S3Config(
-            listen_address=listen,
-            access_key_id=access_key_id,
-            secret_access_key=secret_access_key,
+        # Create S3 app
+        app = create_s3_app(
+            provider=provider,
+            access_key=access_key_id,
+            secret_key=secret_access_key,
             region=region,
             no_auth=no_auth,
-            debug=debug,
         )
 
-        # Start server with Drime backend
-        run_server(
-            config=s3_config,
-            backend="drime",
-            workspace_id=workspace,
-            drime_client=client,
-            root_folder=root_folder,
+        # Run server with uvicorn
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            log_level="error" if not debug else "info",
+            server_header=False,
+            timeout_keep_alive=75,
+            access_log=debug,
         )
+    except KeyboardInterrupt:
+        if not out.quiet:
+            from rich.console import Console
+
+            console = Console()
+            console.print("\n[yellow]Server stopped[/yellow]")
+        ctx.exit(0)
     except Exception as e:
         out.error(f"Server error: {e}")
         if debug:
@@ -601,6 +619,7 @@ def webdav(
         out.info("Install with: pip install pydrime[server]")
         out.info("Or: pip install pywebdavserver[drime]")
         ctx.exit(1)
+        return  # Unreachable but satisfies type checker
 
     # Get API key from pydrime config
     api_key = require_api_key(ctx, out)
@@ -635,6 +654,7 @@ def webdav(
     except Exception as e:
         out.error(f"Failed to initialize Drime provider: {e}")
         ctx.exit(1)
+        return  # Unreachable but satisfies type checker
 
     # Display startup information
     if not out.quiet:

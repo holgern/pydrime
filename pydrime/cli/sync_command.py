@@ -344,12 +344,12 @@ def sync(
                 )
                 out.info(f"Workspace: {workspace_display}")
                 out.info(f"Sync mode: {config_pair.sync_mode.value}")
-                out.info(f"Local path: {config_pair.source}")
+                out.info(f"Source path: {config_pair.source}")
                 # Display "/" for root when remote is empty (normalized from "/")
                 remote_display = (
                     config_pair.destination if config_pair.destination else "/ (root)"
                 )
-                out.info(f"Remote path: {remote_display}")
+                out.info(f"Destination path: {remote_display}")
                 if config_pair.ignore:
                     out.info(f"Ignore patterns: {config_pair.ignore}")
                 if config_pair.exclude_dot_files:
