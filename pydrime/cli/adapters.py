@@ -100,6 +100,34 @@ class _DrimeClientAdapter:
             workspace_id=storage_id,
         )
 
+    def download_file(
+        self,
+        file_id: str,
+        output_path: Path,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> Path:
+        """Download file (adapted signature for syncengine protocol).
+
+        Converts file_id → hash_value for DrimeClient.
+
+        Note: For Drime API, file_id should be the hash field (base64-encoded
+        identifier), not the integer database ID. Syncengine passes
+        destination_file.hash which is correct for Drime's download endpoint.
+
+        Args:
+            file_id: File hash identifier (base64-encoded from FileEntry.hash)
+            output_path: Path where file should be saved
+            progress_callback: Optional callback for download progress
+
+        Returns:
+            Path where file was saved
+        """
+        return self._client.download_file(
+            hash_value=file_id,  # Rename parameter for DrimeClient
+            output_path=output_path,
+            progress_callback=progress_callback,
+        )
+
 
 def create_entries_manager_factory() -> (
     Callable[[DrimeClient, int], _FileEntriesManagerAdapter]

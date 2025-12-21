@@ -2,6 +2,7 @@
 
 import base64
 import glob as glob_module
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Literal, Optional, cast
@@ -1212,6 +1213,520 @@ def vault_upload(
 
     except DrimeAPIError as e:
         out.error(str(e))
+        ctx.exit(1)
+
+
+@vault.command("sync")
+@click.argument("path", type=str, required=False, default=None)
+@click.option("--remote-path", "-r", help="Remote destination path in vault")
+@click.option(
+    "--folder",
+    "-f",
+    type=str,
+    default=None,
+    help="Target folder name, ID, or hash in vault (default: root)",
+)
+@click.option(
+    "--password",
+    "-p",
+    type=str,
+    default=None,
+    help="Vault password (will prompt if not provided)",
+)
+@click.option(
+    "--config",
+    "-C",
+    "config_file",
+    type=click.Path(exists=True),
+    help="JSON config file with list of sync pairs",
+)
+@click.option(
+    "--dry-run", is_flag=True, help="Show what would be synced without syncing"
+)
+@click.option(
+    "--no-progress",
+    is_flag=True,
+    help="Disable progress bars",
+)
+@click.option(
+    "--chunk-size",
+    "-c",
+    type=int,
+    default=25,
+    help="Chunk size in MB for multipart uploads (default: 25MB)",
+)
+@click.option(
+    "--multipart-threshold",
+    "-m",
+    type=int,
+    default=30,
+    help="File size threshold in MB for using multipart upload (default: 30MB)",
+)
+@click.option(
+    "--batch-size",
+    "-b",
+    type=int,
+    default=50,
+    help="Number of remote files to process per batch in streaming mode (default: 50)",
+)
+@click.option(
+    "--no-streaming",
+    is_flag=True,
+    help="Disable streaming mode (scan all files upfront instead of batch processing)",
+)
+@click.option(
+    "--workers",
+    type=int,
+    default=1,
+    help="Number of parallel workers for uploads/downloads (default: 1)",
+)
+@click.option(
+    "--start-delay",
+    type=float,
+    default=0.0,
+    help="Delay in seconds between starting each parallel operation (default: 0.0)",
+)
+@click.pass_context
+def vault_sync(
+    ctx: Any,
+    path: Optional[str],
+    remote_path: Optional[str],
+    folder: Optional[str],
+    password: Optional[str],
+    config_file: Optional[str],
+    dry_run: bool,
+    no_progress: bool,
+    chunk_size: int,
+    multipart_threshold: int,
+    batch_size: int,
+    no_streaming: bool,
+    workers: int,
+    start_delay: float,
+) -> None:
+    """Sync files between local directory and encrypted vault.
+
+    PATH: Local directory to sync OR literal sync pair in format:
+          /local/path:syncMode:/remote/path
+
+    Sync Modes:
+      - twoWay (tw): Mirror every action in both directions
+      - localToCloud (std): Mirror local actions to vault only
+      - localBackup (sb): Upload to vault, never delete
+      - cloudToLocal (dts): Mirror vault actions to local only
+      - cloudBackup (db): Download from vault, never delete
+
+    Ignore Files (.pydrignore):
+      Place a .pydrignore file in any directory to exclude files from sync.
+      Uses gitignore-style patterns (similar to Kopia's .kopiaignore).
+
+      Supported patterns:
+        # Comment lines start with #
+        *.log           - Ignore all .log files anywhere
+        /logs           - Ignore 'logs' only at root directory
+        temp/           - Ignore directories named 'temp'
+        !important.log  - Un-ignore important.log (negation)
+        *.db*           - Ignore files with .db in extension
+        **/cache/**     - Ignore any 'cache' directory and contents
+        [a-z]*.tmp      - Character ranges and wildcards
+        ?tmp.db         - ? matches exactly one character
+
+      Hierarchical: .pydrignore files in subdirectories only apply to that
+      subtree and can override parent rules using negation (!).
+
+    Examples:
+        # Directory path with default two-way sync
+        pydrime vault sync ./my_folder
+        pydrime vault sync ./docs -r remote_docs
+
+        # Literal sync pairs with explicit modes
+        pydrime vault sync /home/user/docs:twoWay:/Documents
+        pydrime vault sync /home/user/pics:localToCloud:/Pictures
+        pydrime vault sync ./local:localBackup:/Backup
+        pydrime vault sync ./data:cloudToLocal:/CloudData
+        pydrime vault sync ./archive:cloudBackup:/Archive
+
+        # With abbreviations
+        pydrime vault sync /home/user/pics:tw:/Pictures
+        pydrime vault sync ./backup:std:/CloudBackup
+        pydrime vault sync ./local:sb:/Backup
+
+        # Other options
+        pydrime vault sync . -f MyFolder            # Sync to vault folder
+        pydrime vault sync ./data --dry-run         # Preview sync changes
+        pydrime vault sync ./data -b 100            # Process 100 files per batch
+        pydrime vault sync ./data --no-streaming    # Scan all files upfront
+    """
+    from pathlib import Path as PathLib
+
+    from syncengine import (  # type: ignore[import-not-found]
+        ComparisonMode,
+        InitialSyncPreference,
+        SyncConfig,
+        SyncEngine,
+        SyncMode,
+        SyncPair,
+    )
+
+    from ..cli_progress import run_sync_with_progress
+    from .vault_adapters import (  # type: ignore[import-not-found]
+        _VaultClientAdapter,
+        create_vault_entries_manager_factory,
+    )
+
+    api_key = ctx.obj.get("api_key")
+    out: OutputFormatter = ctx.obj["out"]
+
+    if not config.is_configured() and not api_key:
+        out.error("API key not configured.")
+        out.info("Run 'pydrime init' to configure your API key")
+        ctx.exit(1)
+
+    # Validate and convert MB to bytes
+    if chunk_size < 5:
+        out.error("Chunk size must be at least 5MB")
+        ctx.exit(1)
+    if chunk_size > 100:
+        out.error("Chunk size cannot exceed 100MB")
+        ctx.exit(1)
+    if multipart_threshold < 1:
+        out.error("Multipart threshold must be at least 1MB")
+        ctx.exit(1)
+    if chunk_size >= multipart_threshold:
+        out.error("Chunk size must be smaller than multipart threshold")
+        ctx.exit(1)
+    if batch_size < 1:
+        out.error("Batch size must be at least 1")
+        ctx.exit(1)
+    if batch_size > 1000:
+        out.error("Batch size cannot exceed 1000")
+        ctx.exit(1)
+
+    chunk_size_bytes = chunk_size * 1024 * 1024
+    multipart_threshold_bytes = multipart_threshold * 1024 * 1024
+
+    # Single path mode (config file support can be added later)
+    if path is None:
+        out.error("PATH argument is required")
+        ctx.exit(1)
+        return
+
+    try:
+        client = DrimeClient(api_key=api_key)
+
+        # Get vault info for password verification
+        vault_result = client.get_vault()
+        vault_info = vault_result.get("vault")
+
+        if not vault_info:
+            out.error("No vault found. You may need to set up a vault first.")
+            ctx.exit(1)
+            return
+
+        vault_id = vault_info.get("id")
+        if not vault_id:
+            out.error("Could not get vault ID.")
+            ctx.exit(1)
+            return
+
+        # Get encryption parameters from vault
+        salt = vault_info.get("salt")
+        check = vault_info.get("check")
+        iv = vault_info.get("iv")
+
+        if not all([salt, check, iv]):
+            out.error("Vault encryption parameters not found.")
+            ctx.exit(1)
+            return
+
+        # Get password from: CLI option > environment variable > prompt
+        if not password:
+            password = get_vault_password_from_env()
+        if not password:
+            password = click.prompt("Vault password", hide_input=True)
+
+        # Unlock the vault (verify password)
+        if not out.quiet:
+            out.info("Verifying vault password...")
+
+        assert password is not None
+        try:
+            vault_key = unlock_vault(password, salt, check, iv)
+        except VaultPasswordError:
+            out.error("Invalid vault password")
+            ctx.exit(1)
+            return
+
+        # Resolve folder if specified
+        parent_id: Optional[int] = None
+        if folder:
+            # Check if it's a numeric ID
+            if folder.isdigit():
+                parent_id = int(folder)
+            else:
+                # Search for folder by name or hash
+                search_result = client.get_vault_file_entries(per_page=1000)
+
+                search_entries = []
+                if isinstance(search_result, dict):
+                    if "data" in search_result:
+                        search_entries = search_result["data"]
+                    elif "pagination" in search_result and isinstance(
+                        search_result["pagination"], dict
+                    ):
+                        search_entries = search_result["pagination"].get("data", [])
+
+                found = False
+                for entry in search_entries:
+                    entry_name = entry.get("name", "")
+                    entry_hash = entry.get("hash", "")
+                    entry_type = entry.get("type", "")
+
+                    if entry_type == "folder" and (
+                        entry_name == folder or entry_hash == folder
+                    ):
+                        parent_id = entry.get("id")
+                        found = True
+                        if not out.quiet:
+                            out.info(f"Resolved folder '{folder}' to ID: {parent_id}")
+                        break
+
+                if not found:
+                    out.error(f"Folder '{folder}' not found in vault.")
+                    ctx.exit(1)
+                    return
+
+        # Parse path - check if it's a literal sync pair or simple path
+        windows_drive_match = re.match(r"^([A-Za-z]:)", path)
+        if windows_drive_match:
+            drive = windows_drive_match.group(1)
+            rest_of_path = path[len(drive) :]
+            parts = rest_of_path.split(":")
+            if parts:
+                parts[0] = drive + parts[0]
+        else:
+            parts = path.split(":")
+
+        is_literal_pair = len(parts) >= 2 and len(parts) <= 3
+
+        # Create sync pair
+        pair: SyncPair
+        if is_literal_pair:
+            if remote_path is not None:
+                out.error(
+                    "Cannot use --remote-path with literal sync pair format. "
+                    "Use '/local:mode:/remote' format instead."
+                )
+                ctx.exit(1)
+
+            try:
+                pair = SyncPair.parse_literal(path)
+                # Use vault_id as storage_id (will be ignored by adapter)
+                pair.storage_id = vault_id
+                source_path = pair.source
+
+                if not out.quiet:
+                    out.info(f"Parsed sync pair: {pair.sync_mode.value}")
+                    out.info(f"  Local:  {pair.source}")
+                    out.info(f"  Remote: {pair.destination}")
+            except ValueError as e:
+                out.error(f"Invalid sync pair format: {e}")
+                ctx.exit(1)
+                return
+        else:
+            # Simple directory path
+            source_path = PathLib(path)
+
+            if not source_path.exists():
+                out.error(f"Path does not exist: {path}")
+                ctx.exit(1)
+
+            if not source_path.is_dir():
+                out.error(f"Path is not a directory: {path}")
+                ctx.exit(1)
+
+            # Determine remote path
+            if remote_path is None:
+                remote_path = source_path.name
+
+            # Create sync pair with TWO_WAY as default
+            pair = SyncPair(
+                source=source_path,
+                destination=remote_path,
+                sync_mode=SyncMode.TWO_WAY,
+                storage_id=vault_id,
+            )
+
+        # If destination folder is specified, find or create it and use as parent
+        sync_parent_id = parent_id
+        if pair.destination and pair.destination != "/":
+            # Create a temporary adapter to search for the folder
+            temp_adapter = _VaultClientAdapter(client, vault_id, vault_key, parent_id)
+            temp_manager_factory = create_vault_entries_manager_factory(
+                vault_id, vault_key, parent_id
+            )
+            temp_manager = temp_manager_factory(client, vault_id)
+
+            # Try to find the destination folder
+            dest_folder = temp_manager.find_folder_by_name(
+                pair.destination, parent_id=0 if parent_id is None else parent_id
+            )
+
+            if dest_folder:
+                sync_parent_id = dest_folder.id
+                if not out.quiet:
+                    out.info(
+                        f"Found remote folder '{pair.destination}' "
+                        f"(id: {sync_parent_id})"
+                    )
+            elif not dry_run:
+                # Create the destination folder if it doesn't exist
+                if not out.quiet:
+                    out.info(f"Creating remote folder '{pair.destination}'...")
+                try:
+                    dest_folder = temp_adapter.create_folder(
+                        name=pair.destination,
+                        parent_id=parent_id,
+                        storage_id=vault_id,
+                    )
+                    sync_parent_id = dest_folder.id
+                    if not out.quiet:
+                        out.info(
+                            f"Created remote folder '{pair.destination}' "
+                            f"(id: {sync_parent_id})"
+                        )
+                except Exception as e:
+                    # If folder creation fails (e.g., already exists),
+                    # try to find it again
+                    if "422" in str(e):
+                        dest_folder = temp_manager.find_folder_by_name(
+                            pair.destination,
+                            parent_id=0 if parent_id is None else parent_id,
+                        )
+                        if dest_folder:
+                            sync_parent_id = dest_folder.id
+                            if not out.quiet:
+                                out.info(
+                                    f"Found existing folder '{pair.destination}' "
+                                    f"(id: {sync_parent_id})"
+                                )
+                        else:
+                            raise
+                    else:
+                        raise
+
+            # Update the sync pair to sync INTO the destination folder
+            # by setting parent_id and clearing destination (root of that folder)
+            if not out.quiet:
+                out.info(
+                    f"Updating sync pair: parent_id={sync_parent_id}, "
+                    f"destination=/ (was: {pair.destination})"
+                )
+            pair = SyncPair(
+                source=pair.source,
+                destination="/",  # Sync into root of the destination folder
+                sync_mode=pair.sync_mode,
+                storage_id=vault_id,
+                parent_id=sync_parent_id,  # Set the folder as parent
+                ignore=pair.ignore,
+                exclude_dot_files=pair.exclude_dot_files,
+                disable_source_trash=pair.disable_source_trash,
+            )
+
+        if not out.quiet:
+            out.info(f"Vault ID: {vault_id}")
+            out.info(f"Sync mode: {pair.sync_mode.value}")
+            out.info(f"Local path: {pair.source}")
+            remote_display = pair.destination if pair.destination else "/ (root)"
+            out.info(f"Remote path: {remote_display}")
+            if sync_parent_id:
+                out.info(f"Sync folder ID: {sync_parent_id}")
+            out.info("")
+
+        # Create output formatter for engine
+        use_progress_display = not no_progress and not out.quiet and not dry_run
+        engine_out = OutputFormatter(
+            json_output=out.json_output,
+            quiet=use_progress_display or no_progress or out.quiet,
+        )
+
+        # Create vault adapter and sync engine with the resolved parent folder
+        vault_adapter = _VaultClientAdapter(client, vault_id, vault_key, sync_parent_id)
+        vault_manager_factory = create_vault_entries_manager_factory(
+            vault_id, vault_key, sync_parent_id
+        )
+
+        # Use default comparison mode (HASH_THEN_MTIME) for vault sync
+        # Use SIZE_ONLY comparison mode to avoid expensive MD5 computation
+        # and unreliable mtime comparison (vault doesn't preserve original mtimes)
+        sync_config = SyncConfig(
+            ignore_file_name=".pydrignore",
+            comparison_mode=ComparisonMode.SIZE_ONLY,
+        )
+
+        engine = SyncEngine(
+            vault_adapter,
+            vault_manager_factory,
+            output=engine_out,
+            config=sync_config,
+        )
+
+        # Execute sync
+        if use_progress_display:
+            stats = run_sync_with_progress(
+                engine=engine,
+                pair=pair,
+                dry_run=dry_run,
+                chunk_size=chunk_size_bytes,
+                multipart_threshold=multipart_threshold_bytes,
+                batch_size=batch_size,
+                use_streaming=not no_streaming,
+                max_workers=workers,
+                start_delay=start_delay,
+                out=out,
+                initial_sync_preference=InitialSyncPreference.MERGE,
+            )
+        else:
+            stats = engine.sync_pair(
+                pair,
+                dry_run=dry_run,
+                chunk_size=chunk_size_bytes,
+                multipart_threshold=multipart_threshold_bytes,
+                batch_size=batch_size,
+                use_streaming=not no_streaming,
+                max_workers=workers,
+                start_delay=start_delay,
+                initial_sync_preference=InitialSyncPreference.MERGE,
+            )
+
+        # Display summary
+        if use_progress_display and not out.quiet:
+            from .sync_command import _display_sync_summary
+
+            _display_sync_summary(out, stats, dry_run=dry_run)
+
+        # Output results
+        if out.json_output:
+            out.output_json(stats)
+
+        # Exit with warning if there were conflicts
+        if stats.get("conflicts", 0) > 0 and not out.quiet:
+            out.warning(
+                f"\n⚠  {stats['conflicts']} conflict(s) were skipped. "
+                "Please resolve conflicts manually."
+            )
+
+    except KeyboardInterrupt:
+        out.warning("\nSync cancelled by user")
+        ctx.exit(130)
+    except DrimeAPIError as e:
+        out.error(f"API error: {e}")
+        ctx.exit(1)
+    except Exception as e:
+        out.error(f"Error: {e}")
+        import traceback
+
+        if not out.quiet:
+            traceback.print_exc()
         ctx.exit(1)
 
 

@@ -7,6 +7,8 @@ from typing import Any, Optional
 
 import click
 from syncengine import (  # type: ignore[import-not-found]
+    ComparisonMode,
+    SyncConfig,
     SyncConfigError,
     SyncEngine,
     SyncMode,
@@ -357,9 +359,20 @@ def sync(
                 # Wrap client in adapter for syncengine compatibility
                 adapted_client = _DrimeClientAdapter(client)
 
+                # Use SIZE_ONLY comparison mode to avoid expensive MD5 computation
+                # and unreliable mtime comparison
+                # (Drime doesn't preserve original mtimes)
+                sync_config = SyncConfig(
+                    ignore_file_name=".pydrignore",
+                    comparison_mode=ComparisonMode.SIZE_ONLY,
+                )
+
                 # Create sync engine
                 engine = SyncEngine(
-                    adapted_client, create_entries_manager_factory(), output=engine_out
+                    adapted_client,
+                    create_entries_manager_factory(),
+                    output=engine_out,
+                    config=sync_config,
                 )
 
                 # Execute sync - use progress display for non-dry-run
@@ -557,8 +570,19 @@ def sync(
 
         # Create sync engine with client adapter
         client_adapter = _DrimeClientAdapter(client)
+
+        # Use SIZE_ONLY comparison mode to avoid expensive MD5 computation
+        # and unreliable mtime comparison (Drime doesn't preserve original mtimes)
+        sync_config = SyncConfig(
+            ignore_file_name=".pydrignore",
+            comparison_mode=ComparisonMode.SIZE_ONLY,
+        )
+
         engine = SyncEngine(
-            client_adapter, create_entries_manager_factory(), output=engine_out
+            client_adapter,
+            create_entries_manager_factory(),
+            output=engine_out,
+            config=sync_config,
         )
 
         # Execute sync - use progress display for non-dry-run

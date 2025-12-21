@@ -114,6 +114,15 @@ class SyncProgressDisplay:
                     folder_info=self._format_folder_progress(info),
                 )
 
+        elif info.event == SyncProgressEvent.UPLOAD_FILE_START:
+            # Update description when starting a file
+            if self._upload_task is not None:
+                folder_name = self._current_dir if self._current_dir else "root"
+                self._progress.update(
+                    self._upload_task,
+                    description=f"Uploading: {folder_name}",
+                )
+
         elif info.event == SyncProgressEvent.UPLOAD_FILE_PROGRESS:
             # Update bytes progress for current folder
             if self._upload_task is not None:
@@ -155,6 +164,15 @@ class SyncProgressDisplay:
                     total=info.folder_bytes_total,
                     completed=0,
                     folder_info=self._format_folder_progress(info),
+                )
+
+        elif info.event == SyncProgressEvent.DOWNLOAD_FILE_START:
+            # Update description when starting a file
+            if self._upload_task is not None:
+                folder_name = self._current_dir if self._current_dir else "root"
+                self._progress.update(
+                    self._upload_task,
+                    description=f"Downloading: {folder_name}",
                 )
 
         elif info.event == SyncProgressEvent.DOWNLOAD_FILE_PROGRESS:
@@ -373,6 +391,7 @@ def run_sync_with_progress(
     max_workers: int,
     start_delay: float,
     out: Optional[OutputFormatter] = None,
+    initial_sync_preference: Optional[Any] = None,
 ) -> dict[str, Any]:
     """Run sync with a Rich progress display.
 
@@ -390,6 +409,7 @@ def run_sync_with_progress(
         max_workers: Number of parallel workers
         start_delay: Delay between parallel operations
         out: Optional OutputFormatter for status messages (uses engine.output if None)
+        initial_sync_preference: Optional preference for initial sync behavior
 
     Returns:
         Dictionary with sync statistics
@@ -405,6 +425,7 @@ def run_sync_with_progress(
             use_streaming=use_streaming,
             max_workers=max_workers,
             start_delay=start_delay,
+            initial_sync_preference=initial_sync_preference,
         )
 
     # Show remote folder status before starting progress bar
@@ -426,6 +447,7 @@ def run_sync_with_progress(
             max_workers=max_workers,
             start_delay=start_delay,
             sync_progress_tracker=tracker,
+            initial_sync_preference=initial_sync_preference,
         )
 
 
