@@ -101,7 +101,10 @@ class DuplicateHandler:
             validation_result = self.client.validate_uploads(
                 files=validation_files, workspace_id=self.workspace_id
             )
-            duplicates = validation_result.get("duplicates", [])
+            duplicates_raw = validation_result.get("duplicates", [])
+            duplicates = [
+                d["name"] if isinstance(d, dict) else d for d in duplicates_raw
+            ]
 
             # Filter out folders from duplicates
             folder_duplicates = duplicates.copy()
