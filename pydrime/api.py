@@ -942,16 +942,15 @@ class DrimeClient:
                             context=f"S3 multipart upload part {pn}",
                         )
 
-                        # Preserve raw ETag (including quotes if present) as some backends
-                        # require them to be returned exactly as received.
+                        # Preserve raw ETag (must be quoted for the completion API)
                         etag = response.headers.get("ETag", "")
-                        if not etag:
-                            logger.debug(f"Warning: Missing ETag for part {pn}")
+                        if etag and not etag.startswith('"'):
+                            etag = f'"{etag}"'
                         
                         uploaded_parts.append(
                             {
-                                "partNumber": pn,
-                                "etag": etag,
+                                "PartNumber": pn,
+                                "ETag": etag,
                             }
                         )
 
@@ -961,8 +960,8 @@ class DrimeClient:
 
                     part_number += batch_size
 
-            # Sort parts by part number (required by many S3-compatible APIs)
-            uploaded_parts.sort(key=lambda x: x["partNumber"])
+            # Sort parts by part number (required by S3)
+            uploaded_parts.sort(key=lambda x: x["PartNumber"])
 
             # Complete multipart upload
             self._request(
@@ -971,13 +970,7 @@ class DrimeClient:
                 json={
                     "key": key,
                     "uploadId": upload_id,
-                    "parts": [
-                        {
-                            "PartNumber": p["partNumber"],
-                            "ETag": p["etag"],
-                        }
-                        for p in uploaded_parts
-                    ],
+                    "parts": uploaded_parts,
                 },
             )
 
